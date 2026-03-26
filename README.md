@@ -5,6 +5,51 @@
 - 调用 DeepSeek 生成多模块报告（支持 quick/deep 双模式）
 - 导出可转发分享页（HTML/Word）
 
+## 快速上手（推荐）
+
+仓库地址：
+
+`https://github.com/TATDistance/TradeforAgents-minimal`
+
+在 Ubuntu / WSL 终端执行：
+
+```bash
+git clone https://github.com/TATDistance/TradeforAgents-minimal.git
+cd TradeforAgents-minimal
+bash start.sh web
+```
+
+然后浏览器打开：
+
+`http://127.0.0.1:8600`
+
+在页面里填写：
+- 股票代码（例如 `600028`）
+- API Key（自己的）
+- Base URL（下拉选择）
+- 模式（`quick` 或 `deep`）
+
+点击“开始分析”即可。
+
+分析完成后结果在：
+
+`results/<股票代码>/<日期>/`
+
+分享文件在：
+
+`results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.html`
+
+如果要从同局域网其他设备访问（例如手机）：
+- 先查运行机器 IP（例如 `192.168.6.239`）
+- 访问 `http://192.168.6.239:8600`
+
+如果提示 `8600` 端口被占用，可先执行：
+
+```bash
+pkill -f "minimal_web_app.py" || true
+bash start.sh web
+```
+
 ## 目录
 
 - `scripts/minimal_deepseek_report.py`：命令行分析器
