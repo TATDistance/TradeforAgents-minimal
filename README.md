@@ -55,3 +55,4 @@ bash scripts/run_minimal_web_app.sh
 
 `results/<股票代码>/<日期>/share/wechat_share.html`
 
+# TradeforAgents-minimal
