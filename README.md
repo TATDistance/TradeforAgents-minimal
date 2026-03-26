@@ -78,9 +78,23 @@ bash scripts/run_minimal_deepseek.sh 600028 --deep
 
 `results/<股票代码>/<日期>/`
 
-分享文件在：
+核心文件：
 
-`results/<股票代码>/<日期>/share/wechat_share.html`
+- `analysis_metadata.json`
+- `decision.json`
+- `message_tool.log`
+- `module_metrics.json`
+- `module_metrics_summary.json`
+
+分享文件在（个股+日期命名）：
+
+- `results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.html`
+- `results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.md`
+- `results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.docx`
+
+模块统计表在：
+
+- `results/<股票代码>/<日期>/reports/module_metrics.md`
 
 缓存文件在：
 

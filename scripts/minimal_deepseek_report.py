@@ -314,6 +314,137 @@ def safe_json_extract(text: str) -> Dict[str, Any] | None:
         return None
 
 
+def _get_field(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _logical_module_name(module_name: str) -> str:
+    return module_name[:-9] if module_name.endswith("_fallback") else module_name
+
+
+def extract_usage_info(resp: Any) -> Dict[str, Any]:
+    usage = _get_field(resp, "usage", {})
+    prompt_tokens = _get_field(usage, "prompt_tokens", None)
+    completion_tokens = _get_field(usage, "completion_tokens", None)
+    total_tokens = _get_field(usage, "total_tokens", None)
+
+    # 兼容部分 OpenAI-compatible 返回字段
+    if prompt_tokens is None:
+        prompt_tokens = _get_field(usage, "input_tokens", 0)
+    if completion_tokens is None:
+        completion_tokens = _get_field(usage, "output_tokens", 0)
+    if total_tokens is None:
+        total_tokens = int(prompt_tokens or 0) + int(completion_tokens or 0)
+
+    choices = _get_field(resp, "choices", []) or []
+    finish_reason = ""
+    if choices:
+        c0 = choices[0]
+        finish_reason = str(_get_field(c0, "finish_reason", "") or "")
+
+    return {
+        "prompt_tokens": int(prompt_tokens or 0),
+        "completion_tokens": int(completion_tokens or 0),
+        "total_tokens": int(total_tokens or 0),
+        "finish_reason": finish_reason,
+    }
+
+
+def summarize_module_metrics(module_metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
+    per_module: Dict[str, Dict[str, Any]] = {}
+    total_prompt = 0
+    total_completion = 0
+    total_tokens = 0
+    total_elapsed = 0.0
+    success_calls = 0
+    fail_calls = 0
+
+    for m in module_metrics:
+        module = str(m.get("logical_module") or m.get("module") or "unknown")
+        item = per_module.setdefault(
+            module,
+            {
+                "module": module,
+                "attempts": 0,
+                "success_calls": 0,
+                "failed_calls": 0,
+                "elapsed_seconds": 0.0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "last_model": "",
+                "last_status": "",
+            },
+        )
+        item["attempts"] += 1
+        item["last_model"] = str(m.get("model", ""))
+        item["last_status"] = str(m.get("status", ""))
+        elapsed = float(m.get("elapsed_seconds", 0.0) or 0.0)
+        status = str(m.get("status", ""))
+        if status == "success":
+            p = int(m.get("prompt_tokens", 0) or 0)
+            c = int(m.get("completion_tokens", 0) or 0)
+            t = int(m.get("total_tokens", 0) or 0)
+            item["success_calls"] += 1
+            item["elapsed_seconds"] += elapsed
+            item["prompt_tokens"] += p
+            item["completion_tokens"] += c
+            item["total_tokens"] += t
+            total_prompt += p
+            total_completion += c
+            total_tokens += t
+            total_elapsed += elapsed
+            success_calls += 1
+        else:
+            item["failed_calls"] += 1
+            fail_calls += 1
+
+    modules = sorted(
+        per_module.values(),
+        key=lambda x: (float(x.get("elapsed_seconds", 0.0)), int(x.get("total_tokens", 0))),
+        reverse=True,
+    )
+    return {
+        "summary_generated_at": datetime.now().isoformat(),
+        "api_calls_total": len(module_metrics),
+        "api_calls_success": success_calls,
+        "api_calls_failed": fail_calls,
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_tokens": total_tokens,
+        "total_elapsed_seconds": round(total_elapsed, 3),
+        "modules": modules,
+    }
+
+
+def module_metrics_markdown(summary: Dict[str, Any]) -> str:
+    lines = [
+        "# 模块耗时与Token统计",
+        "",
+        f"- API调用总数: {summary.get('api_calls_total', 0)}",
+        f"- 成功调用: {summary.get('api_calls_success', 0)}",
+        f"- 失败调用: {summary.get('api_calls_failed', 0)}",
+        f"- 输入Token总计: {summary.get('total_prompt_tokens', 0)}",
+        f"- 输出Token总计: {summary.get('total_completion_tokens', 0)}",
+        f"- 总Token: {summary.get('total_tokens', 0)}",
+        f"- 成功调用总耗时(秒): {summary.get('total_elapsed_seconds', 0)}",
+        "",
+        "| 模块 | 尝试次数 | 成功 | 失败 | 耗时(秒) | 输入Token | 输出Token | 总Token |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for m in summary.get("modules", []):
+        lines.append(
+            f"| {m.get('module','')} | {m.get('attempts',0)} | {m.get('success_calls',0)} | "
+            f"{m.get('failed_calls',0)} | {float(m.get('elapsed_seconds',0.0)):.2f} | "
+            f"{m.get('prompt_tokens',0)} | {m.get('completion_tokens',0)} | {m.get('total_tokens',0)} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def call_deepseek(
     client: OpenAI,
     model: str,
@@ -321,6 +452,7 @@ def call_deepseek(
     user_prompt: str,
     module_name: str,
     module_logs: List[str],
+    module_metrics: List[Dict[str, Any]] | None = None,
     temperature: float = 0.2,
     request_timeout: float = 60.0,
     max_retries: int = 3,
@@ -346,9 +478,28 @@ def call_deepseek(
             elapsed = time.time() - t0
             if not content:
                 raise RuntimeError("返回空内容")
+            usage = extract_usage_info(resp)
             module_logs.append(
-                f"[{datetime.now().isoformat()}] {module_name}: success attempt={attempt} elapsed={elapsed:.2f}s len={len(content)}"
+                f"[{datetime.now().isoformat()}] {module_name}: success attempt={attempt} "
+                f"elapsed={elapsed:.2f}s len={len(content)} tokens={usage['total_tokens']}"
             )
+            if module_metrics is not None:
+                module_metrics.append(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "module": module_name,
+                        "logical_module": _logical_module_name(module_name),
+                        "attempt": attempt,
+                        "status": "success",
+                        "model": model,
+                        "elapsed_seconds": round(float(elapsed), 4),
+                        "prompt_tokens": usage["prompt_tokens"],
+                        "completion_tokens": usage["completion_tokens"],
+                        "total_tokens": usage["total_tokens"],
+                        "finish_reason": usage["finish_reason"],
+                        "request_timeout": float(request_timeout),
+                    }
+                )
             print(f"    -> 成功 ({elapsed:.2f}s)", flush=True)
             return content
         except Exception as e:
@@ -357,6 +508,24 @@ def call_deepseek(
             module_logs.append(
                 f"[{datetime.now().isoformat()}] {module_name}: fail attempt={attempt} elapsed={elapsed:.2f}s err={last_error}"
             )
+            if module_metrics is not None:
+                module_metrics.append(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "module": module_name,
+                        "logical_module": _logical_module_name(module_name),
+                        "attempt": attempt,
+                        "status": "failed",
+                        "model": model,
+                        "elapsed_seconds": round(float(elapsed), 4),
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "finish_reason": "",
+                        "error": last_error[:500],
+                        "request_timeout": float(request_timeout),
+                    }
+                )
             print(f"    -> 失败 ({elapsed:.2f}s): {last_error}", flush=True)
             if attempt < max_retries:
                 time.sleep(min(2 * attempt, 5))
@@ -373,6 +542,7 @@ def generate_reports(
     market_snapshot: Dict[str, Any],
     news: List[Dict[str, Any]],
     module_logs: List[str],
+    module_metrics: List[Dict[str, Any]],
     request_timeout: float,
     max_retries: int,
     analyst_workers: int = 3,
@@ -398,6 +568,7 @@ def generate_reports(
                 model=active_model,
                 module_name=module_name,
                 module_logs=module_logs,
+                module_metrics=module_metrics,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=temperature,
@@ -418,6 +589,7 @@ def generate_reports(
                         model=fallback_model,
                         module_name=f"{module_name}_fallback",
                         module_logs=module_logs,
+                        module_metrics=module_metrics,
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         temperature=temperature,
@@ -1064,6 +1236,7 @@ def write_outputs(
     market_snapshot: Dict[str, Any],
     news: List[Dict[str, Any]],
     decision_obj: Dict[str, Any],
+    module_metrics: List[Dict[str, Any]],
     module_logs: List[str],
 ) -> Path:
     stock_root = results_dir / user_symbol / analysis_date
@@ -1083,6 +1256,16 @@ def write_outputs(
     (stock_root / "decision.json").write_text(
         json.dumps(decision_obj, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    metrics_summary = summarize_module_metrics(module_metrics)
+    (stock_root / "module_metrics.json").write_text(
+        json.dumps(module_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (stock_root / "module_metrics_summary.json").write_text(
+        json.dumps(metrics_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (reports_dir / "module_metrics.md").write_text(
+        module_metrics_markdown(metrics_summary), encoding="utf-8"
+    )
 
     report_types = [
         "market_report",
@@ -1093,6 +1276,7 @@ def write_outputs(
         "trader_investment_plan",
         "risk_management_decision",
         "final_trade_decision",
+        "module_metrics",
     ]
 
     metadata = {
@@ -1112,6 +1296,7 @@ def write_outputs(
         "generator": "minimal_deepseek_report.py",
         "reports_count": len(report_types),
         "report_types": report_types,
+        "metrics_files": ["module_metrics.json", "module_metrics_summary.json"],
     }
 
     (stock_root / "analysis_metadata.json").write_text(
@@ -1274,6 +1459,7 @@ def main() -> int:
     user_symbol, yf_symbol = normalize_symbol(args.stock_symbol)
 
     module_logs: List[str] = []
+    module_metrics: List[Dict[str, Any]] = []
     module_logs.append(
         f"[{datetime.now().isoformat()}] start symbol={user_symbol} preferred={yf_symbol} "
         f"date={args.analysis_date} mode={args.mode} model={args.model} final_model={args.final_model} "
@@ -1357,11 +1543,14 @@ def main() -> int:
         market_snapshot=market_snapshot,
         news=news,
         module_logs=module_logs,
+        module_metrics=module_metrics,
         request_timeout=args.request_timeout,
         max_retries=args.retries,
         analyst_workers=args.analyst_workers,
         continue_on_error=not args.strict,
     )
+    metrics_summary = summarize_module_metrics(module_metrics)
+    decision_obj["module_metrics_summary"] = metrics_summary
 
     # 4) 写文件
     print("[4/6] 写入结果目录")
@@ -1376,12 +1565,27 @@ def main() -> int:
         market_snapshot=market_snapshot,
         news=news,
         decision_obj=decision_obj,
+        module_metrics=module_metrics,
         module_logs=module_logs,
     )
 
     # 5) 输出摘要
     print("[5/6] 生成摘要")
     print(f"  - 最终建议: {decision_obj.get('action')} | 目标区间: {decision_obj.get('target_price_range')}")
+    print(
+        "  - Token统计: "
+        f"in={metrics_summary.get('total_prompt_tokens', 0)} "
+        f"out={metrics_summary.get('total_completion_tokens', 0)} "
+        f"total={metrics_summary.get('total_tokens', 0)} "
+        f"calls={metrics_summary.get('api_calls_total', 0)}"
+    )
+    top_modules = metrics_summary.get("modules", [])[:5]
+    if top_modules:
+        top_str = ", ".join(
+            f"{m.get('module')}={float(m.get('elapsed_seconds', 0.0)):.1f}s/{int(m.get('total_tokens', 0))}tok"
+            for m in top_modules
+        )
+        print(f"  - 模块耗时TOP: {top_str}")
     if decision_obj.get("degraded_modules"):
         print(f"  - 自动降级模块: {', '.join(decision_obj.get('degraded_modules', []))}")
 
