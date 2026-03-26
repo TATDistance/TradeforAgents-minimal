@@ -21,6 +21,7 @@ import uvicorn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "minimal_deepseek_report.py"
 RESULTS_DIR = PROJECT_ROOT / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class AnalyzeRequest(BaseModel):
