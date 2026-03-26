@@ -30,6 +30,8 @@ class AnalyzeRequest(BaseModel):
     model: str = Field(default="deepseek-chat")
     request_timeout: float = Field(default=120.0, ge=10.0, le=600.0)
     retries: int = Field(default=2, ge=0, le=5)
+    api_key: str = Field(default="", max_length=256)
+    base_url: str = Field(default="", max_length=256)
 
 
 @dataclass
@@ -88,10 +90,14 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
         "--retries",
         str(req.retries),
     ]
+    if req.api_key.strip():
+        cmd.extend(["--api-key", req.api_key.strip()])
+    if req.base_url.strip():
+        cmd.extend(["--base-url", req.base_url.strip()])
 
     env = os.environ.copy()
     # 若没有导出，尝试读项目 .env
-    if not env.get("DEEPSEEK_API_KEY"):
+    if not env.get("DEEPSEEK_API_KEY") and not req.api_key.strip():
         env_file = PROJECT_ROOT / ".env"
         if env_file.exists():
             for raw in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -101,11 +107,11 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
                         env["DEEPSEEK_API_KEY"] = key
                         break
 
-    if not env.get("DEEPSEEK_API_KEY"):
+    if not env.get("DEEPSEEK_API_KEY") and not req.api_key.strip():
         with TASK_LOCK:
             task = TASKS[task_id]
             task.status = "failed"
-            task.error = "未设置 DEEPSEEK_API_KEY"
+            task.error = "未设置 DEEPSEEK_API_KEY（可在页面填写或配置 .env）"
             task.finished_at = datetime.now().isoformat()
         return
 
@@ -198,6 +204,20 @@ def index() -> str:
         <input id="timeout" type="number" value="120" />
       </div>
     </div>
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>API Key（必填）</label>
+        <input id="apiKey" type="password" placeholder="sk-..." />
+      </div>
+      <div>
+        <label>Base URL（下拉选择）</label>
+        <select id="baseUrl">
+          <option value="https://api.deepseek.com" selected>DeepSeek 官方（推荐）</option>
+          <option value="https://api.deepseek.com/v1">DeepSeek 兼容 /v1</option>
+          <option value="https://newapi.baosiapi.com/v1">OpenAI 中转示例（newapi.baosiapi.com）</option>
+        </select>
+      </div>
+    </div>
     <button id="go" style="margin-top:12px">开始分析</button>
     <p id="status"></p>
     <p id="link"></p>
@@ -209,6 +229,8 @@ def index() -> str:
     const symbol = document.getElementById('symbol');
     const model = document.getElementById('model');
     const timeout = document.getElementById('timeout');
+    const apiKey = document.getElementById('apiKey');
+    const baseUrl = document.getElementById('baseUrl');
     const statusEl = document.getElementById('status');
     const linkEl = document.getElementById('link');
     const logEl = document.getElementById('log');
@@ -233,6 +255,16 @@ def index() -> str:
       // 允许示例: 600028 / 000630 / 518880 / AAPL / 0700.HK / 600028.SS
       return /^[A-Z0-9.\-]{1,20}$/.test(sym);
     }
+
+    // 浏览器本地保存（仅当前浏览器）
+    apiKey.value = localStorage.getItem('ta_min_api_key') || '';
+    const savedBaseUrl = localStorage.getItem('ta_min_base_url');
+    if(savedBaseUrl){
+      const exists = Array.from(baseUrl.options).some(opt => opt.value === savedBaseUrl);
+      if(exists) baseUrl.value = savedBaseUrl;
+    }
+    apiKey.onchange = () => localStorage.setItem('ta_min_api_key', apiKey.value.trim());
+    baseUrl.onchange = () => localStorage.setItem('ta_min_base_url', baseUrl.value);
 
     function elapsedText(startedAt){
       if(!startedAt) return '';
@@ -279,6 +311,10 @@ def index() -> str:
         alert('股票代码格式错误。请只输入代码，例如 600028 或 AAPL');
         return;
       }
+      if(!apiKey.value.trim()){
+        alert('请填写 API Key');
+        return;
+      }
       go.disabled = true;
       statusEl.className = '';
       statusEl.textContent = '提交中...';
@@ -292,7 +328,9 @@ def index() -> str:
           symbol: normalizedSymbol,
           model: model.value,
           request_timeout: Number(timeout.value || 120),
-          retries: 2
+          retries: 2,
+          api_key: apiKey.value.trim(),
+          base_url: baseUrl.value
         })
       });
       const data = await resp.json();

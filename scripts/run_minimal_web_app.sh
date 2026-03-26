@@ -23,8 +23,7 @@ if [[ -z "${DEEPSEEK_API_KEY:-}" && -f "$PROJECT_ROOT/.env" ]]; then
 fi
 
 if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
-  echo "错误: 未设置 DEEPSEEK_API_KEY（请在 .env 或环境变量中配置）"
-  exit 1
+  echo "提示: 未设置 DEEPSEEK_API_KEY，将在网页里手动填写 API Key"
 fi
 
 export MINIMAL_WEB_HOST="${MINIMAL_WEB_HOST:-0.0.0.0}"
@@ -33,4 +32,3 @@ export MINIMAL_WEB_PORT="${MINIMAL_WEB_PORT:-8600}"
 echo "启动最小Web服务: http://${MINIMAL_WEB_HOST}:${MINIMAL_WEB_PORT}"
 cd "$PROJECT_ROOT"
 exec "$PYTHON_BIN" "$APP_SCRIPT"
-
