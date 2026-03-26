@@ -4,5 +4,6 @@ pydantic>=2.7.0
 openai>=1.40.0
 pandas>=1.5.3,<2.1
 yfinance>=0.2.50
+multitasking<0.0.12
 python-docx>=1.1.0
 markdown>=3.6
