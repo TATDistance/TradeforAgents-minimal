@@ -10,6 +10,7 @@ if [[ $# -lt 1 ]]; then
   echo "示例: bash scripts/run_minimal_deepseek.sh AAPL 2026-03-26"
   echo "示例: bash scripts/run_minimal_deepseek.sh 518880 2026-03-26 --request-timeout 30 --retries 1"
   echo "示例: bash scripts/run_minimal_deepseek.sh 518880 --reasoner"
+  echo "示例: bash scripts/run_minimal_deepseek.sh 600028 --deep"
   exit 1
 fi
 
@@ -44,12 +45,20 @@ fi
 
 DEFAULT_MODEL="${DEEPSEEK_MODEL:-deepseek-chat}"
 MODEL="$DEFAULT_MODEL"
+MODE="${TA_MIN_MODE:-quick}"
 HAS_MODEL_ARG=false
 HAS_TIMEOUT_ARG=false
+HAS_MODE_ARG=false
 
 PASSTHRU_ARGS=()
 for arg in "$@"; do
   case "$arg" in
+    --deep)
+      MODE="deep"
+      ;;
+    --quick)
+      MODE="quick"
+      ;;
     --reasoner)
       MODEL="deepseek-reasoner"
       ;;
@@ -64,6 +73,10 @@ for arg in "$@"; do
       HAS_TIMEOUT_ARG=true
       PASSTHRU_ARGS+=("$arg")
       ;;
+    --mode|--mode=*)
+      HAS_MODE_ARG=true
+      PASSTHRU_ARGS+=("$arg")
+      ;;
     *)
       PASSTHRU_ARGS+=("$arg")
       ;;
@@ -74,8 +87,12 @@ if ! $HAS_MODEL_ARG; then
   PASSTHRU_ARGS=(--model "$MODEL" "${PASSTHRU_ARGS[@]}")
 fi
 
-# reasoner 默认更慢，未显式指定超时时自动放宽
-if [[ "$MODEL" == "deepseek-reasoner" && "$HAS_TIMEOUT_ARG" == false ]]; then
+if ! $HAS_MODE_ARG; then
+  PASSTHRU_ARGS=(--mode "$MODE" "${PASSTHRU_ARGS[@]}")
+fi
+
+# 深度模式或 reasoner 默认更慢，未显式指定超时时自动放宽
+if [[ ("$MODEL" == "deepseek-reasoner" || "$MODE" == "deep") && "$HAS_TIMEOUT_ARG" == false ]]; then
   PASSTHRU_ARGS=(--request-timeout 120 "${PASSTHRU_ARGS[@]}")
 fi
 

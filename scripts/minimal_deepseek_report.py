@@ -40,6 +40,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -98,6 +99,32 @@ def candidate_yf_symbols(user_symbol: str, preferred_yf_symbol: str) -> List[str
             seen.add(c)
             uniq.append(c)
     return uniq
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_cache_key(*parts: str) -> str:
+    return "__".join(re.sub(r"[^A-Za-z0-9._-]+", "_", p) for p in parts)
+
+
+def read_json_cache(cache_file: Path, ttl_seconds: int) -> Dict[str, Any] | None:
+    if not cache_file.exists():
+        return None
+    if ttl_seconds > 0:
+        age = time.time() - cache_file.stat().st_mtime
+        if age > ttl_seconds:
+            return None
+    try:
+        return json.loads(cache_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def write_json_cache(cache_file: Path, payload: Any) -> None:
+    ensure_dir(cache_file.parent)
+    cache_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def pct_change(series: pd.Series, periods: int) -> float | None:
@@ -211,6 +238,52 @@ def fetch_news(yf_symbol: str, max_news: int = 8) -> List[Dict[str, Any]]:
     return parsed
 
 
+def fetch_market_data_cached(
+    yf_symbol: str,
+    as_of_date: str,
+    cache_dir: Path,
+    module_logs: List[str],
+    cache_ttl_seconds: int,
+    disable_cache: bool,
+) -> Dict[str, Any]:
+    cache_key = _safe_cache_key("market", yf_symbol, as_of_date)
+    cache_file = cache_dir / f"{cache_key}.json"
+    if not disable_cache:
+        cached = read_json_cache(cache_file, ttl_seconds=cache_ttl_seconds)
+        if cached is not None:
+            module_logs.append(f"[{datetime.now().isoformat()}] market_cache hit file={cache_file.name}")
+            return cached
+
+    snapshot = fetch_market_data(yf_symbol, as_of_date)
+    if not disable_cache:
+        write_json_cache(cache_file, snapshot)
+        module_logs.append(f"[{datetime.now().isoformat()}] market_cache write file={cache_file.name}")
+    return snapshot
+
+
+def fetch_news_cached(
+    yf_symbol: str,
+    max_news: int,
+    cache_dir: Path,
+    module_logs: List[str],
+    cache_ttl_seconds: int,
+    disable_cache: bool,
+) -> List[Dict[str, Any]]:
+    cache_key = _safe_cache_key("news", yf_symbol, f"top{max_news}")
+    cache_file = cache_dir / f"{cache_key}.json"
+    if not disable_cache:
+        cached = read_json_cache(cache_file, ttl_seconds=cache_ttl_seconds)
+        if isinstance(cached, list):
+            module_logs.append(f"[{datetime.now().isoformat()}] news_cache hit file={cache_file.name}")
+            return cached
+
+    news = fetch_news(yf_symbol, max_news=max_news)
+    if not disable_cache:
+        write_json_cache(cache_file, news)
+        module_logs.append(f"[{datetime.now().isoformat()}] news_cache write file={cache_file.name}")
+    return news
+
+
 def build_data_context(
     user_symbol: str,
     yf_symbol: str,
@@ -294,78 +367,148 @@ def call_deepseek(
 def generate_reports(
     client: OpenAI,
     model: str,
+    final_model: str,
+    mode: str,
     data_context: str,
     market_snapshot: Dict[str, Any],
     news: List[Dict[str, Any]],
     module_logs: List[str],
     request_timeout: float,
     max_retries: int,
+    analyst_workers: int = 3,
+    continue_on_error: bool = True,
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
     reports: Dict[str, str] = {}
-
-    total_modules = 8
-    module_idx = 0
+    degraded_modules: List[str] = []
 
     def run_module(
         module_name: str,
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.2,
+        model_override: str | None = None,
+        fallback_model: str | None = None,
+        fallback_text: str | None = None,
     ) -> str:
-        nonlocal module_idx
-        module_idx += 1
-        print(f"  - [{module_idx}/{total_modules}] 生成 {module_name}", flush=True)
-        return call_deepseek(
-            client=client,
-            model=model,
-            module_name=module_name,
-            module_logs=module_logs,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=temperature,
-            request_timeout=request_timeout,
-            max_retries=max_retries,
-        )
+        active_model = (model_override or model).strip()
+        print(f"  - 生成 {module_name} (model={active_model})", flush=True)
+        try:
+            return call_deepseek(
+                client=client,
+                model=active_model,
+                module_name=module_name,
+                module_logs=module_logs,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                request_timeout=request_timeout,
+                max_retries=max_retries,
+            )
+        except Exception as e:
+            module_logs.append(
+                f"[{datetime.now().isoformat()}] module_error name={module_name} model={active_model} err={e}"
+            )
+            if fallback_model and fallback_model != active_model:
+                try:
+                    module_logs.append(
+                        f"[{datetime.now().isoformat()}] module_fallback_retry name={module_name} model={fallback_model}"
+                    )
+                    retry_text = call_deepseek(
+                        client=client,
+                        model=fallback_model,
+                        module_name=f"{module_name}_fallback",
+                        module_logs=module_logs,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=temperature,
+                        request_timeout=request_timeout,
+                        max_retries=max(1, min(2, max_retries)),
+                    )
+                    degraded_modules.append(module_name)
+                    return (
+                        f"> 注意：模块 `{module_name}` 主模型 `{active_model}` 失败，已降级到 `{fallback_model}`。\n\n"
+                        + retry_text
+                    )
+                except Exception as e2:
+                    module_logs.append(
+                        f"[{datetime.now().isoformat()}] module_fallback_fail name={module_name} model={fallback_model} err={e2}"
+                    )
+                    if not continue_on_error:
+                        raise
+                    degraded_modules.append(module_name)
+                    return fallback_text or (
+                        f"# {module_name}\n\n"
+                        "## 降级说明\n\n"
+                        f"- 模块失败并降级输出\n- 错误：`{str(e2)[:300]}`\n\n"
+                        "## 临时结论\n\n"
+                        "该模块未获得完整结果，请参考其余模块并稍后重跑。\n"
+                    )
 
-    market_report = run_module(
-        module_name="market_report",
-        system_prompt="你是市场技术分析师。必须用中文Markdown输出，数据不足时明确写出。",
-        user_prompt=(
-            "请生成 market_report.md 内容，聚焦技术面和行情：\n"
-            "- 均线、近期涨跌、成交量变化\n"
-            "- 支撑位/压力位\n"
-            "- 结尾给出技术面倾向（偏多/中性/偏空）\n\n"
-            f"{data_context}"
-        ),
-    )
-    reports["market_report.md"] = market_report
+            if not continue_on_error:
+                raise
+            degraded_modules.append(module_name)
+            return fallback_text or (
+                f"# {module_name}\n\n"
+                "## 降级说明\n\n"
+                f"- 模块失败并降级输出\n- 错误：`{str(e)[:300]}`\n\n"
+                "## 临时结论\n\n"
+                "该模块未获得完整结果，请参考其余模块并稍后重跑。\n"
+            )
 
-    fundamentals_report = run_module(
-        module_name="fundamentals_report",
-        system_prompt="你是基本面分析师。必须用中文Markdown输出。",
-        user_prompt=(
-            "请生成 fundamentals_report.md 内容：\n"
-            "- 公司/标的性质（若是ETF请明确）\n"
-            "- 估值与财务指标解读（PE/PB/市值/股息/beta等）\n"
-            "- 指标缺失时请说明并给出保守判断\n"
-            "- 给出中短期基本面结论\n\n"
-            f"{data_context}"
+    # 1) 并行分析师模块（核心提速点）
+    analyst_prompts = {
+        "market_report": (
+            "你是市场技术分析师。必须用中文Markdown输出，数据不足时明确写出。",
+            (
+                "请生成 market_report.md 内容，聚焦技术面和行情：\n"
+                "- 均线、近期涨跌、成交量变化\n"
+                "- 支撑位/压力位\n"
+                "- 结尾给出技术面倾向（偏多/中性/偏空）\n\n"
+                f"{data_context}"
+            ),
         ),
-    )
-    reports["fundamentals_report.md"] = fundamentals_report
+        "fundamentals_report": (
+            "你是基本面分析师。必须用中文Markdown输出。",
+            (
+                "请生成 fundamentals_report.md 内容：\n"
+                "- 公司/标的性质（若是ETF请明确）\n"
+                "- 估值与财务指标解读（PE/PB/市值/股息/beta等）\n"
+                "- 指标缺失时请说明并给出保守判断\n"
+                "- 给出中短期基本面结论\n\n"
+                f"{data_context}"
+            ),
+        ),
+        "news_report": (
+            "你是新闻事件分析师。必须用中文Markdown输出。",
+            (
+                "请生成 news_report.md 内容：\n"
+                "- 列出最近关键新闻（无新闻就写'暂无高相关新闻'）\n"
+                "- 评估对价格可能影响（短期/中期）\n"
+                "- 给出新闻面情绪判断（偏多/中性/偏空）\n\n"
+                f"{data_context}"
+            ),
+        ),
+    }
 
-    news_report = run_module(
-        module_name="news_report",
-        system_prompt="你是新闻事件分析师。必须用中文Markdown输出。",
-        user_prompt=(
-            "请生成 news_report.md 内容：\n"
-            "- 列出最近关键新闻（无新闻就写'暂无高相关新闻'）\n"
-            "- 评估对价格可能影响（短期/中期）\n"
-            "- 给出新闻面情绪判断（偏多/中性/偏空）\n\n"
-            f"{data_context}"
-        ),
-    )
-    reports["news_report.md"] = news_report
+    workers = max(1, min(analyst_workers, 3))
+    print(f"  - [并行] 分析师模块 workers={workers}", flush=True)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        fut_map = {
+            pool.submit(
+                run_module,
+                module_name=name,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            ): name
+            for name, (system_prompt, user_prompt) in analyst_prompts.items()
+        }
+        for fut in as_completed(fut_map):
+            name = fut_map[fut]
+            reports[f"{name}.md"] = fut.result()
+
+    market_report = reports.get("market_report.md", "")
+    fundamentals_report = reports.get("fundamentals_report.md", "")
+    news_report = reports.get("news_report.md", "")
 
     research_team_decision = run_module(
         module_name="research_team_decision",
@@ -429,9 +572,20 @@ def generate_reports(
     )
     reports["risk_management_decision.md"] = risk_management_decision
 
-    # 结构化最终决策
+    # 结构化最终决策：可用 reasoner，失败自动降级到主模型
     raw_final_json = run_module(
         module_name="final_trade_decision_json",
+        model_override=final_model,
+        fallback_model=model if final_model != model else None,
+        fallback_text=(
+            '{\n'
+            '  "action": "持有",\n'
+            '  "confidence": 0.55,\n'
+            '  "risk_score": 0.50,\n'
+            '  "target_price_range": "待确认",\n'
+            '  "reasoning": "最终决策模块超时，已按保守策略输出中性建议。"\n'
+            '}'
+        ),
         system_prompt="你是投资决策结构化助手，只返回JSON，不要返回markdown。",
         user_prompt=(
             "请仅返回一个JSON对象，字段必须完整：\n"
@@ -480,6 +634,10 @@ def generate_reports(
         "risk_score": to_float(decision.get("risk_score", 0.42), 0.42),
         "target_price_range": str(decision.get("target_price_range", "待进一步确认")).strip(),
         "reasoning": str(decision.get("reasoning", "基于综合分析给出中性建议")).strip(),
+        "mode": mode,
+        "model_main": model,
+        "model_final": final_model,
+        "degraded_modules": degraded_modules,
     }
 
     final_trade_decision_md = (
@@ -487,7 +645,8 @@ def generate_reports(
         f"- **建议动作**: {decision_obj['action']}\n"
         f"- **置信度**: {decision_obj['confidence']:.2f}\n"
         f"- **风险评分**: {decision_obj['risk_score']:.2f}\n"
-        f"- **目标区间**: {decision_obj['target_price_range']}\n\n"
+        f"- **目标区间**: {decision_obj['target_price_range']}\n"
+        f"- **执行模式**: {decision_obj['mode']}（主模型: {decision_obj['model_main']} / 最终模型: {decision_obj['model_final']}）\n\n"
         "## 决策理由\n\n"
         f"{decision_obj['reasoning']}\n"
     )
@@ -529,6 +688,12 @@ def generate_reports(
         "## 8. 最终交易决策\n\n"
         f"{final_trade_decision_md}\n"
     )
+    if degraded_modules:
+        final_report += (
+            "\n## 降级记录\n\n"
+            f"- 以下模块发生超时/错误并已自动降级继续：{'、'.join(degraded_modules)}\n"
+            "- 建议网络稳定后再次运行以获得更完整结果。\n"
+        )
     reports["final_report.md"] = final_report
 
     return reports, decision_obj
@@ -735,6 +900,129 @@ def markdown_to_simple_html(md_text: str, title: str) -> str:
     )
 
 
+def markdown_to_html_fragment(md_text: str) -> str:
+    cleaned = normalize_report_markdown(md_text)
+    if not cleaned:
+        return "<p>无内容</p>"
+    try:
+        import markdown as mdlib  # type: ignore
+
+        return mdlib.markdown(
+            cleaned,
+            extensions=["extra", "tables", "fenced_code", "sane_lists", "nl2br"],
+            output_format="html5",
+        )
+    except Exception:
+        return "<p>" + html.escape(cleaned).replace("\n", "<br/>") + "</p>"
+
+
+def build_share_html(
+    user_symbol: str,
+    analysis_date: str,
+    decision_obj: Dict[str, Any],
+    reports: Dict[str, str],
+    market_snapshot: Dict[str, Any],
+) -> str:
+    latest = market_snapshot.get("latest", {})
+    technical = market_snapshot.get("technical", {})
+    fundamentals = market_snapshot.get("fundamentals", {})
+
+    action = str(decision_obj.get("action", "持有"))
+    action_class = {
+        "买入": "buy",
+        "持有": "hold",
+        "卖出": "sell",
+    }.get(action, "hold")
+
+    def fmt_pct(v: Any) -> str:
+        try:
+            return f"{float(v) * 100:.2f}%"
+        except Exception:
+            return "N/A"
+
+    modules = [
+        ("市场分析", reports.get("market_report.md", "")),
+        ("基本面分析", reports.get("fundamentals_report.md", "")),
+        ("新闻分析", reports.get("news_report.md", "")),
+        ("研究团队决策", reports.get("research_team_decision.md", "")),
+        ("投资计划", reports.get("investment_plan.md", "")),
+        ("交易执行计划", reports.get("trader_investment_plan.md", "")),
+        ("风险管理", reports.get("risk_management_decision.md", "")),
+        ("最终交易决策", reports.get("final_trade_decision.md", "")),
+    ]
+
+    module_blocks = []
+    for title, text in modules:
+        module_blocks.append(
+            "<details class='module-card'>"
+            f"<summary>{html.escape(title)}</summary>"
+            f"<div class='module-body'>{markdown_to_html_fragment(text)}</div>"
+            "</details>"
+        )
+
+    return (
+        "<!doctype html><html lang='zh-CN'><head>"
+        "<meta charset='utf-8'/>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'/>"
+        f"<title>{html.escape(user_symbol)} 投资分析简报</title>"
+        "<style>"
+        ":root{--bg:#f4f7fb;--card:#fff;--text:#0f172a;--muted:#64748b;--border:#dbe3ee;"
+        "--buy:#16a34a;--hold:#f59e0b;--sell:#dc2626;--primary:#2563eb;}"
+        "body{margin:0;background:linear-gradient(165deg,#eef3ff,#f8fbff 38%,#f4f7fb);color:var(--text);"
+        "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;}"
+        ".wrap{max-width:980px;margin:0 auto;padding:18px;}"
+        ".hero{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px 18px;"
+        "box-shadow:0 12px 24px rgba(15,23,42,.08);}"
+        ".top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;}"
+        ".title{font-size:28px;font-weight:800;margin:0;}"
+        ".sub{margin:6px 0 0;color:var(--muted);font-size:14px;}"
+        ".badge{padding:7px 14px;border-radius:999px;color:#fff;font-weight:700;font-size:14px;}"
+        ".badge.buy{background:var(--buy);} .badge.hold{background:var(--hold);} .badge.sell{background:var(--sell);}"
+        ".kpi{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:10px;margin-top:12px;}"
+        ".kpi .item{background:#f8fbff;border:1px solid var(--border);border-radius:12px;padding:10px;}"
+        ".kpi .label{font-size:12px;color:var(--muted);} .kpi .val{font-size:18px;font-weight:700;margin-top:4px;}"
+        ".reason{margin-top:12px;background:#f8fbff;border:1px solid var(--border);border-radius:12px;padding:12px;line-height:1.75;}"
+        ".module-list{margin-top:14px;display:grid;gap:10px;}"
+        ".module-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:0 12px;}"
+        ".module-card > summary{cursor:pointer;list-style:none;padding:13px 2px;font-size:17px;font-weight:700;}"
+        ".module-card > summary::-webkit-details-marker{display:none;}"
+        ".module-body{border-top:1px dashed var(--border);padding:12px 2px 14px;line-height:1.75;}"
+        ".module-body table{border-collapse:collapse;width:100%;font-size:14px;margin:10px 0;}"
+        ".module-body th,.module-body td{border:1px solid #d4dbe5;padding:8px;text-align:left;vertical-align:top;}"
+        ".module-body th{background:#f3f6fb;}"
+        ".module-body code{background:#eef2f7;padding:2px 5px;border-radius:6px;}"
+        ".module-body pre{overflow:auto;background:#0f172a;color:#e2e8f0;padding:12px;border-radius:10px;}"
+        ".foot{margin:16px 0 4px;color:var(--muted);font-size:13px;text-align:center;}"
+        "@media (max-width:840px){.title{font-size:23px;}.kpi{grid-template-columns:repeat(2,minmax(120px,1fr));}}"
+        "</style></head><body><div class='wrap'>"
+        "<section class='hero'>"
+        "<div class='top'>"
+        f"<div><h1 class='title'>{html.escape(user_symbol)} 投资分析简报</h1>"
+        f"<p class='sub'>分析日期：{html.escape(analysis_date)} | 模式：{html.escape(str(decision_obj.get('mode', 'quick')))}</p></div>"
+        f"<span class='badge {action_class}'>建议：{html.escape(action)}</span>"
+        "</div>"
+        "<div class='kpi'>"
+        f"<div class='item'><div class='label'>置信度</div><div class='val'>{float(decision_obj.get('confidence', 0)):.2f}</div></div>"
+        f"<div class='item'><div class='label'>风险评分</div><div class='val'>{float(decision_obj.get('risk_score', 0)):.2f}</div></div>"
+        f"<div class='item'><div class='label'>近1周涨跌</div><div class='val'>{fmt_pct(technical.get('change_1w'))}</div></div>"
+        f"<div class='item'><div class='label'>近1月涨跌</div><div class='val'>{fmt_pct(technical.get('change_1m'))}</div></div>"
+        "</div>"
+        "<div class='kpi'>"
+        f"<div class='item'><div class='label'>最新收盘</div><div class='val'>{html.escape(str(latest.get('close', 'N/A')))}</div></div>"
+        f"<div class='item'><div class='label'>目标区间</div><div class='val'>{html.escape(str(decision_obj.get('target_price_range', '待确认')))}</div></div>"
+        f"<div class='item'><div class='label'>行业</div><div class='val'>{html.escape(str(fundamentals.get('industry', 'N/A')))}</div></div>"
+        f"<div class='item'><div class='label'>市值</div><div class='val'>{html.escape(str(fundamentals.get('marketCap', 'N/A')))}</div></div>"
+        "</div>"
+        f"<div class='reason'><strong>核心理由：</strong>{html.escape(str(decision_obj.get('reasoning', '无')))}</div>"
+        "</section>"
+        "<section class='module-list'>"
+        + "".join(module_blocks) +
+        "</section>"
+        "<p class='foot'>风险提示：仅供学习交流，不构成投资建议。</p>"
+        "</div></body></html>"
+    )
+
+
 def export_docx_from_markdown(md_text: str, out_path: Path) -> bool:
     try:
         from docx import Document  # type: ignore
@@ -814,9 +1102,13 @@ def write_outputs(
         "timestamp": datetime.now().isoformat(),
         "status": "completed",
         "market_type": market_type,
-        "research_depth": 3,
+        "research_depth": 3 if decision_obj.get("mode") == "deep" else 1,
         "analysts": ["market", "fundamentals", "news"],
         "model": model,
+        "mode": decision_obj.get("mode", "quick"),
+        "model_main": decision_obj.get("model_main", model),
+        "model_final": decision_obj.get("model_final", model),
+        "degraded_modules": decision_obj.get("degraded_modules", []),
         "generator": "minimal_deepseek_report.py",
         "reports_count": len(report_types),
         "report_types": report_types,
@@ -825,9 +1117,6 @@ def write_outputs(
     (stock_root / "analysis_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-    # 兼容原项目目录习惯
-    (stock_root / "message_tool.log").write_text("\n".join(module_logs) + "\n", encoding="utf-8")
 
     # 便于微信/IM转发的简版输出
     share_dir = stock_root / "share"
@@ -839,15 +1128,22 @@ def write_outputs(
         reports=reports,
         market_snapshot=market_snapshot,
     )
-    share_md_path = share_dir / "wechat_share.md"
-    share_html_path = share_dir / "wechat_share.html"
-    share_txt_path = share_dir / "wechat_share.txt"
-    share_docx_path = share_dir / "wechat_share.docx"
+    share_base = f"{user_symbol}_{analysis_date}_share"
+    share_md_path = share_dir / f"{share_base}.md"
+    share_html_path = share_dir / f"{share_base}.html"
+    share_txt_path = share_dir / f"{share_base}.txt"
+    share_docx_path = share_dir / f"{share_base}.docx"
 
     share_md_path.write_text(share_md, encoding="utf-8")
     share_txt_path.write_text(share_md, encoding="utf-8")
     share_html_path.write_text(
-        markdown_to_simple_html(share_md, title=f"{user_symbol} 投资分析简报"),
+        build_share_html(
+            user_symbol=user_symbol,
+            analysis_date=analysis_date,
+            decision_obj=decision_obj,
+            reports=reports,
+            market_snapshot=market_snapshot,
+        ),
         encoding="utf-8",
     )
 
@@ -855,6 +1151,9 @@ def write_outputs(
         module_logs.append(f"[{datetime.now().isoformat()}] share_docx ok path={share_docx_path}")
     else:
         module_logs.append(f"[{datetime.now().isoformat()}] share_docx skip reason=python-docx not installed")
+
+    # 兼容原项目目录习惯（在最后写，保证包含完整日志）
+    (stock_root / "message_tool.log").write_text("\n".join(module_logs) + "\n", encoding="utf-8")
 
     return stock_root
 
@@ -873,6 +1172,17 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         help="DeepSeek模型，可选 deepseek-chat / deepseek-reasoner，默认 deepseek-chat",
     )
+    parser.add_argument(
+        "--mode",
+        default=os.getenv("TA_MIN_MODE", "quick"),
+        choices=["quick", "deep"],
+        help="分析模式：quick（默认，快）/ deep（深度）",
+    )
+    parser.add_argument(
+        "--final-model",
+        default=os.getenv("DEEPSEEK_FINAL_MODEL", ""),
+        help="最终决策模型，不传则 quick=跟随主模型，deep=deepseek-reasoner",
+    )
     parser.add_argument("--api-key", default="", help="DeepSeek API Key，不传则读取 DEEPSEEK_API_KEY")
     parser.add_argument(
         "--base-url",
@@ -888,14 +1198,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--request-timeout",
         type=float,
-        default=float(os.getenv("DEEPSEEK_REQUEST_TIMEOUT", "45")),
-        help="单次模型请求超时秒数，默认45秒",
+        default=None,
+        help="单次模型请求超时秒数；未设置时 quick=45, deep=120",
     )
     parser.add_argument(
         "--retries",
         type=int,
-        default=int(os.getenv("DEEPSEEK_RETRIES", "2")),
-        help="单模块重试次数，默认2次",
+        default=None,
+        help="单模块重试次数；未设置时 quick=1, deep=2",
+    )
+    parser.add_argument(
+        "--analyst-workers",
+        type=int,
+        default=int(os.getenv("TA_MIN_ANALYST_WORKERS", "3")),
+        help="分析师并发数（1-3），默认3",
+    )
+    parser.add_argument(
+        "--cache-ttl-hours",
+        type=float,
+        default=float(os.getenv("TA_MIN_CACHE_TTL_HOURS", "12")),
+        help="行情/新闻缓存有效期（小时），默认12",
+    )
+    parser.add_argument(
+        "--disable-cache",
+        action="store_true",
+        help="禁用行情/新闻缓存",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="严格模式：任一模块失败即退出（默认关闭，默认会自动降级继续）",
     )
     return parser.parse_args()
 
@@ -910,6 +1242,17 @@ def main() -> int:
         "deepseek_reasoner": "deepseek-reasoner",
     }
     args.model = model_alias.get(args.model.strip().lower(), args.model.strip())
+    args.mode = (args.mode or "quick").strip().lower()
+    if args.mode not in {"quick", "deep"}:
+        args.mode = "quick"
+    args.final_model = model_alias.get(args.final_model.strip().lower(), args.final_model.strip()) if args.final_model else ""
+    if not args.final_model:
+        args.final_model = "deepseek-reasoner" if args.mode == "deep" else args.model
+
+    if args.request_timeout is None:
+        args.request_timeout = 120.0 if args.mode == "deep" else 45.0
+    if args.retries is None:
+        args.retries = 2 if args.mode == "deep" else 1
 
     try:
         datetime.strptime(args.analysis_date, "%Y-%m-%d")
@@ -924,11 +1267,18 @@ def main() -> int:
     results_dir = Path(args.results_dir)
     if not results_dir.is_absolute():
         results_dir = project_root / results_dir
+    cache_dir = results_dir / "_cache"
+    cache_ttl_seconds = max(0, int(args.cache_ttl_hours * 3600))
+    ensure_dir(cache_dir)
 
     user_symbol, yf_symbol = normalize_symbol(args.stock_symbol)
 
     module_logs: List[str] = []
-    module_logs.append(f"[{datetime.now().isoformat()}] start symbol={user_symbol} preferred={yf_symbol} date={args.analysis_date}")
+    module_logs.append(
+        f"[{datetime.now().isoformat()}] start symbol={user_symbol} preferred={yf_symbol} "
+        f"date={args.analysis_date} mode={args.mode} model={args.model} final_model={args.final_model} "
+        f"timeout={args.request_timeout} retries={args.retries} cache={'off' if args.disable_cache else 'on'} ttl_s={cache_ttl_seconds}"
+    )
 
     # 1) 行情
     last_error: Exception | None = None
@@ -943,7 +1293,14 @@ def main() -> int:
                 f"[1/6] 获取行情数据: {sym} (候选 {idx}/{len(symbols_to_try)}, 重试 {retry}/{per_symbol_retries})"
             )
             try:
-                market_snapshot = fetch_market_data(sym, args.analysis_date)
+                market_snapshot = fetch_market_data_cached(
+                    yf_symbol=sym,
+                    as_of_date=args.analysis_date,
+                    cache_dir=cache_dir,
+                    module_logs=module_logs,
+                    cache_ttl_seconds=cache_ttl_seconds,
+                    disable_cache=args.disable_cache,
+                )
                 symbol_used = sym
                 break
             except Exception as e:
@@ -964,12 +1321,21 @@ def main() -> int:
 
     # 2) 新闻
     print(f"[2/6] 获取新闻数据: {symbol_used}")
-    news = fetch_news(symbol_used, max_news=args.max_news)
+    news = fetch_news_cached(
+        yf_symbol=symbol_used,
+        max_news=args.max_news,
+        cache_dir=cache_dir,
+        module_logs=module_logs,
+        cache_ttl_seconds=cache_ttl_seconds,
+        disable_cache=args.disable_cache,
+    )
     module_logs.append(f"[{datetime.now().isoformat()}] news_fetch ok count={len(news)}")
 
     # 3) DeepSeek多模块生成
     print(
-        f"[3/6] 调用 DeepSeek 生成多模块报告 (model={args.model}, timeout={args.request_timeout}s, retries={args.retries})"
+        f"[3/6] 调用 DeepSeek 生成多模块报告 "
+        f"(mode={args.mode}, model={args.model}, final_model={args.final_model}, "
+        f"timeout={args.request_timeout}s, retries={args.retries})"
     )
     client = OpenAI(api_key=api_key, base_url=args.base_url, max_retries=0)
 
@@ -985,12 +1351,16 @@ def main() -> int:
     reports, decision_obj = generate_reports(
         client=client,
         model=args.model,
+        final_model=args.final_model,
+        mode=args.mode,
         data_context=data_context,
         market_snapshot=market_snapshot,
         news=news,
         module_logs=module_logs,
         request_timeout=args.request_timeout,
         max_retries=args.retries,
+        analyst_workers=args.analyst_workers,
+        continue_on_error=not args.strict,
     )
 
     # 4) 写文件
@@ -1012,6 +1382,8 @@ def main() -> int:
     # 5) 输出摘要
     print("[5/6] 生成摘要")
     print(f"  - 最终建议: {decision_obj.get('action')} | 目标区间: {decision_obj.get('target_price_range')}")
+    if decision_obj.get("degraded_modules"):
+        print(f"  - 自动降级模块: {', '.join(decision_obj.get('degraded_modules', []))}")
 
     # 6) 完成
     print("[6/6] 完成")
@@ -1019,9 +1391,10 @@ def main() -> int:
     print(f"目录: {out_dir}")
     print(f"主报告: {out_dir / 'reports' / 'final_report.md'}")
     print(f"最终决策: {out_dir / 'reports' / 'final_trade_decision.md'}")
-    print(f"转发简版(MD): {out_dir / 'share' / 'wechat_share.md'}")
-    print(f"转发简版(HTML): {out_dir / 'share' / 'wechat_share.html'}")
-    print(f"转发简版(Word): {out_dir / 'share' / 'wechat_share.docx'}")
+    share_base = f"{user_symbol}_{args.analysis_date}_share"
+    print(f"转发简版(MD): {out_dir / 'share' / f'{share_base}.md'}")
+    print(f"转发简版(HTML): {out_dir / 'share' / f'{share_base}.html'}")
+    print(f"转发简版(Word): {out_dir / 'share' / f'{share_base}.docx'}")
     return 0
 
 

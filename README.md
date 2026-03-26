@@ -2,7 +2,7 @@
 
 一个可独立部署的极简股票分析工具：
 - 输入股票代码
-- 调用 DeepSeek 生成多模块报告
+- 调用 DeepSeek 生成多模块报告（支持 quick/deep 双模式）
 - 导出可转发分享页（HTML/Word）
 
 ## 目录
@@ -27,22 +27,18 @@ bash start.sh web
 - 安装 `requirements.txt`
 - 生成 `.env`（若不存在）
 
-然后你只需要在 `.env` 填入：
-- `DEEPSEEK_API_KEY=sk-xxxx`
-
-再次运行：
-
-```bash
-bash start.sh web
-```
-
 访问：`http://127.0.0.1:8600`
+
+说明：
+- 可以直接在 Web 页面填写 `API Key`（无需先改 `.env`）
+- 页面可选 `quick`（更快）/`deep`（更深度）
 
 ## 一键 CLI
 
 ```bash
-bash start.sh cli 600028
-bash start.sh cli 518880 --reasoner --request-timeout 120 --retries 2
+bash start.sh cli 600028 --quick
+bash start.sh cli 518880 --deep
+bash start.sh cli 000630 --mode deep --final-model deepseek-reasoner --request-timeout 120 --retries 2
 ```
 
 ## 传统方式（手动）
@@ -72,6 +68,8 @@ CLI：
 
 ```bash
 bash scripts/run_minimal_deepseek.sh 600028 --request-timeout 120 --retries 2
+bash scripts/run_minimal_deepseek.sh 600028 --quick
+bash scripts/run_minimal_deepseek.sh 600028 --deep
 ```
 
 ## 输出
@@ -83,3 +81,14 @@ bash scripts/run_minimal_deepseek.sh 600028 --request-timeout 120 --retries 2
 分享文件在：
 
 `results/<股票代码>/<日期>/share/wechat_share.html`
+
+缓存文件在：
+
+`results/_cache/`
+
+## 速度与稳定性策略
+
+- `quick` 模式：默认更快（建议日常用）
+- `deep` 模式：最终决策默认用 `deepseek-reasoner`
+- 分析师模块并行执行（市场/基本面/新闻）
+- 模块失败自动降级继续输出（可用 `--strict` 改为失败即退出）

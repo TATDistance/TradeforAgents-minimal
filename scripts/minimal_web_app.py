@@ -27,8 +27,9 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 class AnalyzeRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=64)
+    mode: str = Field(default="quick")
     model: str = Field(default="deepseek-chat")
-    request_timeout: float = Field(default=120.0, ge=10.0, le=600.0)
+    request_timeout: float = Field(default=60.0, ge=10.0, le=600.0)
     retries: int = Field(default=2, ge=0, le=5)
     api_key: str = Field(default="", max_length=256)
     base_url: str = Field(default="", max_length=256)
@@ -38,6 +39,7 @@ class AnalyzeRequest(BaseModel):
 class TaskState:
     task_id: str
     symbol: str
+    mode: str
     model: str
     status: str = "queued"  # queued|running|done|failed
     started_at: Optional[str] = None
@@ -83,6 +85,8 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
         req.symbol.strip(),
         "--date",
         analysis_date,
+        "--mode",
+        req.mode.strip(),
         "--model",
         req.model.strip(),
         "--request-timeout",
@@ -129,7 +133,10 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
         bufsize=1,
     )
 
-    _append_output(task_id, f"[web] 任务开始: {req.symbol.strip().upper()} model={req.model}\n")
+    _append_output(
+        task_id,
+        f"[web] 任务开始: {req.symbol.strip().upper()} mode={req.mode} model={req.model}\n",
+    )
 
     try:
         assert proc.stdout is not None
@@ -145,8 +152,11 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
     proc.wait()
 
     symbol = req.symbol.strip().upper()
-    share_rel = f"/results/{symbol}/{analysis_date}/share/wechat_share.html"
-    share_abs = RESULTS_DIR / symbol / analysis_date / "share" / "wechat_share.html"
+    share_filename = f"{symbol}_{analysis_date}_share.html"
+    share_rel = f"/results/{symbol}/{analysis_date}/share/{share_filename}"
+    share_abs = RESULTS_DIR / symbol / analysis_date / "share" / share_filename
+    legacy_share_rel = f"/results/{symbol}/{analysis_date}/share/wechat_share.html"
+    legacy_share_abs = RESULTS_DIR / symbol / analysis_date / "share" / "wechat_share.html"
 
     with TASK_LOCK:
         task = TASKS[task_id]
@@ -155,6 +165,9 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
         if proc.returncode == 0 and share_abs.exists():
             task.status = "done"
             task.share_url = share_rel
+        elif proc.returncode == 0 and legacy_share_abs.exists():
+            task.status = "done"
+            task.share_url = legacy_share_rel
         else:
             task.status = "failed"
             task.error = "分析失败，请查看日志输出"
@@ -193,6 +206,13 @@ def index() -> str:
     <p style="margin:6px 0 0;color:#64748b;font-size:13px;">这里只填股票代码，不要输入命令。示例：<code>600028</code></p>
     <div class="row" style="margin-top:10px">
       <div>
+        <label>分析模式</label>
+        <select id="mode">
+          <option value="quick" selected>quick（推荐，快）</option>
+          <option value="deep">deep（更深度，更慢）</option>
+        </select>
+      </div>
+      <div>
         <label>模型</label>
         <select id="model">
           <option value="deepseek-chat">deepseek-chat</option>
@@ -201,7 +221,7 @@ def index() -> str:
       </div>
       <div>
         <label>超时(秒)</label>
-        <input id="timeout" type="number" value="120" />
+        <input id="timeout" type="number" value="60" />
       </div>
     </div>
     <div class="row" style="margin-top:10px">
@@ -227,6 +247,7 @@ def index() -> str:
   <script>
     const go = document.getElementById('go');
     const symbol = document.getElementById('symbol');
+    const mode = document.getElementById('mode');
     const model = document.getElementById('model');
     const timeout = document.getElementById('timeout');
     const apiKey = document.getElementById('apiKey');
@@ -258,13 +279,25 @@ def index() -> str:
 
     // 浏览器本地保存（仅当前浏览器）
     apiKey.value = localStorage.getItem('ta_min_api_key') || '';
+    mode.value = localStorage.getItem('ta_min_mode') || 'quick';
     const savedBaseUrl = localStorage.getItem('ta_min_base_url');
     if(savedBaseUrl){
       const exists = Array.from(baseUrl.options).some(opt => opt.value === savedBaseUrl);
       if(exists) baseUrl.value = savedBaseUrl;
     }
     apiKey.onchange = () => localStorage.setItem('ta_min_api_key', apiKey.value.trim());
+    mode.onchange = () => {
+      localStorage.setItem('ta_min_mode', mode.value);
+      if(mode.value === 'deep'){
+        if(Number(timeout.value || 0) < 120) timeout.value = '120';
+      }else{
+        if(Number(timeout.value || 0) > 120) timeout.value = '60';
+      }
+    };
     baseUrl.onchange = () => localStorage.setItem('ta_min_base_url', baseUrl.value);
+    if(mode.value === 'quick' && Number(timeout.value || 0) > 120){
+      timeout.value = '60';
+    }
 
     function elapsedText(startedAt){
       if(!startedAt) return '';
@@ -326,9 +359,10 @@ def index() -> str:
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
           symbol: normalizedSymbol,
+          mode: mode.value,
           model: model.value,
           request_timeout: Number(timeout.value || 120),
-          retries: 2,
+          retries: mode.value === 'deep' ? 2 : 1,
           api_key: apiKey.value.trim(),
           base_url: baseUrl.value
         })
@@ -352,6 +386,9 @@ def index() -> str:
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest) -> Dict[str, str]:
     symbol = req.symbol.strip().upper()
+    mode = req.mode.strip().lower() or "quick"
+    if mode not in {"quick", "deep"}:
+        raise HTTPException(status_code=400, detail="mode 仅支持 quick 或 deep")
     if not symbol:
         raise HTTPException(status_code=400, detail="股票代码不能为空")
     if not re.fullmatch(r"[A-Z0-9.\-]{1,20}", symbol):
@@ -360,7 +397,8 @@ def analyze(req: AnalyzeRequest) -> Dict[str, str]:
             detail="股票代码格式错误。请只输入代码，例如 600028 / 000630 / 518880 / AAPL / 0700.HK",
         )
     task_id = uuid.uuid4().hex[:12]
-    state = TaskState(task_id=task_id, symbol=symbol, model=req.model)
+    req.mode = mode
+    state = TaskState(task_id=task_id, symbol=symbol, mode=mode, model=req.model)
     with TASK_LOCK:
         TASKS[task_id] = state
     thread = threading.Thread(target=_run_task, args=(task_id, req), daemon=True)
