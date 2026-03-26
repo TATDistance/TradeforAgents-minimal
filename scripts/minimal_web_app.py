@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
@@ -25,7 +26,7 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class AnalyzeRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=20)
+    symbol: str = Field(..., min_length=1, max_length=64)
     model: str = Field(default="deepseek-chat")
     request_timeout: float = Field(default=120.0, ge=10.0, le=600.0)
     retries: int = Field(default=2, ge=0, le=5)
@@ -183,6 +184,7 @@ def index() -> str:
   <div class="card">
     <label>股票代码</label>
     <input id="symbol" placeholder="例如 000630 / 600028 / 518880" />
+    <p style="margin:6px 0 0;color:#64748b;font-size:13px;">这里只填股票代码，不要输入命令。示例：<code>600028</code></p>
     <div class="row" style="margin-top:10px">
       <div>
         <label>模型</label>
@@ -210,6 +212,27 @@ def index() -> str:
     const statusEl = document.getElementById('status');
     const linkEl = document.getElementById('link');
     const logEl = document.getElementById('log');
+
+    function formatErrorDetail(detail){
+      if(!detail) return 'unknown error';
+      if(typeof detail === 'string') return detail;
+      if(Array.isArray(detail)){
+        return detail.map(x => x.msg || JSON.stringify(x)).join('; ');
+      }
+      if(typeof detail === 'object'){
+        return detail.msg || JSON.stringify(detail);
+      }
+      return String(detail);
+    }
+
+    function normalizeSymbolInput(raw){
+      return (raw || '').trim().toUpperCase();
+    }
+
+    function validateSymbolInput(sym){
+      // 允许示例: 600028 / 000630 / 518880 / AAPL / 0700.HK / 600028.SS
+      return /^[A-Z0-9.\-]{1,20}$/.test(sym);
+    }
 
     function elapsedText(startedAt){
       if(!startedAt) return '';
@@ -247,8 +270,13 @@ def index() -> str:
     }
 
     go.onclick = async () => {
-      if(!symbol.value.trim()){
+      const normalizedSymbol = normalizeSymbolInput(symbol.value);
+      if(!normalizedSymbol){
         alert('请输入股票代码');
+        return;
+      }
+      if(!validateSymbolInput(normalizedSymbol)){
+        alert('股票代码格式错误。请只输入代码，例如 600028 或 AAPL');
         return;
       }
       go.disabled = true;
@@ -261,7 +289,7 @@ def index() -> str:
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
-          symbol: symbol.value.trim(),
+          symbol: normalizedSymbol,
           model: model.value,
           request_timeout: Number(timeout.value || 120),
           retries: 2
@@ -271,7 +299,7 @@ def index() -> str:
       if(!resp.ok){
         statusEl.className = 'err';
         statusEl.textContent = '提交失败';
-        linkEl.textContent = data.detail || 'error';
+        linkEl.textContent = formatErrorDetail(data.detail);
         go.disabled = false;
         return;
       }
@@ -285,11 +313,16 @@ def index() -> str:
 
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest) -> Dict[str, str]:
-    symbol = req.symbol.strip()
+    symbol = req.symbol.strip().upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="股票代码不能为空")
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,20}", symbol):
+        raise HTTPException(
+            status_code=400,
+            detail="股票代码格式错误。请只输入代码，例如 600028 / 000630 / 518880 / AAPL / 0700.HK",
+        )
     task_id = uuid.uuid4().hex[:12]
-    state = TaskState(task_id=task_id, symbol=symbol.upper(), model=req.model)
+    state = TaskState(task_id=task_id, symbol=symbol, model=req.model)
     with TASK_LOCK:
         TASKS[task_id] = state
     thread = threading.Thread(target=_run_task, args=(task_id, req), daemon=True)
