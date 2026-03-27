@@ -1,58 +1,58 @@
-# AI Trade Workflow
+# AI 交易工作流
 
-## Overview
+## 概览
 
-This repository now includes a practical after-close workflow for China A-share trading:
+当前仓库已经内置一套面向中国 A 股盘后场景的实用工作流：
 
-1. Auto-select candidates after market close
-2. Run AI analysis on shortlisted names
-3. Convert AI output into structured signals
-4. Apply A-share risk rules
-5. Generate a next-day trade plan
-6. Run paper-trading validation
-7. Review the result and execute manually in a broker app
+1. 收盘后自动选股
+2. 对候选股执行 AI 分析
+3. 将 AI 结果转成结构化信号
+4. 应用 A 股风控规则
+5. 生成次日交易计划
+6. 运行模拟盘验证
+7. 人工查看结果并在券商 APP 中执行
 
-This is intentionally designed for:
+这套方案刻意面向以下场景：
 
-- China A-shares
-- No broker API
-- Paper-trading first
-- Manual real-account execution
+- 中国 A 股
+- 没有券商 API
+- 先做模拟盘验证
+- 最终人工实盘执行
 
-It is not designed for:
+它不打算解决：
 
-- Fully automated live trading
-- Intraday high-frequency execution
-- Broker account synchronization
+- 全自动实盘交易
+- 秒级/高频交易
+- 券商账户自动同步
 
-## Main Components
+## 主要组成部分
 
 ### 1. TradeforAgents-minimal
 
-Primary responsibilities:
+主要职责：
 
-- Single-stock AI analysis
-- Watchlist batch analysis
-- Share-page generation
-- Web UI
+- 单只股票 AI 分析
+- 股票池批量分析
+- 分享页生成
+- Web 界面展示
 
-Core files:
+核心文件：
 
 - `scripts/minimal_deepseek_report.py`
 - `scripts/minimal_web_app.py`
 
-### 2. Embedded `ai_trade_system`
+### 2. 内嵌 `ai_trade_system`
 
-Primary responsibilities:
+主要职责：
 
-- Signal ingestion
-- Risk checks
-- Paper-trading simulation
-- Daily plan generation
-- Review report generation
-- Auto-selection pipeline
+- 信号导入
+- 风控检查
+- 模拟盘执行
+- 交易计划生成
+- 复盘报告生成
+- 自动选股流水线
 
-Core modules:
+核心模块：
 
 - `ai_trade_system/engine/bridge_service.py`
 - `ai_trade_system/engine/risk_engine.py`
@@ -62,128 +62,135 @@ Core modules:
 - `ai_trade_system/engine/universe_service.py`
 - `ai_trade_system/scripts/run_auto_pipeline.py`
 
-## Default User Flow
+## 默认用户流程
 
-### Recommended path
+### 推荐路径
 
-Open the Web UI and follow this order:
+打开 Web 页面后，建议按这个顺序使用：
 
-1. Fill in `API Key`
-2. Run `自动选股与生成计划`
-3. Check `自动选股摘要`
-4. Check `候选卡片`
-5. Check `交易计划`
-6. Open share pages for names you want to review in detail
-7. Manually place orders in your broker app if the plan contains executable trades
+1. 填写 `API Key`
+2. 运行 `自动选股与生成计划`
+3. 查看 `自动选股摘要`
+4. 查看 `候选卡片`
+5. 查看 `交易计划`
+6. 打开你想重点查看的分享页
+7. 如果交易计划里有可执行信号，再去券商 APP 手动下单
 
-### What to focus on
+### 日常最该看什么
 
-If you are using the system daily, the most important outputs are:
+如果你是每天盘后使用，最重要的输出是：
 
 - `自动选股一句话总结`
 - `数据源状态`
 - `今日可执行清单`
 - `今日结论`
 
-If the plan says `今日无可执行交易`, the correct action is usually to do nothing and wait for the next cycle.
+如果页面显示：
 
-## Auto-Selection Logic
+```text
+今日无可执行交易
+```
 
-The auto-selection pipeline uses:
+通常就意味着今天最合适的动作是“不操作，继续观察下一轮”。
 
-### Base market filtering
+## 自动选股逻辑
 
-- Eastmoney public market data as the main quote source
-- Daily bars for trend and liquidity screening
-- Fallback to local snapshots if live data is unavailable
+自动选股流水线主要分两层：
 
-### Enhancement dimensions
+### 1. 基础行情筛选
 
-- Fund flow
-- Announcements
-- Financial reports
-- Industry context
+- 以东财风格公开行情为主
+- 用日线数据做趋势和流动性筛选
+- 如果在线行情不可用，允许回退到本地已有快照
 
-Enhancement failures do not stop the workflow. The UI will show a compact data-source status instead of failing the full run.
+### 2. 增强维度
 
-## Risk and Execution Model
+- 资金流
+- 公告
+- 财报
+- 行业信息
 
-### Signal states shown in the UI
+这些增强维度失败时不会终止整条流水线。  
+界面上会用简化后的“数据源状态”告诉用户，而不是直接把整次流程判成失败。
+
+## 风控与执行模型
+
+### 页面里会看到的信号状态
 
 - `可执行`
 - `观察`
 - `仅持仓者处理`
 - `风控拦截`
 
-### A-share rules already modeled
+### 已建模的 A 股规则
 
-- 100-share board lot handling
-- T+1 sell restriction
-- Position-cap checks
-- Stop-loss risk cap
-- Reject sell signals when no sellable position exists
+- 100 股整数倍
+- T+1 卖出限制
+- 单票仓位上限
+- 止损风险上限
+- 没有可卖仓位时拒绝卖出
 
-### Paper trading behavior
+### 模拟盘执行方式
 
-- Uses next-bar style validation logic
-- Maintains local cash, positions, and equity
-- Produces review reports without touching any real account
+- 使用接近 next-bar 的验证逻辑
+- 维护本地现金、持仓和权益
+- 在不接触真实账户的前提下生成复盘结果
 
-## Important Paths
+## 关键目录
 
-TradeforAgents output:
+TradeforAgents 输出：
 
 - `results/<symbol>/<date>/`
 
-Share pages:
+分享页目录：
 
 - `results/<symbol>/<date>/share/`
 
-Paper-trading database:
+模拟盘数据库：
 
 - `ai_trade_system/data/db.sqlite3`
 
-Auto-selection reports:
+自动选股报告：
 
 - `ai_trade_system/reports/auto_candidates_YYYY-MM-DD.md`
 
-Daily plans:
+每日交易计划：
 
 - `ai_trade_system/reports/daily_plan_YYYY-MM-DD.md`
 
-Review reports:
+复盘报告：
 
 - `ai_trade_system/reports/paper_review.md`
 
-## CLI Shortcuts
+## 常用命令
 
-Initialize the paper account:
+初始化模拟账户：
 
 ```bash
 python3 -m ai_trade_system.scripts.bootstrap_db --cash 100000
 ```
 
-Generate a daily plan:
+生成交易计划：
 
 ```bash
 python3 -m ai_trade_system.scripts.run_daily_plan --limit 20
 ```
 
-Run the full after-close workflow:
+运行完整盘后流程：
 
 ```bash
 python3 -m ai_trade_system.scripts.run_auto_pipeline --mode quick --execute-sim
 ```
 
-Generate a review report:
+生成复盘报告：
 
 ```bash
 python3 -m ai_trade_system.scripts.run_review
 ```
 
-## Operational Notes
+## 使用建议
 
-- `quick` is the default recommended mode
-- `deep` is useful when the shortlist is small and you are okay with waiting longer
-- The system is designed to be resilient to partial failures
-- One failed stock in a batch no longer invalidates the whole pipeline if other names succeeded
+- `quick` 是默认推荐模式
+- `deep` 更适合候选股较少、且你愿意等待更久的时候
+- 这套系统是“容错型”的
+- 批量分析里单只股票失败，不再会让整条流水线整体失效
