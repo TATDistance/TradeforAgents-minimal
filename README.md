@@ -1,100 +1,102 @@
 # TradeforAgents-minimal
 
-TradeforAgents-minimal is now a practical after-close AI trading workspace for China A-shares.
+这是一个面向中国 A 股盘后场景的 AI 交易分析工作台。
 
-It combines:
+它现在已经不只是“单只股票分析工具”，还整合了：
 
-- AI stock analysis
-- Share-page generation
-- Auto-selection after market close
-- Structured signal conversion
-- A-share risk checks
-- Paper-trading validation
-- Next-day trade planning
+- 单股 AI 分析
+- 股票池批量分析
+- 自动选股
+- 交易计划生成
+- 模拟盘验证
+- 复盘报告
+- 分享页导出
 
-The target workflow is:
+这套仓库当前最推荐的使用路径是：
 
-`收盘后选股 -> AI 分析 -> 交易计划 -> 模拟盘验证 -> 人工实盘执行`
+`收盘后自动选股 -> AI 分析候选股 -> 生成次日计划 -> 模拟盘验证 -> 人工实盘执行`
 
-## What This Project Is Good For
+## 适用场景
 
-- China A-share swing / after-close workflow
-- Personal use without broker API
-- AI-assisted stock review
-- Paper-trading first validation
-- Manual execution through a broker app
+适合：
 
-## What It Does Not Try To Do
+- 中国 A 股
+- 没有券商 API
+- 个人使用
+- 收盘后选股
+- 次日人工执行
 
-- Fully automated live trading
-- Broker account synchronization
-- Intraday high-frequency execution
-- Institutional-grade market data infrastructure
+不适合：
 
-## Main Features
+- 全自动实盘交易
+- 高频或秒级交易
+- 券商账户自动同步
 
-### 1. Web UI on port `8600`
+## 主要能力
 
-The homepage now supports:
+### 1. Web 页面
 
-- Recommended auto-selection workflow
-- Single-stock AI analysis
-- Watchlist batch analysis
-- Auto-selection result cards
-- Trade plan / paper-trading / review center
-
-Start it with:
+启动：
 
 ```bash
 bash start.sh web
 ```
 
-Then open:
+打开：
 
 ```text
 http://127.0.0.1:8600
 ```
 
-### 2. AI analysis
+首页现在支持：
 
-Supports:
+- 推荐模式：自动选股与生成计划
+- 单只股票 AI 分析
+- 股票池批量分析
+- 候选卡片查看
+- 交易计划 / 模拟盘 / 复盘中心
+
+### 2. AI 分析
+
+支持：
 
 - `quick`
 - `deep`
 
-Outputs are written to:
+分析结果输出到：
 
 ```text
 results/<股票代码>/<日期>/
 ```
 
-Important files include:
+其中常见文件包括：
 
 - `analysis_metadata.json`
 - `decision.json`
 - `message_tool.log`
 - `share/<股票代码>_<日期>_share.html`
 
-### 3. Embedded AI trade workflow
+### 3. 内嵌交易工作流
 
-This repository now includes an embedded package:
+仓库中已经内嵌：
 
 ```text
 ai_trade_system/
 ```
 
-It provides:
+它负责：
 
-- signal ingestion from `decision.json`
-- A-share risk rules
-- paper-trading simulation
-- daily trade-plan generation
-- review report generation
-- auto-selection pipeline
+- 读取 `decision.json`
+- 转成结构化交易信号
+- 做 A 股风控
+- 运行模拟盘
+- 生成每日交易计划
+- 生成复盘报告
+- 跑自动选股流水线
 
-## Quick Start
+## 快速开始
 
-### Option A: Use the Web UI
+### 方式一：直接用网页
 
 ```bash
 git clone https://github.com/TATDistance/TradeforAgents-minimal.git
@@ -102,60 +104,68 @@ cd TradeforAgents-minimal
 bash start.sh web
 ```
 
-In the page:
+然后在页面里按这个顺序用：
 
-1. Fill in `API Key`
-2. Use `步骤 1：自动选股与生成计划`
-3. Check `自动选股摘要`
-4. Check `候选卡片`
-5. Check `交易计划`
-6. Open the share page for names you want to review in detail
+1. 填 `API Key`
+2. 使用“步骤 1：自动选股与生成计划”
+3. 看“自动选股摘要”
+4. 看“候选卡片”
+5. 看“步骤 3：交易计划、模拟盘与复盘”
+6. 最后点卡片里的“打开分享页”
 
-### Option B: Use the CLI
+### 方式二：命令行
 
-Single-stock analysis:
+单股分析：
 
 ```bash
 bash start.sh cli 600028 --quick
 bash start.sh cli 000630 --deep
 ```
 
-Initialize local paper account:
+初始化模拟账户：
 
 ```bash
 python3 -m ai_trade_system.scripts.bootstrap_db --cash 100000
 ```
 
-Generate a daily trade plan:
+生成交易计划：
 
 ```bash
 python3 -m ai_trade_system.scripts.run_daily_plan --limit 20
 ```
 
-Run the full after-close pipeline:
+执行自动选股全流程：
 
 ```bash
 python3 -m ai_trade_system.scripts.run_auto_pipeline --mode quick --execute-sim
 ```
 
-Generate a review report:
+生成复盘报告：
 
 ```bash
 python3 -m ai_trade_system.scripts.run_review
 ```
 
-## Recommended Daily Workflow
+## 推荐的日常流程
 
-For personal A-share trading, the most practical loop is:
+对于个人 A 股使用者，最实用的日常流程是：
 
-1. Run auto-selection after market close
-2. Let the system analyze shortlisted names
-3. Read the one-line summary
-4. Check whether the plan has executable trades
-5. If yes, place orders manually next day
-6. Use paper-trading and review reports to validate signal quality
+1. 收盘后运行自动选股
+2. 让系统自动分析候选股
+3. 阅读一句话总结
+4. 看今天是否存在可执行交易
+5. 如果有，再手动去券商 APP 下单
+6. 用模拟盘和复盘报告验证信号质量
 
-## Project Structure
+如果页面显示：
+
+```text
+今日无可执行交易
+```
+
+通常就意味着今天不需要人工下单。
+
+## 项目结构
 
 ```text
 TradeforAgents-minimal/
@@ -167,7 +177,7 @@ TradeforAgents-minimal/
 └── README.md
 ```
 
-Important files:
+核心文件：
 
 - `scripts/minimal_web_app.py`
 - `scripts/minimal_deepseek_report.py`
@@ -175,46 +185,46 @@ Important files:
 - `ai_trade_system/scripts/run_daily_plan.py`
 - `ai_trade_system/scripts/run_review.py`
 
-## Output Paths
+## 输出目录
 
-AI analysis output:
+AI 分析结果：
 
 ```text
 results/<symbol>/<date>/
 ```
 
-Trade plans:
-
-```text
-ai_trade_system/reports/daily_plan_YYYY-MM-DD.md
-```
-
-Auto-selection reports:
+自动选股报告：
 
 ```text
 ai_trade_system/reports/auto_candidates_YYYY-MM-DD.md
 ```
 
-Paper-trading review:
+每日交易计划：
+
+```text
+ai_trade_system/reports/daily_plan_YYYY-MM-DD.md
+```
+
+模拟盘复盘报告：
 
 ```text
 ai_trade_system/reports/paper_review.md
 ```
 
-Paper-trading database:
+模拟盘数据库：
 
 ```text
 ai_trade_system/data/db.sqlite3
 ```
 
-## Notes on Data and Stability
+## 数据与稳定性说明
 
-- Main market screening uses Eastmoney-style public data
-- Enhancement dimensions can use AKShare when available
-- The system tolerates partial failures
-- One failed stock in a batch no longer invalidates the whole pipeline if others succeeded
+- 主行情筛选优先使用东财风格公开数据
+- 增强维度可以接入 AKShare
+- 系统支持部分失败降级继续运行
+- 股票池里单只失败，不会再导致整条流水线整体失败
 
-## Documentation
+## 文档
 
-- [AI Trade Workflow](docs/ai_trade_workflow.md)
-- [Cloud Deploy Guide](docs/minimal_cloud_deploy.md)
+- [AI 交易工作流](docs/ai_trade_workflow.md)
+- [云端部署说明](docs/minimal_cloud_deploy.md)
