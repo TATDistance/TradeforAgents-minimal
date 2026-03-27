@@ -1,0 +1,48 @@
+initial_cash: 100000
+refresh_interval_seconds: 10
+scan_limit: 200
+strategy_candidate_limit: 20
+max_single_position_pct: 0.2
+max_daily_open_position_pct: 0.4
+max_drawdown_pct: 0.08
+commission_rate: 0.0003
+stamp_duty_rate: 0.0005
+slippage_rate: 0.0005
+transfer_fee_rate: 0.00001
+ai_mode: quick
+enable_ai: true
+use_eastmoney_realtime: true
+min_turnover: 50000000
+min_listing_days: 120
+limit_up_filter_pct: 0.097
+limit_down_filter_pct: -0.097
+dashboard_refresh_seconds: 5
+strategy:
+  momentum_lookback: 20
+  momentum_min_score: 0.55
+  mean_reversion_rsi_low: 30
+  mean_reversion_boll_window: 20
+  breakout_window: 20
+  atr_window: 14
+ai:
+  approval_confidence_floor: 0.58
+  low_confidence_scale: 0.5
+  request_timeout_seconds: 120
+market_session:
+  timezone: Asia/Shanghai
+  trade_start: "09:30"
+  lunch_start: "11:30"
+  lunch_end: "13:00"
+  trade_end: "15:00"
+  post_close_analysis_start: "15:05"
+  post_close_analysis_end: "18:00"
+  enable_weekend_guard: true
+cache:
+  snapshot_ttl_seconds: 8
+  quote_ttl_seconds: 8
+  history_market_hours_ttl_seconds: 1800
+  history_off_hours_ttl_seconds: 21600
+paths:
+  tradeforagents_results_dir: ../results
+  tradeforagents_script: ../scripts/run_minimal_deepseek.sh
+  vnpy_workspace: external/vnpy_workspace

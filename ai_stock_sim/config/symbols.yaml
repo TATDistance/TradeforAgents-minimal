@@ -1,0 +1,14 @@
+watchlist:
+  stocks:
+    - 600036
+    - 600031
+    - 300750
+    - 002594
+  etfs:
+    - 510300
+    - 159915
+blacklist:
+  - 600028
+universe:
+  include_stocks: true
+  include_etfs: true

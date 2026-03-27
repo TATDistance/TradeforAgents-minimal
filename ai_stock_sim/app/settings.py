@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List
+
+import yaml
+from dotenv import load_dotenv
+
+
+@dataclass
+class StrategyConfig:
+    momentum_lookback: int = 20
+    momentum_min_score: float = 0.55
+    mean_reversion_rsi_low: float = 30.0
+    mean_reversion_boll_window: int = 20
+    breakout_window: int = 20
+    atr_window: int = 14
+
+
+@dataclass
+class AIConfig:
+    approval_confidence_floor: float = 0.58
+    low_confidence_scale: float = 0.5
+    request_timeout_seconds: int = 120
+
+
+@dataclass
+class PathConfig:
+    tradeforagents_results_dir: str = "../results"
+    tradeforagents_script: str = "../scripts/run_minimal_deepseek.sh"
+    vnpy_workspace: str = "external/vnpy_workspace"
+
+
+@dataclass
+class MarketSessionConfig:
+    timezone: str = "Asia/Shanghai"
+    trade_start: str = "09:30"
+    lunch_start: str = "11:30"
+    lunch_end: str = "13:00"
+    trade_end: str = "15:00"
+    post_close_analysis_start: str = "15:05"
+    post_close_analysis_end: str = "18:00"
+    enable_weekend_guard: bool = True
+
+
+@dataclass
+class CacheConfig:
+    snapshot_ttl_seconds: int = 8
+    quote_ttl_seconds: int = 8
+    history_market_hours_ttl_seconds: int = 1800
+    history_off_hours_ttl_seconds: int = 21600
+
+
+@dataclass
+class Settings:
+    project_root: Path
+    initial_cash: float = 100000.0
+    refresh_interval_seconds: int = 10
+    scan_limit: int = 200
+    strategy_candidate_limit: int = 20
+    max_single_position_pct: float = 0.20
+    max_daily_open_position_pct: float = 0.40
+    max_drawdown_pct: float = 0.08
+    commission_rate: float = 0.0003
+    stamp_duty_rate: float = 0.0005
+    slippage_rate: float = 0.0005
+    transfer_fee_rate: float = 0.00001
+    ai_mode: str = "quick"
+    enable_ai: bool = True
+    use_eastmoney_realtime: bool = True
+    min_turnover: float = 50_000_000.0
+    min_listing_days: int = 120
+    limit_up_filter_pct: float = 0.097
+    limit_down_filter_pct: float = -0.097
+    dashboard_refresh_seconds: int = 5
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
+    ai: AIConfig = field(default_factory=AIConfig)
+    paths: PathConfig = field(default_factory=PathConfig)
+    market_session: MarketSessionConfig = field(default_factory=MarketSessionConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
+
+    @property
+    def data_dir(self) -> Path:
+        return self.project_root / "data"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "db.sqlite3"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.data_dir / "logs"
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.data_dir / "cache"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.data_dir / "reports"
+
+    @property
+    def tradeforagents_results_dir(self) -> Path:
+        return (self.project_root / self.paths.tradeforagents_results_dir).resolve()
+
+    @property
+    def tradeforagents_script(self) -> Path:
+        return (self.project_root / self.paths.tradeforagents_script).resolve()
+
+    @property
+    def vnpy_workspace(self) -> Path:
+        return (self.project_root / self.paths.vnpy_workspace).resolve()
+
+
+@dataclass
+class SymbolConfig:
+    stock_watchlist: List[str]
+    etf_watchlist: List[str]
+    blacklist: List[str]
+    include_stocks: bool
+    include_etfs: bool
+
+
+def _merge_dataclass(instance: Any, payload: Dict[str, Any]) -> Any:
+    for key, value in payload.items():
+        if not hasattr(instance, key):
+            continue
+        current = getattr(instance, key)
+        if hasattr(current, "__dataclass_fields__") and isinstance(value, dict):
+            _merge_dataclass(current, value)
+        else:
+            setattr(instance, key, value)
+    return instance
+
+
+def load_settings(project_root: Path | None = None) -> Settings:
+    root = project_root or Path(__file__).resolve().parents[1]
+    load_dotenv(root / ".env", override=False)
+    settings_path = os.getenv("AI_STOCK_SIM_SETTINGS", "config/settings.yaml")
+    settings_file = (root / settings_path).resolve()
+    payload: Dict[str, Any] = {}
+    if settings_file.exists():
+        payload = yaml.safe_load(settings_file.read_text(encoding="utf-8")) or {}
+    settings = Settings(project_root=root)
+    _merge_dataclass(settings, payload)
+    return settings
+
+
+def load_symbol_config(project_root: Path | None = None) -> SymbolConfig:
+    root = project_root or Path(__file__).resolve().parents[1]
+    symbols_path = os.getenv("AI_STOCK_SIM_SYMBOLS", "config/symbols.yaml")
+    symbols_file = (root / symbols_path).resolve()
+    payload: Dict[str, Any] = {}
+    if symbols_file.exists():
+        payload = yaml.safe_load(symbols_file.read_text(encoding="utf-8")) or {}
+    runtime_symbols_file = (root / "config" / "runtime_symbols.yaml").resolve()
+    if runtime_symbols_file.exists():
+        runtime_payload = yaml.safe_load(runtime_symbols_file.read_text(encoding="utf-8")) or {}
+        watchlist_payload = runtime_payload.get("watchlist") or {}
+        if watchlist_payload:
+            payload["watchlist"] = watchlist_payload
+        if runtime_payload.get("blacklist") is not None:
+            payload["blacklist"] = runtime_payload.get("blacklist")
+        if runtime_payload.get("universe") is not None:
+            payload["universe"] = runtime_payload.get("universe")
+
+    watchlist = payload.get("watchlist") or {}
+    universe = payload.get("universe") or {}
+    return SymbolConfig(
+        stock_watchlist=[str(item) for item in watchlist.get("stocks", [])],
+        etf_watchlist=[str(item) for item in watchlist.get("etfs", [])],
+        blacklist=[str(item) for item in payload.get("blacklist", [])],
+        include_stocks=bool(universe.get("include_stocks", True)),
+        include_etfs=bool(universe.get("include_etfs", True)),
+    )

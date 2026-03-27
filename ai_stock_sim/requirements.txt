@@ -1,0 +1,11 @@
+akshare
+apscheduler
+numpy
+pandas
+pydantic
+python-dotenv
+pyyaml
+requests
+sqlalchemy
+streamlit
+pytest

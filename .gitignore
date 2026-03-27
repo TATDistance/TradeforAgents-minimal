@@ -12,4 +12,10 @@ ai_trade_system/__pycache__/
 ai_trade_system/**/__pycache__/
 ai_trade_system/data/
 ai_trade_system/reports/
+ai_stock_sim/.venv/
+ai_stock_sim/.venv310/
+ai_stock_sim/__pycache__/
+ai_stock_sim/**/__pycache__/
+ai_stock_sim/.pytest_cache/
+ai_stock_sim/data/
 .DS_Store

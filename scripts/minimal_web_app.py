@@ -4,21 +4,26 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
+import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +41,18 @@ AI_TRADE_HOME = Path(
 AI_TRADE_REPORTS_DIR = AI_TRADE_HOME / "reports"
 AI_TRADE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 AI_TRADE_DB_PATH = AI_TRADE_HOME / "data" / "db.sqlite3"
+AI_STOCK_SIM_HOME = PROJECT_ROOT / "ai_stock_sim"
+AI_STOCK_SIM_DB_PATH = AI_STOCK_SIM_HOME / "data" / "db.sqlite3"
+AI_STOCK_SIM_LOG_DIR = AI_STOCK_SIM_HOME / "data" / "logs"
+AI_STOCK_SIM_ENGINE_LOG = AI_STOCK_SIM_LOG_DIR / "engine.log"
+AI_STOCK_SIM_DASHBOARD_LOG = AI_STOCK_SIM_LOG_DIR / "dashboard.log"
+AI_STOCK_SIM_ENGINE_PID = AI_STOCK_SIM_HOME / "data" / "engine.pid"
+AI_STOCK_SIM_DASHBOARD_PID = AI_STOCK_SIM_HOME / "data" / "dashboard.pid"
+AI_STOCK_SIM_DASHBOARD_URL = "http://127.0.0.1:8610"
+AI_STOCK_SIM_DASHBOARD_HEALTH_URL = "http://127.0.0.1:8610/_stcore/health"
+AI_STOCK_SIM_RUNTIME_SYMBOLS = AI_STOCK_SIM_HOME / "config" / "runtime_symbols.yaml"
+WEB_BUILD_TAG = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+SYMBOL_NAME_CACHE: Dict[str, str] = {}
 
 
 class AnalyzeRequest(BaseModel):
@@ -174,8 +191,308 @@ def _report_url(path: Optional[Path]) -> Optional[str]:
     return "/ai_trade_reports/{0}".format(path.name)
 
 
+def _read_tail(path: Path, limit: int = 12000) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")[-limit:]
+    except Exception:
+        return ""
+
+
+def _pid_from_file(path: Path) -> Optional[int]:
+    if not path.exists():
+        return None
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def _pid_alive(pid: Optional[int]) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _service_status(pid_file: Path) -> Tuple[bool, Optional[int]]:
+    pid = _pid_from_file(pid_file)
+    if pid and not _pid_alive(pid):
+        try:
+            pid_file.unlink()
+        except Exception:
+            pass
+        return False, None
+    return bool(pid), pid
+
+
+def _url_healthy(url: str, timeout: float = 2.0) -> bool:
+    request = urllib.request.Request(url, headers={"Cache-Control": "no-store"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return 200 <= int(resp.status) < 300
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return False
+
+
+def _latest_auto_watchlist() -> Optional[Path]:
+    files = sorted(AI_TRADE_REPORTS_DIR.glob("auto_watchlist_*.txt"))
+    return files[-1] if files else None
+
+
+def _classify_asset_type(symbol: str) -> str:
+    code = str(symbol).strip()
+    return "etf" if code.startswith(("1", "5")) else "stock"
+
+
+def _eastmoney_secid(symbol: str) -> str:
+    code = str(symbol).strip()
+    market = "1" if code.startswith(("5", "6", "9")) else "0"
+    return "{0}.{1}".format(market, code)
+
+
+def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    pending = [str(symbol).strip() for symbol in symbols if re.fullmatch(r"\d{6}", str(symbol).strip())]
+    if not pending:
+        return result
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for symbol in pending:
+        cached_name = SYMBOL_NAME_CACHE.get(symbol)
+        if cached_name:
+            result[symbol] = cached_name
+            continue
+        url = (
+            "https://push2.eastmoney.com/api/qt/stock/get"
+            "?secid={0}&ut=bd1d9ddb04089700cf9c27f6f7426281&invt=2&fltt=2&fields=f57,f58"
+        ).format(_eastmoney_secid(symbol))
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
+        try:
+            with opener.open(request, timeout=2.5) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+            data = payload.get("data") or {}
+            name = str(data.get("f58") or "").strip()
+            if name:
+                SYMBOL_NAME_CACHE[symbol] = name
+                result[symbol] = name
+        except Exception:
+            continue
+    return result
+
+
+def _sync_ai_stock_sim_runtime_watchlist(source_path: Optional[Path] = None) -> Tuple[bool, str]:
+    watchlist_path = source_path or _latest_auto_watchlist()
+    symbols: List[str] = []
+    if watchlist_path and watchlist_path.exists():
+        symbols = [line.strip() for line in watchlist_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not symbols:
+        auto_payload = _read_json(_latest_auto_candidates_json())
+        selected = auto_payload.get("selected") or []
+        if isinstance(selected, list):
+            symbols = [str(item.get("symbol") or "").strip() for item in selected if isinstance(item, dict) and str(item.get("symbol") or "").strip()]
+    if not symbols:
+        return False, "未找到最新自动选股候选池，实时模拟中心将继续沿用默认观察池。"
+
+    symbols = list(dict.fromkeys(symbols))
+    if not symbols:
+        return False, "最新自动选股候选池为空，未同步到实时模拟中心。"
+
+    stocks = [symbol for symbol in symbols if _classify_asset_type(symbol) == "stock"]
+    etfs = [symbol for symbol in symbols if _classify_asset_type(symbol) == "etf"]
+    lines = ["watchlist:"]
+    if stocks:
+        lines.append("  stocks:")
+        lines.extend([f"    - {symbol}" for symbol in stocks])
+    else:
+        lines.append("  stocks: []")
+    if etfs:
+        lines.append("  etfs:")
+        lines.extend([f"    - {symbol}" for symbol in etfs])
+    else:
+        lines.append("  etfs: []")
+    lines.extend(
+        [
+            "blacklist: []",
+            "universe:",
+            "  include_stocks: true",
+            "  include_etfs: true",
+        ]
+    )
+    AI_STOCK_SIM_RUNTIME_SYMBOLS.parent.mkdir(parents=True, exist_ok=True)
+    AI_STOCK_SIM_RUNTIME_SYMBOLS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return True, "已把最新自动选股候选池同步到实时模拟中心，共 {0} 只。".format(len(symbols))
+
+
+def _read_ai_stock_sim_default_watchlist() -> List[str]:
+    symbols_path = AI_STOCK_SIM_HOME / "config" / "symbols.yaml"
+    if not symbols_path.exists():
+        return []
+    try:
+        payload = yaml.safe_load(symbols_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    watchlist = payload.get("watchlist") or {}
+    stocks = [str(item).strip() for item in watchlist.get("stocks", [])]
+    etfs = [str(item).strip() for item in watchlist.get("etfs", [])]
+    return [symbol for symbol in stocks + etfs if symbol]
+
+
+def _start_background_service(
+    args: List[str],
+    pid_file: Path,
+    log_file: Path,
+    health_url: Optional[str] = None,
+    health_timeout_seconds: float = 8.0,
+) -> Tuple[bool, str]:
+    running, pid = _service_status(pid_file)
+    if running and (not health_url or _url_healthy(health_url)):
+        return True, "服务已在运行，PID={0}".format(pid)
+    if running and health_url and not _url_healthy(health_url):
+        _stop_background_service(pid_file)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT), env.get("PYTHONPATH", "")]
+    env["PYTHONPATH"] = os.pathsep.join(part for part in pythonpath_parts if part)
+    with log_file.open("a", encoding="utf-8") as handle:
+        proc = subprocess.Popen(
+            args,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(proc.pid), encoding="utf-8")
+    if health_url:
+        deadline = time.time() + health_timeout_seconds
+        while time.time() < deadline:
+            if _url_healthy(health_url):
+                return True, "服务已启动，PID={0}".format(proc.pid)
+            if proc.poll() is not None:
+                break
+            time.sleep(0.4)
+        if proc.poll() is not None:
+            return False, "服务启动失败，请查看日志。"
+        return False, "服务进程已启动，但健康检查未通过，请查看日志。"
+    return True, "服务已启动，PID={0}".format(proc.pid)
+
+
+def _stop_background_service(pid_file: Path) -> str:
+    pid = _pid_from_file(pid_file)
+    if not pid:
+        return "服务未运行"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        pid_file.unlink()
+    except Exception:
+        pass
+    return "停止信号已发送"
+
+
+def _cleanup_processes(pattern: str) -> None:
+    try:
+        subprocess.run(
+            ["pkill", "-f", pattern],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def _query_sqlite_rows(db_path: Path, sql: str, params: Tuple[object, ...] = ()) -> List[Dict[str, object]]:
+    if not db_path.exists():
+        return []
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _ai_stock_sim_status_payload() -> Dict[str, object]:
+    engine_running, engine_pid = _service_status(AI_STOCK_SIM_ENGINE_PID)
+    dashboard_running, dashboard_pid = _service_status(AI_STOCK_SIM_DASHBOARD_PID)
+    dashboard_healthy = _url_healthy(AI_STOCK_SIM_DASHBOARD_HEALTH_URL)
+    if dashboard_running and not dashboard_healthy:
+        dashboard_running = False
+    symbol_names = _symbol_name_map()
+    account_rows = _query_sqlite_rows(
+        AI_STOCK_SIM_DB_PATH,
+        "SELECT * FROM account_snapshots ORDER BY id DESC LIMIT 1",
+    )
+    positions = _query_sqlite_rows(
+        AI_STOCK_SIM_DB_PATH,
+        "SELECT symbol, qty, avg_cost, last_price, market_value, unrealized_pnl, can_sell_qty, updated_at FROM positions ORDER BY symbol LIMIT 10",
+    )
+    orders = _query_sqlite_rows(
+        AI_STOCK_SIM_DB_PATH,
+        "SELECT ts, symbol, side, price, qty, fee, tax, status FROM orders ORDER BY id DESC LIMIT 10",
+    )
+    logs = _query_sqlite_rows(
+        AI_STOCK_SIM_DB_PATH,
+        "SELECT ts, level, module, message FROM system_logs ORDER BY id DESC LIMIT 12",
+    )
+    review_files = sorted((AI_STOCK_SIM_HOME / "data" / "reports").glob("review_*.json"))
+    latest_review = review_files[-1] if review_files else None
+    watchlist_source = "default_config"
+    watchlist_symbols: List[str] = []
+    if AI_STOCK_SIM_RUNTIME_SYMBOLS.exists():
+        watchlist_source = "latest_auto_watchlist"
+        for line in AI_STOCK_SIM_RUNTIME_SYMBOLS.read_text(encoding="utf-8").splitlines():
+            value = line.strip()
+            if value.startswith("- "):
+                watchlist_symbols.append(value[2:].strip())
+    if not watchlist_symbols:
+        watchlist_symbols = _read_ai_stock_sim_default_watchlist()
+    for row in positions:
+        symbol = str(row.get("symbol") or "")
+        row["name"] = symbol_names.get(symbol, symbol)
+    for row in orders:
+        symbol = str(row.get("symbol") or "")
+        row["name"] = symbol_names.get(symbol, symbol)
+    return {
+        "bootstrap_ready": (AI_STOCK_SIM_HOME / ".venv310" / "bin" / "python").exists(),
+        "db_exists": AI_STOCK_SIM_DB_PATH.exists(),
+        "engine_running": engine_running,
+        "engine_pid": engine_pid,
+        "dashboard_running": dashboard_running,
+        "dashboard_pid": dashboard_pid,
+        "dashboard_url": AI_STOCK_SIM_DASHBOARD_URL,
+        "dashboard_healthy": dashboard_healthy,
+        "account": account_rows[0] if account_rows else {},
+        "positions": positions,
+        "orders": orders,
+        "logs": logs,
+        "engine_log_tail": _read_tail(AI_STOCK_SIM_ENGINE_LOG),
+        "dashboard_log_tail": _read_tail(AI_STOCK_SIM_DASHBOARD_LOG),
+        "latest_review_filename": latest_review.name if latest_review else None,
+        "watchlist_source": watchlist_source,
+        "watchlist_symbols": watchlist_symbols[:12],
+        "watchlist_display": [
+            "{0} {1}".format(symbol, symbol_names.get(symbol, symbol)).strip()
+            for symbol in watchlist_symbols[:12]
+        ],
+    }
+
+
 def _latest_share_cards(limit: int = 12) -> List[Dict[str, object]]:
     cards: List[Dict[str, object]] = []
+    symbol_names = _symbol_name_map()
     for decision_path in sorted(RESULTS_DIR.glob("*/**/decision.json"), reverse=True):
         result_dir = decision_path.parent
         share_dir = result_dir / "share"
@@ -195,6 +512,7 @@ def _latest_share_cards(limit: int = 12) -> List[Dict[str, object]]:
         cards.append(
             {
                 "symbol": symbol,
+                "name": symbol_names.get(symbol, symbol),
                 "analysis_date": analysis_date,
                 "action": str(decision.get("action", "持有")),
                 "confidence": float(decision.get("confidence", 0.0) or 0.0),
@@ -309,6 +627,87 @@ def _latest_auto_cards(limit: int = 12) -> List[Dict[str, object]]:
             }
         )
     return cards
+
+
+def _clean_symbol_name(name: str, symbol: str) -> str:
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\s*\(\s*%s(?:\.[A-Z]+)?\s*\)" % re.escape(symbol), "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*[（(]\s*%s(?:\.[A-Z]+)?\s*[)）]\s*" % re.escape(symbol), "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^(技术分析报告\s*[-:：]\s*)", "", cleaned)
+    cleaned = re.sub(r"(基本面分析报告|投资分析简报)$", "", cleaned).strip(" -:：")
+    return cleaned.strip()
+
+
+def _guess_symbol_name_from_result_dir(symbol: str, result_dir: Path) -> str:
+    candidate_files = [
+        result_dir / "reports" / "market_report.md",
+        result_dir / "reports" / "fundamentals_report.md",
+        result_dir / "share" / "{0}_{1}_share.html".format(symbol, result_dir.name),
+    ]
+    patterns = [
+        r"技术分析报告\s*[-:：]\s*([^\n(（]+)\s*[（(]\s*%s(?:\.[A-Z]+)?\s*[)）]" % re.escape(symbol),
+        r"#\s*([^\n（(]+)\s*[（(]\s*%s(?:\.[A-Z]+)?\s*[)）]" % re.escape(symbol),
+        r"公司名称[：:]\s*([^\n(（]+)",
+        r"<h1[^>]*>\s*([^\n<（(]+)\s*[（(]\s*%s(?:\.[A-Z]+)?\s*[)）]" % re.escape(symbol),
+    ]
+    for candidate in candidate_files:
+        if not candidate.exists():
+            continue
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="ignore")[:8000]
+        except Exception:
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            cleaned = _clean_symbol_name(match.group(1), symbol)
+            if cleaned and cleaned != symbol:
+                return cleaned
+    return ""
+
+
+def _symbol_name_map() -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    market_cache_dir = AI_STOCK_SIM_HOME / "data" / "cache" / "market"
+    for cache_path in sorted(market_cache_dir.glob("snapshot_combined_*.json"), reverse=True):
+        payload = _read_json(cache_path)
+        rows = payload.get("rows") or []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol") or "")
+                name = str(row.get("name") or "")
+                if symbol and name and symbol not in mapping:
+                    mapping[symbol] = name
+        if mapping:
+            break
+    payload = _read_json(_latest_auto_candidates_json())
+    selected = payload.get("selected") or []
+    if isinstance(selected, list):
+        for item in selected:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "")
+            name = str(item.get("name") or "")
+            if symbol and name and symbol not in mapping:
+                mapping[symbol] = name
+    decision_paths = sorted(RESULTS_DIR.glob("*/**/decision.json"), reverse=True)
+    unresolved_symbols = [decision_path.parent.parent.name for decision_path in decision_paths if decision_path.parent.parent.name not in mapping]
+    mapping.update(_fetch_eastmoney_symbol_names(unresolved_symbols))
+    for decision_path in decision_paths:
+        result_dir = decision_path.parent
+        symbol = result_dir.parent.name
+        if symbol in mapping:
+            continue
+        guessed_name = _guess_symbol_name_from_result_dir(symbol, result_dir)
+        if guessed_name:
+            mapping[symbol] = guessed_name
+    return mapping
 
 
 def _run_workspace_command(
@@ -709,6 +1108,12 @@ def _run_auto_pipeline_task(task_id: str, req: AutoPipelineRequest) -> None:
         return
 
     report_path = _latest_auto_candidates()
+    sync_ok = False
+    sync_message = ""
+    if code == 0:
+        sync_ok, sync_message = _sync_ai_stock_sim_runtime_watchlist()
+        if sync_message:
+            _append_output(task_id, "[auto] {0}\n".format(sync_message))
     with TASK_LOCK:
         task = TASKS[task_id]
         task.exit_code = code
@@ -722,17 +1127,23 @@ def _run_auto_pipeline_task(task_id: str, req: AutoPipelineRequest) -> None:
 
 
 @app.get("/health")
-def health() -> Dict[str, str]:
+def health(response: Response) -> Dict[str, str]:
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     return {"status": "ok"}
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return """<!doctype html>
+def index() -> HTMLResponse:
+    html = """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>股票分析（极简版）</title>
   <style>
     :root{--bg:#f5f7fb;--panel:#ffffff;--line:#dbe4f0;--text:#10233f;--muted:#607089;--brand:#2056d8;--brand-soft:#eaf1ff;--green:#0f9f6e;--amber:#b7791f}
@@ -807,6 +1218,8 @@ def index() -> str:
 </head>
 <body>
   <div class="stack">
+    <div id="pageErrorBanner" class="err" style="display:none"></div>
+    <div class="muted" style="margin:6px 0 0 0;font-size:13px">页面版本：__WEB_BUILD_TAG__</div>
     <div class="card hero">
       <div class="hero-grid">
         <div class="content-col">
@@ -918,7 +1331,7 @@ def index() -> str:
           <input id="autoTimeout" type="number" value="120" />
         </div>
       </div>
-      <button id="runAutoPipeline" style="margin-top:12px">自动选股并生成计划</button>
+      <button id="runAutoPipeline" type="button" style="margin-top:12px">自动选股并生成计划</button>
       <p id="autoStatus"></p>
       <p id="autoLink"></p>
       <pre id="autoLog" class="preview-box"></pre>
@@ -1002,10 +1415,10 @@ def index() -> str:
         <summary>高级操作：手动重跑计划 / 模拟盘 / 复盘</summary>
         <div class="subtle" style="margin-top:10px">如果自动流程已经跑完，通常不用再点这里。只有在你确认结果没刷新，或者想手动补跑一次时再使用。</div>
         <div class="toolbar" style="margin-top:12px">
-          <button id="runPlan">重生成交易计划</button>
-          <button id="runSim">重生成计划并补跑模拟盘</button>
-          <button id="runReview">重生成复盘报告</button>
-          <button id="refreshReports">只刷新当前结果</button>
+          <button id="runPlan" type="button">重生成交易计划</button>
+          <button id="runSim" type="button">重生成计划并补跑模拟盘</button>
+          <button id="runReview" type="button">重生成复盘报告</button>
+          <button id="refreshReports" type="button">只刷新当前结果</button>
         </div>
         <p id="opsStatus" class="muted"></p>
           <pre id="opsLog" class="preview-box"></pre>
@@ -1038,6 +1451,74 @@ def index() -> str:
         <h4>最近分析卡片</h4>
         <p class="muted">如果你走的是手动分析流程，最后就在这里点“打开分享页”。</p>
         <div id="shareCards" class="share-grid"></div>
+      </div>
+      <div style="margin-top:18px">
+        <h4>步骤 4：持续监控中心（沿用上方候选池）</h4>
+        <p class="muted">这块不是另一套独立系统，而是把上一步自动选股得到的候选池同步到 `ai_stock_sim`，让它持续盯盘、持续记模拟账户变化。你可以把它理解成“交易计划的连续版监控”。</p>
+        <div class="result-strip" style="margin-top:10px">
+          <div class="result-main">
+            <h4>你只需要这样用</h4>
+            <div class="action-note">
+              1. 先跑上面的“自动选股并生成计划”<br>
+              2. 再点“一键启动连续监控”，系统会沿用最新候选池<br>
+              2. 启动后：看下面的账户、持仓、成交和日志<br>
+              3. 想看更完整的大盘：点“打开实时控制台”
+            </div>
+          </div>
+          <div class="result-side">
+            <h4>这块和上面有什么关系</h4>
+            <div class="subtle">
+              上面的“交易计划、模拟盘与复盘”偏盘后结果；这里偏持续监控。默认会优先用最新自动选股候选池，没有候选池时才退回默认观察池。
+            </div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button id="simStartAll" type="button">一键启动连续监控</button>
+          <button id="simOpenDashboard" type="button">打开实时控制台</button>
+          <button id="simRefresh" type="button">刷新状态</button>
+        </div>
+        <p id="simStatus" class="muted"></p>
+        <p id="simLinks"></p>
+        <details style="margin-top:10px">
+          <summary>高级操作：初始化 / 单独启停引擎与控制台</summary>
+          <div class="toolbar" style="margin-top:12px">
+            <button id="simBootstrap" type="button">仅初始化 ai_stock_sim</button>
+            <button id="simStartEngine" type="button">仅启动实时引擎</button>
+            <button id="simStopEngine" type="button">停止实时引擎</button>
+            <button id="simStartDashboard" type="button">仅启动 Streamlit 控制台</button>
+            <button id="simStopDashboard" type="button">停止 Streamlit 控制台</button>
+          </div>
+        </details>
+        <div class="grid2" style="margin-top:14px">
+          <div class="mini">
+            <h4>账户摘要</h4>
+            <div id="simAccountSummary" class="muted">暂无账户信息</div>
+          </div>
+          <div class="mini">
+            <h4>运行状态</h4>
+            <div id="simRuntimeSummary" class="muted">暂无运行状态</div>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:14px">
+          <div>
+            <h4>当前持仓</h4>
+            <pre id="simPositions" class="preview-box"></pre>
+          </div>
+          <div>
+            <h4>最近成交</h4>
+            <pre id="simOrders" class="preview-box"></pre>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:14px">
+          <div>
+            <h4>系统日志</h4>
+            <pre id="simSystemLogs" class="preview-box"></pre>
+          </div>
+          <div>
+            <h4>引擎日志尾部</h4>
+            <pre id="simEngineLog" class="preview-box"></pre>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1072,7 +1553,7 @@ def index() -> str:
               <input id="timeout" type="number" value="60" />
             </div>
           </div>
-          <button id="go" style="margin-top:12px">开始单股分析</button>
+          <button id="go" type="button" style="margin-top:12px">开始单股分析</button>
           <p id="status"></p>
           <p id="link"></p>
           <pre id="log" class="preview-box"></pre>
@@ -1102,7 +1583,7 @@ def index() -> str:
               <input id="watchlistRetries" type="number" value="1" />
             </div>
           </div>
-          <button id="runWatchlist" style="margin-top:12px">批量分析股票池</button>
+          <button id="runWatchlist" type="button" style="margin-top:12px">批量分析股票池</button>
           <p id="watchlistStatus"></p>
           <p id="watchlistLink"></p>
           <pre id="watchlistLog" class="preview-box"></pre>
@@ -1164,6 +1645,37 @@ def index() -> str:
     const reviewSummary = document.getElementById('reviewSummary');
     const tradeCenter = document.getElementById('tradeCenter');
     const shareCards = document.getElementById('shareCards');
+    const pageErrorBanner = document.getElementById('pageErrorBanner');
+    const simStartAll = document.getElementById('simStartAll');
+    const simOpenDashboard = document.getElementById('simOpenDashboard');
+    const simBootstrap = document.getElementById('simBootstrap');
+    const simStartEngine = document.getElementById('simStartEngine');
+    const simStopEngine = document.getElementById('simStopEngine');
+    const simStartDashboard = document.getElementById('simStartDashboard');
+    const simStopDashboard = document.getElementById('simStopDashboard');
+    const simRefresh = document.getElementById('simRefresh');
+    const simStatus = document.getElementById('simStatus');
+    const simLinks = document.getElementById('simLinks');
+    const simAccountSummary = document.getElementById('simAccountSummary');
+    const simRuntimeSummary = document.getElementById('simRuntimeSummary');
+    const simPositions = document.getElementById('simPositions');
+    const simOrders = document.getElementById('simOrders');
+    const simSystemLogs = document.getElementById('simSystemLogs');
+    const simEngineLog = document.getElementById('simEngineLog');
+
+    window.addEventListener('error', (event) => {
+      if(pageErrorBanner){
+        pageErrorBanner.style.display = 'block';
+        pageErrorBanner.textContent = '页面脚本异常：' + (event.message || 'unknown error');
+      }
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+      if(pageErrorBanner){
+        pageErrorBanner.style.display = 'block';
+        pageErrorBanner.textContent = '页面请求异常：' + String(event.reason || 'unknown rejection');
+      }
+    });
 
     function formatErrorDetail(detail){
       if(!detail) return 'unknown error';
@@ -1274,7 +1786,7 @@ def index() -> str:
         const reason = (card.reasoning || '').slice(0, 110);
         return (
           '<div class="share-card">' +
-          '<h4>' + card.symbol + ' · ' + card.action + '</h4>' +
+          '<h4>' + card.symbol + ' ' + (card.name || '') + ' · ' + card.action + '</h4>' +
           '<p>日期：' + card.analysis_date + '</p>' +
           '<p>置信度：' + Math.round((card.confidence || 0) * 100) + '%</p>' +
           '<p>' + (reason || '暂无摘要') + '</p>' +
@@ -1315,6 +1827,175 @@ def index() -> str:
           '</div>'
         );
       }).join('');
+    }
+
+    function toPrettyLines(rows, keys){
+      if(!rows || !rows.length) return '暂无';
+      return rows.map(row => {
+        return keys.map(key => String(row[key] ?? '')).join(' | ');
+      }).join('\\n');
+    }
+
+    function annotateSymbolText(text, symbolNames){
+      if(!text) return text || '';
+      if(!symbolNames) return text;
+      return String(text).replace(/\\b\\d{6}\\b/g, (symbol, offset, fullText) => {
+        const name = symbolNames[symbol];
+        if(!name || name === symbol){
+          return symbol;
+        }
+        const lookahead = fullText.slice(offset, offset + symbol.length + name.length + 4);
+        if(
+          lookahead.includes(symbol + ' ' + name) ||
+          lookahead.includes(symbol + '·' + name) ||
+          lookahead.includes(symbol + '｜' + name)
+        ){
+          return symbol;
+        }
+        return symbol + ' ' + name;
+      });
+    }
+
+    async function checkBackendHealth(){
+      try{
+        const resp = await fetch('/health?ts=' + Date.now(), {
+          cache: 'no-store',
+          headers: {'Cache-Control':'no-store'}
+        });
+        if(!resp.ok){
+          throw new Error('HTTP ' + resp.status);
+        }
+        if(pageErrorBanner){
+          pageErrorBanner.style.display = 'none';
+          pageErrorBanner.textContent = '';
+        }
+      }catch(err){
+        if(pageErrorBanner){
+          pageErrorBanner.style.display = 'block';
+          pageErrorBanner.textContent = '当前页面可能是浏览器缓存页，或 8600 服务未正常运行。请回到终端重新执行 bash start.sh web，然后按 Ctrl+Shift+R 强制刷新。错误：' + String(err);
+        }
+      }
+    }
+
+    async function loadAiStockSimStatus(){
+      try{
+        const resp = await fetch('/api/ai-stock-sim/status');
+        const data = await resp.json();
+        if(!resp.ok){
+          simStatus.textContent = '读取 ai_stock_sim 状态失败：' + formatErrorDetail(data.detail);
+          return;
+        }
+        simStatus.textContent =
+          (data.bootstrap_ready ? '环境已准备好' : '还没初始化环境') +
+          ' ｜ ' +
+          (data.engine_running ? '实时引擎运行中' : '实时引擎未启动') +
+          ' ｜ ' +
+          (data.dashboard_running ? '控制台可访问' : '控制台未就绪');
+        const links = [];
+        if(data.dashboard_url){
+          links.push('<a href="' + data.dashboard_url + '" target="_blank">打开 Streamlit 控制台</a>');
+        }
+        if(data.latest_review_filename){
+          links.push('最新复盘：' + data.latest_review_filename);
+        }
+        simLinks.innerHTML = links.length ? links.join(' | ') : '<span class="muted">暂无可打开链接</span>';
+        const account = data.account || {};
+        const watchlistLabel = data.watchlist_source === 'latest_auto_watchlist'
+          ? '最新自动选股候选池'
+          : '默认观察池';
+        simAccountSummary.innerHTML =
+          '监控来源：' + watchlistLabel +
+          '<br>当前监控：' + ((data.watchlist_display || []).join('、') || '暂无') +
+          '<br>' +
+          '现金：' + Number(account.cash || 0).toFixed(2) +
+          '<br>总权益：' + Number(account.equity || 0).toFixed(2) +
+          '<br>持仓市值：' + Number(account.market_value || 0).toFixed(2) +
+          '<br>已实现盈亏：' + Number(account.realized_pnl || 0).toFixed(2) +
+          '<br>浮盈亏：' + Number(account.unrealized_pnl || 0).toFixed(2) +
+          '<br>回撤：' + (Number(account.drawdown || 0) * 100).toFixed(2) + '%';
+        simRuntimeSummary.innerHTML =
+          '数据库：' + (data.db_exists ? '已创建' : '未创建') +
+          '<br>控制台健康：' + (data.dashboard_healthy ? '正常' : '未通过') +
+          '<br>引擎日志：' + ((data.engine_log_tail || '').length ? '有输出' : '暂无') +
+          '<br>最近系统日志条数：' + ((data.logs || []).length || 0) +
+          '<br>最近持仓条数：' + ((data.positions || []).length || 0) +
+          '<br>最近成交条数：' + ((data.orders || []).length || 0);
+        simPositions.textContent = toPrettyLines(data.positions || [], ['symbol','name','qty','avg_cost','last_price','market_value','unrealized_pnl','can_sell_qty']);
+        simOrders.textContent = toPrettyLines(data.orders || [], ['ts','symbol','name','side','price','qty','status','fee','tax']);
+        simSystemLogs.textContent = toPrettyLines(data.logs || [], ['ts','level','module','message']);
+        simEngineLog.textContent = data.engine_log_tail || '暂无引擎日志';
+      }catch(err){
+        simStatus.textContent = '读取 ai_stock_sim 状态异常：' + String(err);
+      }
+    }
+
+    async function runAiStockSimAction(kind){
+      const actionMap = {
+        bootstrap: '/api/ai-stock-sim/bootstrap',
+        startEngine: '/api/ai-stock-sim/engine/start',
+        stopEngine: '/api/ai-stock-sim/engine/stop',
+        startDashboard: '/api/ai-stock-sim/dashboard/start',
+        stopDashboard: '/api/ai-stock-sim/dashboard/stop',
+      };
+      simStatus.textContent = '处理中...';
+      try{
+        const resp = await fetch(actionMap[kind], {method:'POST'});
+        const data = await resp.json();
+        if(!resp.ok){
+          simStatus.textContent = '执行失败：' + formatErrorDetail(data.detail);
+          return;
+        }
+        simStatus.textContent = data.message || '执行完成';
+        await loadAiStockSimStatus();
+      }catch(err){
+        simStatus.textContent = '执行异常：' + String(err);
+      }
+    }
+
+    async function runAiStockSimQuickStart(){
+      const buttons = [
+        simStartAll, simOpenDashboard, simRefresh,
+        simBootstrap, simStartEngine, simStopEngine, simStartDashboard, simStopDashboard
+      ].filter(Boolean);
+      buttons.forEach(btn => btn.disabled = true);
+      simStatus.textContent = '正在准备环境并启动实时模拟...';
+      try{
+        let resp = await fetch('/api/ai-stock-sim/status');
+        let data = await resp.json();
+        if(!resp.ok){
+          throw new Error(formatErrorDetail(data.detail));
+        }
+        resp = await fetch('/api/ai-stock-sim/sync-watchlist', {method:'POST'});
+        data = await resp.json();
+        if(!resp.ok){
+          simStatus.textContent = '候选池同步提示：' + formatErrorDetail(data.detail);
+        }else{
+          simStatus.textContent = data.message || '已同步最新候选池';
+        }
+        if(!data.bootstrap_ready){
+          resp = await fetch('/api/ai-stock-sim/bootstrap', {method:'POST'});
+          data = await resp.json();
+          if(!resp.ok){
+            throw new Error(formatErrorDetail(data.detail));
+          }
+        }
+        resp = await fetch('/api/ai-stock-sim/engine/start', {method:'POST'});
+        data = await resp.json();
+        if(!resp.ok){
+          throw new Error(formatErrorDetail(data.detail));
+        }
+        resp = await fetch('/api/ai-stock-sim/dashboard/start', {method:'POST'});
+        data = await resp.json();
+        if(!resp.ok){
+          throw new Error(formatErrorDetail(data.detail));
+        }
+        simStatus.textContent = '持续监控已启动。现在它会优先沿用最新自动候选池；需要更完整页面时，再点“打开实时控制台”。';
+        await loadAiStockSimStatus();
+      }catch(err){
+        simStatus.textContent = '一键启动失败：' + String(err);
+      }finally{
+        buttons.forEach(btn => btn.disabled = false);
+      }
     }
 
     go.onclick = async () => {
@@ -1398,9 +2079,12 @@ def index() -> str:
       poll(data.task_id, 'watchlist');
     };
 
-    runAutoPipeline.onclick = async () => {
+    async function handleAutoPipelineClick(){
+      autoStatus.className = '';
+      autoStatus.textContent = '按钮已点击，正在提交任务...';
       if(!apiKey.value.trim() && autoRunMode.value !== 'select_only'){
         alert('自动选股需要复用上面的 API Key 才能进入 AI 分析阶段');
+        autoStatus.textContent = '未提交：缺少 API Key';
         return;
       }
       runAutoPipeline.disabled = true;
@@ -1436,7 +2120,7 @@ def index() -> str:
       }
       autoStatus.textContent = '任务已创建: ' + data.task_id;
       poll(data.task_id, 'auto');
-    };
+    }
 
     function renderFileLinks(targetEl, fileInfo){
       if(!fileInfo || !fileInfo.url){
@@ -1455,8 +2139,9 @@ def index() -> str:
         opsStatus.textContent = '读取报告失败：' + formatErrorDetail(data.detail);
         return;
       }
+      const symbolNames = data.symbol_names || {};
       planMeta.textContent = data.plan && data.plan.filename ? ('文件：' + data.plan.filename) : '暂无交易计划';
-      planPreview.textContent = data.plan && data.plan.content ? data.plan.content : '暂无交易计划';
+      planPreview.textContent = data.plan && data.plan.content ? annotateSymbolText(data.plan.content, symbolNames) : '暂无交易计划';
       renderFileLinks(planLinks, data.plan);
       if(data.plan && data.plan.summary){
         const actionable = Number(data.plan.summary.actionable_count || 0);
@@ -1479,7 +2164,7 @@ def index() -> str:
       }
 
       reviewMeta.textContent = data.review && data.review.filename ? ('文件：' + data.review.filename) : '暂无复盘报告';
-      reviewPreview.textContent = data.review && data.review.content ? data.review.content : '暂无复盘报告';
+      reviewPreview.textContent = data.review && data.review.content ? annotateSymbolText(data.review.content, symbolNames) : '暂无复盘报告';
       renderFileLinks(reviewLinks, data.review);
       if(data.review && data.review.summary){
         const totalTrades = Number(data.review.summary.total_trades || 0);
@@ -1497,7 +2182,7 @@ def index() -> str:
         reviewSummary.textContent = '暂无复盘摘要';
       }
       autoMeta.textContent = data.auto && data.auto.filename ? ('文件：' + data.auto.filename) : '暂无自动选股报告';
-      autoPreview.textContent = data.auto && data.auto.content ? data.auto.content : '暂无自动选股报告';
+      autoPreview.textContent = data.auto && data.auto.content ? annotateSymbolText(data.auto.content, symbolNames) : '暂无自动选股报告';
       renderFileLinks(autoReportLinks, data.auto);
       if(data.auto && data.auto.summary){
         autoSummary.innerHTML =
@@ -1564,14 +2249,34 @@ def index() -> str:
       tradeCenter.scrollIntoView({behavior:'smooth', block:'start'});
     }
 
+    window.handleAutoPipelineClick = handleAutoPipelineClick;
+    runAutoPipeline.onclick = handleAutoPipelineClick;
     runPlan.onclick = () => runOps('plan', false);
     runSim.onclick = () => runOps('plan', true);
     runReview.onclick = () => runOps('review', false);
     refreshReports.onclick = () => loadReports();
+    if(simStartAll) simStartAll.onclick = () => runAiStockSimQuickStart();
+    if(simOpenDashboard) simOpenDashboard.onclick = () => window.open('http://127.0.0.1:8610', '_blank');
+    if(simBootstrap) simBootstrap.onclick = () => runAiStockSimAction('bootstrap');
+    if(simStartEngine) simStartEngine.onclick = () => runAiStockSimAction('startEngine');
+    if(simStopEngine) simStopEngine.onclick = () => runAiStockSimAction('stopEngine');
+    if(simStartDashboard) simStartDashboard.onclick = () => runAiStockSimAction('startDashboard');
+    if(simStopDashboard) simStopDashboard.onclick = () => runAiStockSimAction('stopDashboard');
+    if(simRefresh) simRefresh.onclick = () => loadAiStockSimStatus();
+    checkBackendHealth();
     loadReports();
+    loadAiStockSimStatus();
   </script>
 </body>
-</html>"""
+</html>""".replace("__WEB_BUILD_TAG__", WEB_BUILD_TAG)
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.post("/api/analyze")
@@ -1700,7 +2405,78 @@ def get_ai_trade_reports() -> Dict[str, object]:
         },
         "db_exists": AI_TRADE_DB_PATH.exists(),
         "share_cards": _latest_share_cards(),
+        "symbol_names": _symbol_name_map(),
     }
+
+
+@app.get("/api/ai-stock-sim/status")
+def get_ai_stock_sim_status() -> Dict[str, object]:
+    return _ai_stock_sim_status_payload()
+
+
+@app.post("/api/ai-stock-sim/bootstrap")
+def bootstrap_ai_stock_sim() -> Dict[str, object]:
+    args = ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "bootstrap.sh")]
+    try:
+        code, output = _run_workspace_command(args, timeout=1800)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="ai_stock_sim 初始化超时")
+    if code != 0:
+        raise HTTPException(status_code=500, detail=output or "ai_stock_sim 初始化失败")
+    return {
+        "message": "ai_stock_sim 初始化完成",
+        "output": output,
+        "status": _ai_stock_sim_status_payload(),
+    }
+
+
+@app.post("/api/ai-stock-sim/sync-watchlist")
+def sync_ai_stock_sim_watchlist() -> Dict[str, object]:
+    ok, message = _sync_ai_stock_sim_runtime_watchlist()
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"message": message, "status": _ai_stock_sim_status_payload()}
+
+
+@app.post("/api/ai-stock-sim/engine/start")
+def start_ai_stock_sim_engine() -> Dict[str, object]:
+    _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
+    ok, message = _start_background_service(
+        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
+        AI_STOCK_SIM_ENGINE_PID,
+        AI_STOCK_SIM_ENGINE_LOG,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail=message)
+    return {"message": message, "status": _ai_stock_sim_status_payload()}
+
+
+@app.post("/api/ai-stock-sim/engine/stop")
+def stop_ai_stock_sim_engine() -> Dict[str, object]:
+    message = _stop_background_service(AI_STOCK_SIM_ENGINE_PID)
+    _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
+    return {"message": message, "status": _ai_stock_sim_status_payload()}
+
+
+@app.post("/api/ai-stock-sim/dashboard/start")
+def start_ai_stock_sim_dashboard() -> Dict[str, object]:
+    _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
+    ok, message = _start_background_service(
+        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
+        AI_STOCK_SIM_DASHBOARD_PID,
+        AI_STOCK_SIM_DASHBOARD_LOG,
+        health_url=AI_STOCK_SIM_DASHBOARD_HEALTH_URL,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail=message)
+    return {"message": message, "status": _ai_stock_sim_status_payload()}
+
+
+@app.post("/api/ai-stock-sim/dashboard/stop")
+def stop_ai_stock_sim_dashboard() -> Dict[str, object]:
+    message = _stop_background_service(AI_STOCK_SIM_DASHBOARD_PID)
+    _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
+    return {"message": message, "status": _ai_stock_sim_status_payload()}
 
 
 @app.post("/api/ai-trade/plan")

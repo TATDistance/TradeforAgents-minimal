@@ -55,6 +55,16 @@ http://127.0.0.1:8600
 - 股票池批量分析
 - 候选卡片查看
 - 交易计划 / 模拟盘 / 复盘中心
+- 持续监控中心（沿用最新候选池）
+
+页面中的 4 个步骤是联动关系，不是 4 套独立功能：
+
+1. `步骤 1` 先自动选股并生成计划
+2. `步骤 2` 把步骤 1 的候选结果渲染成卡片
+3. `步骤 3` 展示同一批候选对应的交易计划、模拟盘和复盘
+4. `步骤 4` 继续沿用步骤 1 的候选池做持续监控与 AI 模拟交易
+
+页面里涉及股票代码的位置，都会尽量显示为“代码 + 股票名”。
 
 ### 2. AI 分析
 
@@ -94,6 +104,20 @@ ai_trade_system/
 - 生成复盘报告
 - 跑自动选股流水线
 
+另外仓库中还内嵌：
+
+```text
+ai_stock_sim/
+```
+
+它负责：
+
+- 东财实时快照监控
+- 三套基础策略实时出信号
+- AI 二次审批
+- A 股规则模拟撮合
+- Streamlit 实时控制台
+
 ## 快速开始
 
 ### 方式一：直接用网页
@@ -111,7 +135,8 @@ bash start.sh web
 3. 看“自动选股摘要”
 4. 看“候选卡片”
 5. 看“步骤 3：交易计划、模拟盘与复盘”
-6. 最后点卡片里的“打开分享页”
+6. 如需持续盯盘，再看“步骤 4：持续监控中心”
+7. 最后点卡片里的“打开分享页”
 
 ### 方式二：命令行
 
@@ -165,10 +190,19 @@ python3 -m ai_trade_system.scripts.run_review
 
 通常就意味着今天不需要人工下单。
 
+如果步骤 4 显示：
+
+```text
+当前处于 market_closed，已跳过实时股票池更新
+```
+
+这是正常现象，表示当前不是 A 股交易时段。系统会继续展示账户、持仓和日志，但不会新开模拟成交。
+
 ## 项目结构
 
 ```text
 TradeforAgents-minimal/
+├── ai_stock_sim/
 ├── ai_trade_system/
 ├── docs/
 ├── results/
@@ -181,6 +215,8 @@ TradeforAgents-minimal/
 
 - `scripts/minimal_web_app.py`
 - `scripts/minimal_deepseek_report.py`
+- `ai_stock_sim/dashboard/dashboard_app.py`
+- `ai_stock_sim/app/scheduler.py`
 - `ai_trade_system/scripts/run_auto_pipeline.py`
 - `ai_trade_system/scripts/run_daily_plan.py`
 - `ai_trade_system/scripts/run_review.py`
@@ -215,6 +251,12 @@ ai_trade_system/reports/paper_review.md
 
 ```text
 ai_trade_system/data/db.sqlite3
+```
+
+实时模拟交易数据库：
+
+```text
+ai_stock_sim/data/db.sqlite3
 ```
 
 ## 数据与稳定性说明
