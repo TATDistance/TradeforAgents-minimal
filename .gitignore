@@ -1,8 +1,15 @@
 .env
 .venv/
+.venv310/
 __pycache__/
 *.pyc
 *.pyo
 *.log
 results/
+ai_trade_system/.venv/
+ai_trade_system/.venv310/
+ai_trade_system/__pycache__/
+ai_trade_system/**/__pycache__/
+ai_trade_system/data/
+ai_trade_system/reports/
 .DS_Store

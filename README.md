@@ -1,9 +1,11 @@
 # TradeforAgents Minimal
 
-一个可独立部署的极简股票分析工具：
+一个可独立部署的极简股票分析工具，现在同时包含：
 - 输入股票代码
 - 调用 DeepSeek 生成多模块报告（支持 quick/deep 双模式）
 - 导出可转发分享页（HTML/Word）
+- 盘后自动选股
+- 交易计划、模拟盘与复盘
 
 ## 快速上手（推荐）
 
@@ -60,6 +62,52 @@ bash start.sh web
 - `start.sh`：根目录快捷入口
 - `scripts/cloud_bootstrap_minimal.sh`：云端一键部署脚本
 - `docs/minimal_cloud_deploy.md`：部署说明
+- `ai_trade_system/`：自动选股、交易计划、模拟盘、复盘源码
+
+## 集成后的推荐流程
+
+现在 Web 首页已经接入一条更完整的盘后工作流：
+
+1. 自动选股
+2. AI 分析候选股
+3. 生成次日交易计划
+4. 模拟盘验证
+5. 人工确认实盘
+
+访问 `http://127.0.0.1:8600` 后，直接使用首页的：
+
+- `步骤 1：自动选股与生成计划`
+- `步骤 3：交易计划、模拟盘与复盘`
+
+如果只是临时分析个股，再展开页面底部的“高级工具”。
+
+## AI Trade System CLI
+
+仓库内已经集成 `ai_trade_system`，常用命令如下：
+
+初始化本地模拟账户：
+
+```bash
+python3 -m ai_trade_system.scripts.bootstrap_db --cash 100000
+```
+
+根据已有分析结果生成交易计划：
+
+```bash
+python3 -m ai_trade_system.scripts.run_daily_plan --limit 20
+```
+
+跑自动选股流水线：
+
+```bash
+python3 -m ai_trade_system.scripts.run_auto_pipeline --mode quick --execute-sim
+```
+
+生成复盘报告：
+
+```bash
+python3 -m ai_trade_system.scripts.run_review
+```
 
 ## 一键运行（推荐）
 

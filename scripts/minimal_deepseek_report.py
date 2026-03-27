@@ -34,12 +34,15 @@ DeepSeek 单模型多模块股票分析工具（CLI）
 from __future__ import annotations
 
 import argparse
+import contextlib
 import html
 import json
 import logging
 import os
 import re
 import time
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,6 +55,13 @@ from openai import OpenAI
 
 # yfinance 会输出大量 warning（包含非致命网络重试），统一降级避免误判为失败
 logging.getLogger("yfinance").setLevel(logging.ERROR)
+
+EASTMONEY_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://quote.eastmoney.com/",
+}
+
+EASTMONEY_UT = "7eea3edcaed734bea9cbfc24409ed989"
 
 
 def normalize_symbol(user_symbol: str) -> Tuple[str, str]:
@@ -90,7 +100,12 @@ def infer_market_type(yf_symbol: str) -> str:
 def candidate_yf_symbols(user_symbol: str, preferred_yf_symbol: str) -> List[str]:
     cands: List[str] = [preferred_yf_symbol]
     if re.fullmatch(r"\d{6}", user_symbol):
-        cands.extend([f"{user_symbol}.SS", f"{user_symbol}.SZ"])
+        if user_symbol.startswith(("5", "6", "9")):
+            cands.extend([f"{user_symbol}.SS"])
+        elif user_symbol.startswith(("0", "1", "2", "3")):
+            cands.extend([f"{user_symbol}.SZ"])
+        else:
+            cands.extend([f"{user_symbol}.SS", f"{user_symbol}.SZ"])
 
     seen = set()
     uniq: List[str] = []
@@ -137,7 +152,135 @@ def pct_change(series: pd.Series, periods: int) -> float | None:
     return (new - old) / old
 
 
+def is_a_share_symbol(yf_symbol: str) -> bool:
+    return bool(re.fullmatch(r"\d{6}\.(SS|SZ)", yf_symbol))
+
+
+def eastmoney_secid(yf_symbol: str) -> str:
+    code, market = yf_symbol.split(".", 1)
+    if market == "SS":
+        return f"1.{code}"
+    return f"0.{code}"
+
+
+def eastmoney_request_json(url: str, params: Dict[str, Any], timeout: int = 15) -> Dict[str, Any]:
+    query = urllib.parse.urlencode(params)
+    request = urllib.request.Request(f"{url}?{query}", headers=EASTMONEY_HEADERS)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_market_data_eastmoney(yf_symbol: str, as_of_date: str) -> Dict[str, Any]:
+    end_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
+    start_dt = end_dt - timedelta(days=220)
+    code = yf_symbol.split(".", 1)[0]
+
+    payload = eastmoney_request_json(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        params={
+            "secid": eastmoney_secid(yf_symbol),
+            "ut": EASTMONEY_UT,
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+            "klt": "101",
+            "fqt": "1",
+            "beg": start_dt.strftime("%Y%m%d"),
+            "end": end_dt.strftime("%Y%m%d"),
+        },
+        timeout=15,
+    )
+    data = payload.get("data") or {}
+    klines = data.get("klines") or []
+    if not klines:
+        raise RuntimeError(f"无法从东财获取 A 股行情: {yf_symbol}")
+
+    rows = []
+    for line in klines:
+        parts = str(line).split(",")
+        if len(parts) < 7:
+            continue
+        rows.append(
+            {
+                "Date": parts[0],
+                "Open": float(parts[1]),
+                "Close": float(parts[2]),
+                "High": float(parts[3]),
+                "Low": float(parts[4]),
+                "Volume": float(parts[5]),
+                "Amount": float(parts[6]),
+            }
+        )
+    if not rows:
+        raise RuntimeError(f"东财返回的行情结构异常: {yf_symbol}")
+
+    hist = pd.DataFrame(rows)
+    close = hist["Close"].dropna()
+    volume = hist["Volume"].dropna()
+    latest = hist.iloc[-1]
+
+    ma20 = float(close.tail(20).mean()) if len(close) >= 20 else None
+    ma60 = float(close.tail(60).mean()) if len(close) >= 60 else None
+    vol_avg20 = float(volume.tail(20).mean()) if len(volume) >= 20 else None
+
+    p1w = pct_change(close, 5)
+    p1m = pct_change(close, 21)
+    p3m = pct_change(close, 63)
+    high_52w = float(close.tail(252).max()) if len(close) >= 1 else None
+    low_52w = float(close.tail(252).min()) if len(close) >= 1 else None
+
+    # 基本面字段先尽量复用 yfinance 的 info，失败时允许为空
+    info: Dict[str, Any] = {}
+    try:
+        info = yf.Ticker(yf_symbol).info or {}
+    except Exception:
+        info = {}
+
+    return {
+        "symbol": yf_symbol,
+        "as_of_date": as_of_date,
+        "data_source": "eastmoney_a_share",
+        "latest": {
+            "date": str(latest["Date"]),
+            "open": float(latest["Open"]),
+            "high": float(latest["High"]),
+            "low": float(latest["Low"]),
+            "close": float(latest["Close"]),
+            "volume": float(latest["Volume"]),
+            "amount": float(latest["Amount"]),
+        },
+        "technical": {
+            "ma20": ma20,
+            "ma60": ma60,
+            "volume_avg20": vol_avg20,
+            "change_1w": p1w,
+            "change_1m": p1m,
+            "change_3m": p3m,
+            "high_52w": high_52w,
+            "low_52w": low_52w,
+        },
+        "fundamentals": {
+            "longName": data.get("name") or info.get("longName") or code,
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            "marketCap": info.get("marketCap"),
+            "trailingPE": info.get("trailingPE"),
+            "forwardPE": info.get("forwardPE"),
+            "priceToBook": info.get("priceToBook"),
+            "dividendYield": info.get("dividendYield"),
+            "beta": info.get("beta"),
+            "currency": info.get("currency") or "CNY",
+        },
+    }
+
+
 def fetch_market_data(yf_symbol: str, as_of_date: str) -> Dict[str, Any]:
+    if is_a_share_symbol(yf_symbol):
+        try:
+            return fetch_market_data_eastmoney(yf_symbol, as_of_date)
+        except Exception:
+            pass
+
     end_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
     start_dt = end_dt - timedelta(days=220)
 
@@ -148,7 +291,11 @@ def fetch_market_data(yf_symbol: str, as_of_date: str) -> Dict[str, Any]:
     )
 
     if hist is None or hist.empty:
-        raise RuntimeError(f"无法从 yfinance 获取行情: {yf_symbol}")
+        raise RuntimeError(
+            "无法从 yfinance 获取行情: {0}（返回空数据，常见原因是 Yahoo 对当前 A 股代码无覆盖、接口抖动或网络不稳定）".format(
+                yf_symbol
+            )
+        )
 
     close = hist["Close"].dropna()
     volume = hist["Volume"].dropna()
@@ -174,6 +321,7 @@ def fetch_market_data(yf_symbol: str, as_of_date: str) -> Dict[str, Any]:
     snapshot = {
         "symbol": yf_symbol,
         "as_of_date": as_of_date,
+        "data_source": "yfinance",
         "latest": {
             "date": str(hist.index[-1].date()),
             "open": float(latest.get("Open", 0.0)),
@@ -302,6 +450,101 @@ def build_data_context(
         "新闻JSON:\n"
         f"{json.dumps(news, ensure_ascii=False, indent=2)}\n"
     )
+
+
+REUSED_DIRECTION_REPORTS = [
+    "fundamentals_report.md",
+    "news_report.md",
+    "research_team_decision.md",
+    "investment_plan.md",
+    "risk_management_decision.md",
+]
+
+
+def _load_json_file(path: Path) -> Dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _parse_date(value: str) -> datetime.date | None:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _result_dir_is_reusable(result_dir: Path) -> bool:
+    decision_path = result_dir / "decision.json"
+    reports_dir = result_dir / "reports"
+    if not decision_path.exists() or not reports_dir.exists():
+        return False
+
+    try:
+        decision = _load_json_file(decision_path)
+    except Exception:
+        return False
+
+    if decision.get("degraded_modules"):
+        return False
+
+    required = ["final_report.md", "final_trade_decision.md"] + REUSED_DIRECTION_REPORTS
+    return all((reports_dir / name).exists() for name in required)
+
+
+def find_recent_reusable_result(
+    results_dir: Path,
+    user_symbol: str,
+    analysis_date: str,
+    direction_cache_days: int,
+) -> Dict[str, Any] | None:
+    symbol_root = results_dir / user_symbol
+    if not symbol_root.exists():
+        return None
+
+    target_date = _parse_date(analysis_date)
+    if target_date is None:
+        return None
+
+    exact_match = None
+    recent_match = None
+
+    for child in symbol_root.iterdir():
+        if not child.is_dir():
+            continue
+        child_date = _parse_date(child.name)
+        if child_date is None:
+            continue
+        if not _result_dir_is_reusable(child):
+            continue
+
+        delta_days = (target_date - child_date).days
+        if delta_days == 0:
+            exact_match = {
+                "type": "same_day",
+                "result_dir": child,
+                "analysis_date": child.name,
+                "delta_days": delta_days,
+            }
+            break
+        if 0 < delta_days <= direction_cache_days:
+            if recent_match is None or child.name > str(recent_match["analysis_date"]):
+                recent_match = {
+                    "type": "direction_cache",
+                    "result_dir": child,
+                    "analysis_date": child.name,
+                    "delta_days": delta_days,
+                }
+
+    return exact_match or recent_match
+
+
+def load_reused_reports(result_dir: Path) -> Dict[str, str]:
+    reports_dir = result_dir / "reports"
+    reused = {}
+    for name in REUSED_DIRECTION_REPORTS:
+        path = reports_dir / name
+        if path.exists():
+            reused[name] = path.read_text(encoding="utf-8")
+    return reused
 
 
 def safe_json_extract(text: str) -> Dict[str, Any] | None:
@@ -547,8 +790,10 @@ def generate_reports(
     max_retries: int,
     analyst_workers: int = 3,
     continue_on_error: bool = True,
+    reused_reports: Dict[str, str] | None = None,
+    reused_source_label: str = "",
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    reports: Dict[str, str] = {}
+    reports: Dict[str, str] = dict(reused_reports or {})
     degraded_modules: List[str] = []
 
     def run_module(
@@ -673,6 +918,7 @@ def generate_reports(
                 user_prompt=user_prompt,
             ): name
             for name, (system_prompt, user_prompt) in analyst_prompts.items()
+            if f"{name}.md" not in reports
         }
         for fut in as_completed(fut_map):
             name = fut_map[fut]
@@ -682,33 +928,45 @@ def generate_reports(
     fundamentals_report = reports.get("fundamentals_report.md", "")
     news_report = reports.get("news_report.md", "")
 
-    research_team_decision = run_module(
-        module_name="research_team_decision",
-        system_prompt="你是研究团队主持人。必须用中文Markdown输出。",
-        user_prompt=(
-            "请生成 research_team_decision.md，必须包含三部分：\n"
-            "## 多头研究员观点\n"
-            "## 空头研究员观点\n"
-            "## 研究经理综合决策\n"
-            "要求：论据来自行情/基本面/新闻，不要空话。\n\n"
-            f"market_report:\n{market_report}\n\n"
-            f"fundamentals_report:\n{fundamentals_report}\n\n"
-            f"news_report:\n{news_report}\n"
-        ),
-    )
+    if "research_team_decision.md" in reports:
+        research_team_decision = reports["research_team_decision.md"]
+        module_logs.append(
+            f"[{datetime.now().isoformat()}] reuse_report name=research_team_decision source={reused_source_label}"
+        )
+    else:
+        research_team_decision = run_module(
+            module_name="research_team_decision",
+            system_prompt="你是研究团队主持人。必须用中文Markdown输出。",
+            user_prompt=(
+                "请生成 research_team_decision.md，必须包含三部分：\n"
+                "## 多头研究员观点\n"
+                "## 空头研究员观点\n"
+                "## 研究经理综合决策\n"
+                "要求：论据来自行情/基本面/新闻，不要空话。\n\n"
+                f"market_report:\n{market_report}\n\n"
+                f"fundamentals_report:\n{fundamentals_report}\n\n"
+                f"news_report:\n{news_report}\n"
+            ),
+        )
     reports["research_team_decision.md"] = research_team_decision
 
-    investment_plan = run_module(
-        module_name="investment_plan",
-        system_prompt="你是投资组合经理。必须用中文Markdown输出。",
-        user_prompt=(
-            "请生成 investment_plan.md：\n"
-            "- 明确给出当前建议：买入/持有/卖出（三选一）\n"
-            "- 给出仓位建议（如轻仓/中仓/空仓）\n"
-            "- 给出触发条件（什么情况下改变观点）\n\n"
-            f"research_team_decision:\n{research_team_decision}\n"
-        ),
-    )
+    if "investment_plan.md" in reports:
+        investment_plan = reports["investment_plan.md"]
+        module_logs.append(
+            f"[{datetime.now().isoformat()}] reuse_report name=investment_plan source={reused_source_label}"
+        )
+    else:
+        investment_plan = run_module(
+            module_name="investment_plan",
+            system_prompt="你是投资组合经理。必须用中文Markdown输出。",
+            user_prompt=(
+                "请生成 investment_plan.md：\n"
+                "- 明确给出当前建议：买入/持有/卖出（三选一）\n"
+                "- 给出仓位建议（如轻仓/中仓/空仓）\n"
+                "- 给出触发条件（什么情况下改变观点）\n\n"
+                f"research_team_decision:\n{research_team_decision}\n"
+            ),
+        )
     reports["investment_plan.md"] = investment_plan
 
     trader_investment_plan = run_module(
@@ -727,21 +985,27 @@ def generate_reports(
     )
     reports["trader_investment_plan.md"] = trader_investment_plan
 
-    risk_management_decision = run_module(
-        module_name="risk_management_decision",
-        system_prompt="你是风险管理委员会。必须用中文Markdown输出。",
-        user_prompt=(
-            "请生成 risk_management_decision.md，必须包含：\n"
-            "## 激进风险观点\n"
-            "## 保守风险观点\n"
-            "## 中性风险观点\n"
-            "## 风险委员会最终裁决\n"
-            "并明确主要风险来源和应对动作。\n\n"
-            f"trader_investment_plan:\n{trader_investment_plan}\n\n"
-            f"investment_plan:\n{investment_plan}\n\n"
-            f"news_report:\n{news_report}\n"
-        ),
-    )
+    if "risk_management_decision.md" in reports:
+        risk_management_decision = reports["risk_management_decision.md"]
+        module_logs.append(
+            f"[{datetime.now().isoformat()}] reuse_report name=risk_management_decision source={reused_source_label}"
+        )
+    else:
+        risk_management_decision = run_module(
+            module_name="risk_management_decision",
+            system_prompt="你是风险管理委员会。必须用中文Markdown输出。",
+            user_prompt=(
+                "请生成 risk_management_decision.md，必须包含：\n"
+                "## 激进风险观点\n"
+                "## 保守风险观点\n"
+                "## 中性风险观点\n"
+                "## 风险委员会最终裁决\n"
+                "并明确主要风险来源和应对动作。\n\n"
+                f"trader_investment_plan:\n{trader_investment_plan}\n\n"
+                f"investment_plan:\n{investment_plan}\n\n"
+                f"news_report:\n{news_report}\n"
+            ),
+        )
     reports["risk_management_decision.md"] = risk_management_decision
 
     # 结构化最终决策：可用 reasoner，失败自动降级到主模型
@@ -755,7 +1019,7 @@ def generate_reports(
             '  "confidence": 0.55,\n'
             '  "risk_score": 0.50,\n'
             '  "target_price_range": "待确认",\n'
-            '  "reasoning": "最终决策模块超时，已按保守策略输出中性建议。"\n'
+            '  "reasoning": "最终决策模块失败，已按保守策略输出中性建议。"\n'
             '}'
         ),
         system_prompt="你是投资决策结构化助手，只返回JSON，不要返回markdown。",
@@ -810,6 +1074,7 @@ def generate_reports(
         "model_main": model,
         "model_final": final_model,
         "degraded_modules": degraded_modules,
+        "reused_direction_source": reused_source_label,
     }
 
     final_trade_decision_md = (
@@ -865,6 +1130,12 @@ def generate_reports(
             "\n## 降级记录\n\n"
             f"- 以下模块发生超时/错误并已自动降级继续：{'、'.join(degraded_modules)}\n"
             "- 建议网络稳定后再次运行以获得更完整结果。\n"
+        )
+    if reused_source_label:
+        final_report += (
+            "\n## 方向缓存复用\n\n"
+            f"- 本次复用了较早分析的中期方向判断：{reused_source_label}\n"
+            "- 当日重新刷新的部分主要是市场面、交易执行计划和最终交易决策。\n"
         )
     reports["final_report.md"] = final_report
 
@@ -1293,6 +1564,8 @@ def write_outputs(
         "model_main": decision_obj.get("model_main", model),
         "model_final": decision_obj.get("model_final", model),
         "degraded_modules": decision_obj.get("degraded_modules", []),
+        "analysis_strategy": decision_obj.get("analysis_strategy", "full_analysis"),
+        "reused_direction_source": decision_obj.get("reused_direction_source", ""),
         "generator": "minimal_deepseek_report.py",
         "reports_count": len(report_types),
         "report_types": report_types,
@@ -1410,6 +1683,17 @@ def parse_args() -> argparse.Namespace:
         help="禁用行情/新闻缓存",
     )
     parser.add_argument(
+        "--direction-cache-days",
+        type=int,
+        default=int(os.getenv("TA_MIN_DIRECTION_CACHE_DAYS", "3")),
+        help="方向缓存复用天数，默认3天",
+    )
+    parser.add_argument(
+        "--force-full-analysis",
+        action="store_true",
+        help="强制全量重跑，不复用同日结果和方向缓存",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="严格模式：任一模块失败即退出（默认关闭，默认会自动降级继续）",
@@ -1444,10 +1728,6 @@ def main() -> int:
     except ValueError:
         raise SystemExit("--date 格式错误，应为 YYYY-MM-DD")
 
-    api_key = args.api_key.strip() or os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key:
-        raise SystemExit("未检测到 DeepSeek API Key。请设置 DEEPSEEK_API_KEY 或传 --api-key")
-
     project_root = Path(__file__).resolve().parents[1]
     results_dir = Path(args.results_dir)
     if not results_dir.is_absolute():
@@ -1463,8 +1743,43 @@ def main() -> int:
     module_logs.append(
         f"[{datetime.now().isoformat()}] start symbol={user_symbol} preferred={yf_symbol} "
         f"date={args.analysis_date} mode={args.mode} model={args.model} final_model={args.final_model} "
-        f"timeout={args.request_timeout} retries={args.retries} cache={'off' if args.disable_cache else 'on'} ttl_s={cache_ttl_seconds}"
+        f"timeout={args.request_timeout} retries={args.retries} cache={'off' if args.disable_cache else 'on'} ttl_s={cache_ttl_seconds} "
+        f"direction_cache_days={args.direction_cache_days} force_full={args.force_full_analysis}"
     )
+
+    reused_result = None
+    reused_reports: Dict[str, str] = {}
+    reused_source_label = ""
+    if not args.force_full_analysis:
+        reused_result = find_recent_reusable_result(
+            results_dir=results_dir,
+            user_symbol=user_symbol,
+            analysis_date=args.analysis_date,
+            direction_cache_days=max(0, int(args.direction_cache_days)),
+        )
+        if reused_result and reused_result["type"] == "same_day":
+            decision_path = reused_result["result_dir"] / "decision.json"
+            decision_obj = _load_json_file(decision_path)
+            print("[cache] 命中同日有效结果，直接复用，无需重跑")
+            print(f"目录: {reused_result['result_dir']}")
+            print(f"最终建议: {decision_obj.get('action')} | 目标区间: {decision_obj.get('target_price_range')}")
+            return 0
+        if reused_result and reused_result["type"] == "direction_cache":
+            reused_reports = load_reused_reports(reused_result["result_dir"])
+            reused_source_label = "{0}（距今{1}天）".format(
+                reused_result["analysis_date"],
+                reused_result["delta_days"],
+            )
+            print(
+                "[cache] 命中方向缓存，复用慢变量分析: {0}".format(reused_source_label)
+            )
+            module_logs.append(
+                f"[{datetime.now().isoformat()}] direction_cache hit source={reused_result['result_dir']}"
+            )
+
+    api_key = args.api_key.strip() or os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        raise SystemExit("未检测到 DeepSeek API Key。请设置 DEEPSEEK_API_KEY 或传 --api-key")
 
     # 1) 行情
     last_error: Exception | None = None
@@ -1501,7 +1816,10 @@ def main() -> int:
             break
 
     if market_snapshot is None:
-        raise SystemExit(f"所有候选代码都获取失败: {symbols_to_try}; 最后错误: {last_error}")
+        raise SystemExit(
+            "所有候选代码都获取失败: {0}; 最后错误: {1}; 这通常不是股票本身异常，而是 yfinance/Yahoo 对 A 股覆盖不稳定。"
+            .format(symbols_to_try, last_error)
+        )
 
     market_type = infer_market_type(symbol_used)
 
@@ -1548,9 +1866,14 @@ def main() -> int:
         max_retries=args.retries,
         analyst_workers=args.analyst_workers,
         continue_on_error=not args.strict,
+        reused_reports=reused_reports,
+        reused_source_label=reused_source_label,
     )
     metrics_summary = summarize_module_metrics(module_metrics)
     decision_obj["module_metrics_summary"] = metrics_summary
+    decision_obj["analysis_strategy"] = "direction_cache_refresh" if reused_source_label else "full_analysis"
+    decision_obj["direction_cache_days"] = int(args.direction_cache_days)
+    decision_obj["force_full_analysis"] = bool(args.force_full_analysis)
 
     # 4) 写文件
     print("[4/6] 写入结果目录")
