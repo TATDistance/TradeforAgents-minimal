@@ -1,19 +1,100 @@
-# TradeforAgents Minimal
+# TradeforAgents-minimal
 
-一个可独立部署的极简股票分析工具，现在同时包含：
-- 输入股票代码
-- 调用 DeepSeek 生成多模块报告（支持 quick/deep 双模式）
-- 导出可转发分享页（HTML/Word）
-- 盘后自动选股
-- 交易计划、模拟盘与复盘
+TradeforAgents-minimal is now a practical after-close AI trading workspace for China A-shares.
 
-## 快速上手（推荐）
+It combines:
 
-仓库地址：
+- AI stock analysis
+- Share-page generation
+- Auto-selection after market close
+- Structured signal conversion
+- A-share risk checks
+- Paper-trading validation
+- Next-day trade planning
 
-`https://github.com/TATDistance/TradeforAgents-minimal`
+The target workflow is:
 
-在 Ubuntu / WSL 终端执行：
+`收盘后选股 -> AI 分析 -> 交易计划 -> 模拟盘验证 -> 人工实盘执行`
+
+## What This Project Is Good For
+
+- China A-share swing / after-close workflow
+- Personal use without broker API
+- AI-assisted stock review
+- Paper-trading first validation
+- Manual execution through a broker app
+
+## What It Does Not Try To Do
+
+- Fully automated live trading
+- Broker account synchronization
+- Intraday high-frequency execution
+- Institutional-grade market data infrastructure
+
+## Main Features
+
+### 1. Web UI on port `8600`
+
+The homepage now supports:
+
+- Recommended auto-selection workflow
+- Single-stock AI analysis
+- Watchlist batch analysis
+- Auto-selection result cards
+- Trade plan / paper-trading / review center
+
+Start it with:
+
+```bash
+bash start.sh web
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8600
+```
+
+### 2. AI analysis
+
+Supports:
+
+- `quick`
+- `deep`
+
+Outputs are written to:
+
+```text
+results/<股票代码>/<日期>/
+```
+
+Important files include:
+
+- `analysis_metadata.json`
+- `decision.json`
+- `message_tool.log`
+- `share/<股票代码>_<日期>_share.html`
+
+### 3. Embedded AI trade workflow
+
+This repository now includes an embedded package:
+
+```text
+ai_trade_system/
+```
+
+It provides:
+
+- signal ingestion from `decision.json`
+- A-share risk rules
+- paper-trading simulation
+- daily trade-plan generation
+- review report generation
+- auto-selection pipeline
+
+## Quick Start
+
+### Option A: Use the Web UI
 
 ```bash
 git clone https://github.com/TATDistance/TradeforAgents-minimal.git
@@ -21,181 +102,119 @@ cd TradeforAgents-minimal
 bash start.sh web
 ```
 
-然后浏览器打开：
+In the page:
 
-`http://127.0.0.1:8600`
+1. Fill in `API Key`
+2. Use `步骤 1：自动选股与生成计划`
+3. Check `自动选股摘要`
+4. Check `候选卡片`
+5. Check `交易计划`
+6. Open the share page for names you want to review in detail
 
-在页面里填写：
-- 股票代码（例如 `600028`）
-- API Key（自己的）
-- Base URL（下拉选择）
-- 模式（`quick` 或 `deep`）
+### Option B: Use the CLI
 
-点击“开始分析”即可。
-
-分析完成后结果在：
-
-`results/<股票代码>/<日期>/`
-
-分享文件在：
-
-`results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.html`
-
-如果要从同局域网其他设备访问（例如手机）：
-- 先查运行机器 IP（例如 `192.168.6.239`）
-- 访问 `http://192.168.6.239:8600`
-
-如果提示 `8600` 端口被占用，可先执行：
+Single-stock analysis:
 
 ```bash
-pkill -f "minimal_web_app.py" || true
-bash start.sh web
+bash start.sh cli 600028 --quick
+bash start.sh cli 000630 --deep
 ```
 
-## 目录
-
-- `scripts/minimal_deepseek_report.py`：命令行分析器
-- `scripts/minimal_web_app.py`：极简 Web 界面（手机可访问）
-- `scripts/run_minimal_deepseek.sh`：CLI 启动脚本
-- `scripts/run_minimal_web_app.sh`：Web 启动脚本
-- `scripts/one_click_start.sh`：本地一键初始化+启动
-- `start.sh`：根目录快捷入口
-- `scripts/cloud_bootstrap_minimal.sh`：云端一键部署脚本
-- `docs/minimal_cloud_deploy.md`：部署说明
-- `ai_trade_system/`：自动选股、交易计划、模拟盘、复盘源码
-
-## 集成后的推荐流程
-
-现在 Web 首页已经接入一条更完整的盘后工作流：
-
-1. 自动选股
-2. AI 分析候选股
-3. 生成次日交易计划
-4. 模拟盘验证
-5. 人工确认实盘
-
-访问 `http://127.0.0.1:8600` 后，直接使用首页的：
-
-- `步骤 1：自动选股与生成计划`
-- `步骤 3：交易计划、模拟盘与复盘`
-
-如果只是临时分析个股，再展开页面底部的“高级工具”。
-
-## AI Trade System CLI
-
-仓库内已经集成 `ai_trade_system`，常用命令如下：
-
-初始化本地模拟账户：
+Initialize local paper account:
 
 ```bash
 python3 -m ai_trade_system.scripts.bootstrap_db --cash 100000
 ```
 
-根据已有分析结果生成交易计划：
+Generate a daily trade plan:
 
 ```bash
 python3 -m ai_trade_system.scripts.run_daily_plan --limit 20
 ```
 
-跑自动选股流水线：
+Run the full after-close pipeline:
 
 ```bash
 python3 -m ai_trade_system.scripts.run_auto_pipeline --mode quick --execute-sim
 ```
 
-生成复盘报告：
+Generate a review report:
 
 ```bash
 python3 -m ai_trade_system.scripts.run_review
 ```
 
-## 一键运行（推荐）
+## Recommended Daily Workflow
 
-```bash
-bash start.sh web
+For personal A-share trading, the most practical loop is:
+
+1. Run auto-selection after market close
+2. Let the system analyze shortlisted names
+3. Read the one-line summary
+4. Check whether the plan has executable trades
+5. If yes, place orders manually next day
+6. Use paper-trading and review reports to validate signal quality
+
+## Project Structure
+
+```text
+TradeforAgents-minimal/
+├── ai_trade_system/
+├── docs/
+├── results/
+├── scripts/
+├── start.sh
+└── README.md
 ```
 
-首次运行会自动：
-- 创建 `.venv`
-- 安装 `requirements.txt`
-- 生成 `.env`（若不存在）
+Important files:
 
-访问：`http://127.0.0.1:8600`
+- `scripts/minimal_web_app.py`
+- `scripts/minimal_deepseek_report.py`
+- `ai_trade_system/scripts/run_auto_pipeline.py`
+- `ai_trade_system/scripts/run_daily_plan.py`
+- `ai_trade_system/scripts/run_review.py`
 
-说明：
-- 可以直接在 Web 页面填写 `API Key`（无需先改 `.env`）
-- 页面可选 `quick`（更快）/`deep`（更深度）
+## Output Paths
 
-## 一键 CLI
+AI analysis output:
 
-```bash
-bash start.sh cli 600028 --quick
-bash start.sh cli 518880 --deep
-bash start.sh cli 000630 --mode deep --final-model deepseek-reasoner --request-timeout 120 --retries 2
+```text
+results/<symbol>/<date>/
 ```
 
-## 传统方式（手动）
+Trade plans:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
-cp .env.example .env
+```text
+ai_trade_system/reports/daily_plan_YYYY-MM-DD.md
 ```
 
-编辑 `.env`：
+Auto-selection reports:
 
-```bash
-DEEPSEEK_API_KEY=sk-xxxx
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+```text
+ai_trade_system/reports/auto_candidates_YYYY-MM-DD.md
 ```
 
-Web：
+Paper-trading review:
 
-```bash
-bash scripts/run_minimal_web_app.sh
+```text
+ai_trade_system/reports/paper_review.md
 ```
 
-CLI：
+Paper-trading database:
 
-```bash
-bash scripts/run_minimal_deepseek.sh 600028 --request-timeout 120 --retries 2
-bash scripts/run_minimal_deepseek.sh 600028 --quick
-bash scripts/run_minimal_deepseek.sh 600028 --deep
+```text
+ai_trade_system/data/db.sqlite3
 ```
 
-## 输出
+## Notes on Data and Stability
 
-报告默认在：
+- Main market screening uses Eastmoney-style public data
+- Enhancement dimensions can use AKShare when available
+- The system tolerates partial failures
+- One failed stock in a batch no longer invalidates the whole pipeline if others succeeded
 
-`results/<股票代码>/<日期>/`
+## Documentation
 
-核心文件：
-
-- `analysis_metadata.json`
-- `decision.json`
-- `message_tool.log`
-- `module_metrics.json`
-- `module_metrics_summary.json`
-
-分享文件在（个股+日期命名）：
-
-- `results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.html`
-- `results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.md`
-- `results/<股票代码>/<日期>/share/<股票代码>_<日期>_share.docx`
-
-模块统计表在：
-
-- `results/<股票代码>/<日期>/reports/module_metrics.md`
-
-缓存文件在：
-
-`results/_cache/`
-
-## 速度与稳定性策略
-
-- `quick` 模式：默认更快（建议日常用）
-- `deep` 模式：最终决策默认用 `deepseek-reasoner`
-- 分析师模块并行执行（市场/基本面/新闻）
-- 模块失败自动降级继续输出（可用 `--strict` 改为失败即退出）
+- [AI Trade Workflow](docs/ai_trade_workflow.md)
+- [Cloud Deploy Guide](docs/minimal_cloud_deploy.md)

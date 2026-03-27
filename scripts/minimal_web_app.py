@@ -737,7 +737,7 @@ def index() -> str:
   <style>
     :root{--bg:#f5f7fb;--panel:#ffffff;--line:#dbe4f0;--text:#10233f;--muted:#607089;--brand:#2056d8;--brand-soft:#eaf1ff;--green:#0f9f6e;--amber:#b7791f}
     body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;max-width:760px;margin:0 auto;padding:12px;background:linear-gradient(180deg,#f4f7fb 0%,#eef3f9 100%);color:var(--text);font-size:17px;line-height:1.65}
-    .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:0 10px 32px rgba(15,23,42,.06)}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:0 10px 32px rgba(15,23,42,.06);width:100%;max-width:680px;margin:0 auto}
     input,select,button{width:100%;padding:11px 12px;font-size:17px;border:1px solid #cbd5e1;border-radius:10px;box-sizing:border-box}
     button{background:var(--brand);color:#fff;border:none;font-weight:600;cursor:pointer}
     button:disabled{opacity:.5;cursor:not-allowed}
@@ -799,6 +799,7 @@ def index() -> str:
     .row.measure,.row3.measure,.grid2.measure,.grid3.measure{max-width:100%}
     .toolbar.measure{max-width:100%}
     .preview-box{max-height:220px}
+    .stack > details{width:100%;max-width:680px;margin:0 auto}
     @media (max-width: 980px){
       .hero-grid,.grid2,.grid3,.row,.row3,.share-grid,.step-grid,.result-strip{grid-template-columns:1fr}
     }
