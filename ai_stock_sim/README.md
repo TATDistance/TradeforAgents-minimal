@@ -16,6 +16,7 @@
 - 市场状态机与动态策略权重
 - AI 审核员与 AI 主动组合管理器
 - 最终动作计划与组合级风控
+- AI 决策引擎与新旧模式对照
 
 项目不会接入任何真实券商 API，也不会模拟点击券商 APP。
 
@@ -170,18 +171,59 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 - 实际成交数量
 - 备注和未执行原因
 
+## 第四阶段新增能力
+
+第四阶段开始，系统不再只有“策略主导 + AI 审批”这一条链。
+
+现在支持三种模式：
+
+- `legacy_review_mode`
+- `ai_decision_engine_mode`
+- `compare_mode`
+
+其中：
+
+- 旧模式：策略先出候选，AI 做审核
+- 新模式：策略只提供特征与分数，AI 决策引擎成为中央决策器
+- 对照模式：同一轮行情下同时产出旧模式和新模式决策，用于研究差异
+
+8610 控制台现在可以直接看到：
+
+- 当前运行模式
+- AI 决策输入摘要
+- AI 审核员
+- AI 决策中心
+- 执行结果
+- 实时模式对照
+
 ## 运行逻辑
 
-每一轮主循环会执行：
+### 旧主链
 
 1. 抓取东财实时行情
 2. 筛选股票池
 3. 运行动量、双均线、MACD 趋势、均值回归、突破、趋势回踩六类策略
-4. 至少两个策略同向后，交给 AI 审批
+4. 候选信号交给 AI 审核
 5. 进入 A 股风控
 6. 通过后执行模拟撮合
 7. 更新账户、持仓、日志和权益曲线
-8. 按条件刷新评估记录与日报
+
+### 第四阶段新主链
+
+1. 抓取东财实时行情
+2. 六套策略不再直接主导交易，而是输出结构化特征与分数
+3. 构建统一决策上下文：
+   - 行情
+   - 策略特征
+   - 技术指标
+   - 市场状态
+   - 账户状态
+   - 当前持仓状态
+4. 交给 `AI 决策引擎`
+5. 进入 A 股风控
+6. 通过后执行模拟撮合
+7. 更新账户、持仓、日志和权益曲线
+8. compare_mode 下同时记录旧模式和新模式差异
 
 需要注意：
 
@@ -201,6 +243,14 @@ Streamlit 控制台新增“人工回填”页，可以记录：
   股票池筛选，过滤 ST、低流动性、上市不足天数
 - `app/strategy_engine.py`
   统一调度公开策略，当前已接入 `momentum`、`dual_ma`、`macd_trend`、`mean_reversion`、`breakout`、`trend_pullback`
+- `app/feature_service.py`
+  将六套策略统一转成结构化特征与分数
+- `app/decision_context_builder.py`
+  为 AI 决策引擎构建统一上下文
+- `app/ai_decision_engine.py`
+  第四阶段新增的中央决策器
+- `app/decision_mode_router.py`
+  管理旧模式、新模式和对照模式
 - `app/ai_decision_service.py`
   读取 `TradeforAgents-minimal/results/.../decision.json`，必要时可调用 subprocess
 - `app/risk_engine.py`
@@ -220,7 +270,7 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 - `app/vnpy_adapter.py`
   vn.py CTA/Alpha 参数导出、桥接 stub 生成与结果回流适配
 - `dashboard/dashboard_app.py`
-  Streamlit 实时控制台，支持策略横向比较、卖出策略评分、模式对照和人工回填
+  Streamlit 实时控制台，支持策略横向比较、卖出策略评分、模式对照、人工回填和 AI 决策中心
 
 ## 配置
 
@@ -240,12 +290,33 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 - 观察池
 - 评估窗口
 - 评分权重
+- 决策模式
 - 控制台刷新与日志筛选
 
 其中：
 
 - `config/symbols.yaml` 是默认观察池
 - `config/runtime_symbols.yaml` 会在网页自动选股后由系统自动写入，用于给实时监控继承最新候选池
+- `config/settings.yaml -> decision_engine.mode` 可以直接切模式
+
+### 第四阶段最常用的配置项
+
+```yaml
+decision_engine:
+  mode: ai_decision_engine_mode
+  use_decision_json_as_research_cache: true
+  fallback_to_legacy_mode_on_failure: true
+
+feature_layer:
+  use_strategy_scores: true
+  use_market_regime: true
+  use_portfolio_state: true
+  use_position_state: true
+
+compare_mode:
+  enabled: true
+  record_mode_differences: true
+```
 
 ## 数据输出
 

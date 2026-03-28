@@ -122,6 +122,29 @@ class FusionConfig:
 
 
 @dataclass
+class DecisionEngineConfig:
+    enabled: bool = True
+    mode: str = "ai_decision_engine_mode"
+    use_decision_json_as_research_cache: bool = True
+    fallback_to_legacy_mode_on_failure: bool = True
+    lightweight_realtime_ai: bool = True
+
+
+@dataclass
+class FeatureLayerConfig:
+    use_strategy_scores: bool = True
+    use_market_regime: bool = True
+    use_portfolio_state: bool = True
+    use_position_state: bool = True
+
+
+@dataclass
+class CompareModeConfig:
+    enabled: bool = True
+    record_mode_differences: bool = True
+
+
+@dataclass
 class Settings:
     project_root: Path
     initial_cash: float = 100000.0
@@ -156,6 +179,9 @@ class Settings:
     ai_portfolio_manager: AIPortfolioManagerConfig = field(default_factory=AIPortfolioManagerConfig)
     portfolio_feedback: PortfolioFeedbackConfig = field(default_factory=PortfolioFeedbackConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
+    decision_engine: DecisionEngineConfig = field(default_factory=DecisionEngineConfig)
+    feature_layer: FeatureLayerConfig = field(default_factory=FeatureLayerConfig)
+    compare_mode: CompareModeConfig = field(default_factory=CompareModeConfig)
 
     @property
     def data_dir(self) -> Path:

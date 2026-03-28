@@ -7,7 +7,11 @@ from typing import Dict, List
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from .action_planner import ActionPlanner
+from .ai_decision_engine import AIDecisionEngine
 from .ai_portfolio_manager import AIPortfolioManager
+from .decision_compare_service import DecisionCompareService
+from .decision_context_builder import DecisionContextBuilder
+from .decision_mode_router import AI_ENGINE_MODE, COMPARE_MODE, DecisionModeRouter, LEGACY_MODE
 from .db import connect_db, initialize_db, write_ai_decision, write_final_signal, write_signal, write_system_log
 from .market_regime_service import MarketRegimeService
 from .logger import log_event
@@ -39,6 +43,10 @@ class TradingScheduler:
         self.strategy_weight_service = StrategyWeightService(self.settings)
         self.strategy_engine = StrategyEngine(self.settings, self.market_data)
         self.signal_fusion = SignalFusion(self.settings)
+        self.decision_context_builder = DecisionContextBuilder(self.settings)
+        self.ai_decision_engine = AIDecisionEngine(self.settings)
+        self.decision_mode_router = DecisionModeRouter(self.settings)
+        self.decision_compare_service = DecisionCompareService()
         self.ai_portfolio_manager = AIPortfolioManager(self.settings)
         self.portfolio_decision_service = PortfolioDecisionService(self.settings)
         self.action_planner = ActionPlanner(self.settings)
@@ -62,6 +70,7 @@ class TradingScheduler:
     def run_cycle(self) -> Dict[str, object]:
         phase = self.market_clock.phase()
         trade_date = phase.now.date().isoformat()
+        mode_state = self.decision_mode_router.resolve()
         conn = connect_db(self.settings)
         initialize_db(self.settings)
         try:
@@ -75,6 +84,11 @@ class TradingScheduler:
                 for _, row in universe_result.snapshot.iterrows()
             }
             grouped: Dict[str, List[StrategySignal]] = {}
+            feature_map = {}
+            feature_fusions = {}
+            decision_contexts = {}
+            engine_decisions = {}
+            compare_result = {}
             final_signals: List[FinalSignal] = []
             ai_decisions = []
             portfolio = build_portfolio_state(conn)
@@ -87,35 +101,122 @@ class TradingScheduler:
             planned_actions = []
             risk_results: List[Dict[str, object]] = []
             if phase.should_run_strategy:
-                grouped = self.strategy_engine.run_batch(universe_result.selected_symbols, asset_type_map=asset_type_map)
-                for signal_list in grouped.values():
-                    for signal in signal_list:
-                        write_signal(conn, signal)
-                context_map = self._build_ai_context_map(universe_result, grouped, portfolio)
-                try:
+                frame_map = {}
+
+                if mode_state.run_legacy:
+                    grouped = self.strategy_engine.run_batch(universe_result.selected_symbols, asset_type_map=asset_type_map)
+                    for signal_list in grouped.values():
+                        for signal in signal_list:
+                            write_signal(conn, signal)
+                    context_map = self._build_ai_context_map(universe_result, grouped, portfolio)
                     final_signals, ai_decisions = self.signal_fusion.fuse(
                         grouped,
                         trade_date=trade_date,
                         context_map=context_map,
                         strategy_weights=strategy_weights,
                         market_regime=market_regime,
+                        mode_name=LEGACY_MODE,
                     )
-                except TypeError:
-                    final_signals, ai_decisions = self.signal_fusion.fuse(grouped, trade_date=trade_date)
-                for decision in ai_decisions:
-                    write_ai_decision(conn, decision)
-                signal_ids: Dict[str, int] = {}
-                for final_signal in final_signals:
-                    signal_ids[final_signal.symbol] = write_final_signal(conn, final_signal)
-                manager_decision = self.ai_portfolio_manager.review(
-                    regime_state=market_regime,
-                    portfolio_feedback=portfolio_feedback,
-                    candidate_signals=final_signals,
-                    strategy_weights=strategy_weights,
-                )
-                final_actions = self.portfolio_decision_service.merge(final_signals, manager_decision, market_regime)
+                    for decision in ai_decisions:
+                        write_ai_decision(conn, decision)
+                    signal_ids: Dict[str, int] = {}
+                    for final_signal in final_signals:
+                        signal_ids[final_signal.symbol] = write_final_signal(conn, final_signal)
+                    manager_decision = self.ai_portfolio_manager.review(
+                        regime_state=market_regime,
+                        portfolio_feedback=portfolio_feedback,
+                        candidate_signals=final_signals,
+                        strategy_weights=strategy_weights,
+                    )
+                    legacy_actions = self.portfolio_decision_service.merge(final_signals, manager_decision, market_regime)
+                else:
+                    signal_ids = {}
+                    legacy_actions = []
+
+                if mode_state.run_engine:
+                    frame_map = {
+                        symbol: self.strategy_engine.load_bars(symbol, asset_type=asset_type_map.get(symbol, "stock"))
+                        for symbol in universe_result.selected_symbols
+                    }
+                    feature_map = {
+                        symbol: self.strategy_engine.run_features_for_symbol_on_frame(symbol, frame)
+                        for symbol, frame in frame_map.items()
+                    }
+                    snapshot_rows = {
+                        str(row["symbol"]): {
+                            "symbol": str(row["symbol"]),
+                            "name": str(row.get("name") or row["symbol"]),
+                            "latest_price": float(row.get("latest_price") or 0.0),
+                            "pct_change": float(row.get("pct_change") or 0.0),
+                            "amount": float(row.get("amount") or 0.0),
+                            "turnover_rate": float(row.get("turnover_rate") or 0.0),
+                        }
+                        for _, row in universe_result.snapshot.iterrows()
+                    } if hasattr(universe_result, "snapshot") and not universe_result.snapshot.empty else {}
+                    feature_fusions = self.signal_fusion.fuse_features(
+                        feature_map,
+                        strategy_weights=strategy_weights,
+                        market_regime=market_regime,
+                        portfolio_feedback=portfolio_feedback,
+                    )
+                    decision_contexts = self.decision_context_builder.build_batch(
+                        universe_result.selected_symbols,
+                        snapshot_rows,
+                        feature_map,
+                        frame_map,
+                        market_regime,
+                        portfolio_feedback,
+                    )
+                    try:
+                        engine_decisions = self.ai_decision_engine.decide_batch(
+                            decision_contexts,
+                            {symbol: item.model_dump() for symbol, item in feature_fusions.items()},
+                            trade_date=trade_date,
+                        )
+                    except Exception as exc:
+                        write_system_log(conn, "ERROR", "ai_decision_engine", f"AI 决策引擎运行失败: {exc}")
+                        mode_state = self.decision_mode_router.fallback_on_failure(mode_state)
+                        engine_decisions = {}
+                        if mode_state.effective_mode == LEGACY_MODE and not grouped:
+                            grouped = self.strategy_engine.run_batch(universe_result.selected_symbols, asset_type_map=asset_type_map)
+                            for signal_list in grouped.values():
+                                for signal in signal_list:
+                                    write_signal(conn, signal)
+                            context_map = self._build_ai_context_map(universe_result, grouped, portfolio)
+                            final_signals, ai_decisions = self.signal_fusion.fuse(
+                                grouped,
+                                trade_date=trade_date,
+                                context_map=context_map,
+                                strategy_weights=strategy_weights,
+                                market_regime=market_regime,
+                                mode_name=LEGACY_MODE,
+                            )
+                            for decision in ai_decisions:
+                                write_ai_decision(conn, decision)
+                            for final_signal in final_signals:
+                                signal_ids[final_signal.symbol] = write_final_signal(conn, final_signal)
+                            manager_decision = self.ai_portfolio_manager.review(
+                                regime_state=market_regime,
+                                portfolio_feedback=portfolio_feedback,
+                                candidate_signals=final_signals,
+                                strategy_weights=strategy_weights,
+                            )
+                            legacy_actions = self.portfolio_decision_service.merge(final_signals, manager_decision, market_regime)
+                    engine_actions = self.portfolio_decision_service.merge_engine(engine_decisions, market_regime) if engine_decisions else []
+                else:
+                    engine_actions = []
+
+                if mode_state.effective_mode == LEGACY_MODE:
+                    final_actions = legacy_actions
+                elif mode_state.effective_mode == AI_ENGINE_MODE:
+                    final_actions = engine_actions
+                else:
+                    final_actions = engine_actions
+                    compare_result = self.decision_compare_service.compare(final_signals, engine_decisions)
             else:
                 signal_ids = {}
+                legacy_actions = []
+                engine_actions = []
 
             quote_symbols = list(
                 dict.fromkeys(
@@ -147,11 +248,13 @@ class TradingScheduler:
                     if quote is None:
                         write_system_log(conn, "WARNING", "market_data", f"{action.symbol} 实时行情获取失败，跳过动作执行")
                         continue
-                    risk = self.risk_engine.evaluate_action(action, quote, portfolio, risk_mode=manager_decision.risk_mode)
+                    effective_risk_mode = str(action.metadata.get("risk_mode") or manager_decision.risk_mode)
+                    risk = self.risk_engine.evaluate_action(action, quote, portfolio, risk_mode=effective_risk_mode)
                     risk_results.append(
                         {
                             "symbol": action.symbol,
                             "action": action.action,
+                            "mode_name": action.mode_name,
                             "allowed": risk.allowed,
                             "final_action": risk.final_action,
                             "adjusted_qty": risk.adjusted_qty,
@@ -164,7 +267,7 @@ class TradingScheduler:
                         continue
                     order = self.broker.execute_action(conn, action, risk, latest_price=quote.latest_price, signal_id=signal_ids.get(action.symbol))
                     if order is not None:
-                        execution_events.append({"symbol": action.symbol, "status": order.status, "qty": order.qty, "action": action.action})
+                        execution_events.append({"symbol": action.symbol, "status": order.status, "qty": order.qty, "action": action.action, "mode_name": action.mode_name})
                     portfolio = build_portfolio_state(conn)
             elif final_signals:
                 write_system_log(conn, "INFO", "scheduler", f"当前处于 {phase.phase_name}，仅生成信号与组合动作计划，不执行模拟成交")
@@ -186,10 +289,15 @@ class TradingScheduler:
                 write_system_log(conn, "WARNING", "universe", warning)
             self._write_live_state(
                 phase_name=phase.phase_name,
+                decision_mode=mode_state.effective_mode,
                 market_regime=market_regime,
                 strategy_weights=strategy_weights,
                 ai_decisions=ai_decisions,
                 manager_decision=manager_decision,
+                feature_fusions=feature_fusions,
+                decision_contexts=decision_contexts,
+                engine_decisions=engine_decisions,
+                compare_result=compare_result,
                 planned_actions=planned_actions,
                 risk_results=risk_results,
                 portfolio_feedback=portfolio_feedback,
@@ -203,6 +311,7 @@ class TradingScheduler:
                     "scheduler",
                     "cycle_completed",
                     phase=phase.phase_name,
+                    decision_mode=mode_state.effective_mode,
                     candidates=len(universe_result.selected_symbols),
                     final_signals=len(final_signals),
                     orders=len(execution_events),
@@ -210,6 +319,7 @@ class TradingScheduler:
             return {
                 "trade_date": trade_date,
                 "phase": phase.phase_name,
+                "decision_mode": mode_state.effective_mode,
                 "candidate_count": len(universe_result.selected_symbols),
                 "final_signal_count": len(final_signals),
                 "planned_action_count": len(planned_actions),
@@ -267,10 +377,15 @@ class TradingScheduler:
     def _write_live_state(
         self,
         phase_name: str,
+        decision_mode: str,
         market_regime: MarketRegimeState,
         strategy_weights: Dict[str, float],
         ai_decisions,
         manager_decision: PortfolioManagerDecision,
+        feature_fusions,
+        decision_contexts,
+        engine_decisions,
+        compare_result,
         planned_actions,
         risk_results,
         portfolio_feedback,
@@ -279,10 +394,15 @@ class TradingScheduler:
         payload = {
             "ts": datetime.now().isoformat(timespec="seconds"),
             "phase": phase_name,
+            "decision_mode": decision_mode,
             "market_regime": market_regime.model_dump(),
             "strategy_weights": strategy_weights,
             "ai_reviewer": [decision.model_dump() for decision in ai_decisions],
             "ai_portfolio_manager": manager_decision.model_dump(),
+            "feature_fusions": {symbol: item.model_dump() for symbol, item in feature_fusions.items()} if isinstance(feature_fusions, dict) else {},
+            "decision_contexts": decision_contexts,
+            "ai_decision_engine": {symbol: item.model_dump() for symbol, item in engine_decisions.items()} if isinstance(engine_decisions, dict) else {},
+            "decision_compare": compare_result,
             "final_actions": [action.model_dump() for action in planned_actions],
             "risk_results": risk_results,
             "portfolio_feedback": portfolio_feedback,

@@ -56,6 +56,20 @@ fusion:
   use_weighted_scoring: true
   min_final_score_to_buy: 0.65
   min_final_score_to_sell: 0.58
+decision_engine:
+  enabled: true
+  mode: ai_decision_engine_mode
+  use_decision_json_as_research_cache: true
+  fallback_to_legacy_mode_on_failure: true
+  lightweight_realtime_ai: true
+feature_layer:
+  use_strategy_scores: true
+  use_market_regime: true
+  use_portfolio_state: true
+  use_position_state: true
+compare_mode:
+  enabled: true
+  record_mode_differences: true
 strategy:
   momentum_lookback: 20
   momentum_min_score: 0.55

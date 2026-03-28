@@ -118,7 +118,7 @@ class RiskEngine:
                 ai_reason=action.reason,
                 strategy_reason=action.reason,
                 strategy_name="+".join(action.source),
-                mode_name="strategy_plus_ai_plus_risk",
+                mode_name=action.mode_name,
             )
             result = self.evaluate(signal, quote, portfolio)
             result.final_action = "BUY"

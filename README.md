@@ -141,6 +141,16 @@ ai_stock_sim/
 - 最终动作计划：`BUY / SELL / REDUCE / HOLD`
 - 账户状态回流
 
+第四阶段已经新增：
+
+- `legacy_review_mode`
+- `ai_decision_engine_mode`
+- `compare_mode`
+- 六套策略从“直接买卖信号”升级为“特征层 + 分数层”
+- `AI 决策引擎` 成为新的中央决策器
+- `8610` 控制台升级为“AI 决策中心”
+- 新旧模式对照与实时差异展示
+
 ## 快速开始
 
 ### 方式一：直接用网页
@@ -160,6 +170,22 @@ bash start.sh web
 5. 看“步骤 3：交易计划、模拟盘与复盘”
 6. 如需持续盯盘，再看“步骤 4：持续监控中心”
 7. 最后点卡片里的“打开分享页”
+
+如果你想直接体验第四阶段的实时 AI 决策，更推荐这样：
+
+1. 先打开 `http://127.0.0.1:8600`
+2. 在“步骤 4：持续监控中心”里启动实时模拟
+3. 再打开 `http://127.0.0.1:8610`
+4. 在 `8610` 顶部切换：
+   - 旧模式：策略主导 + AI 审批
+   - 新模式：AI 决策引擎
+   - 对照模式：新旧同时输出
+5. 直接观察：
+   - AI 决策输入摘要
+   - AI 审核员
+   - AI 决策中心
+   - 执行结果
+   - 模式对照
 
 ### 方式二：命令行
 
@@ -229,6 +255,19 @@ market_session:
 ```
 
 打开。默认仍然保持 `false`，这样更接近真实 A 股节奏，也更安全。
+
+如果你想切换第四阶段的决策模式，也可以在 [ai_stock_sim/config/settings.yaml](/home/alientek/workspace/tools/TradeforAgents-minimal/ai_stock_sim/config/settings.yaml) 里修改：
+
+```yaml
+decision_engine:
+  mode: ai_decision_engine_mode
+```
+
+支持：
+
+- `legacy_review_mode`
+- `ai_decision_engine_mode`
+- `compare_mode`
 
 ## 项目结构
 

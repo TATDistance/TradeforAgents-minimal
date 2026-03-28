@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 SignalAction = Literal["BUY", "SELL", "HOLD"]
 PortfolioActionType = Literal["BUY", "SELL", "REDUCE", "HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"]
+StrategyDirection = Literal["LONG", "SHORT", "NEUTRAL"]
 
 
 class MarketQuote(BaseModel):
@@ -39,6 +40,28 @@ class StrategySignal(BaseModel):
     take_profit: Optional[float] = None
     position_pct: float
     reason: str
+
+
+class StrategyFeature(BaseModel):
+    symbol: str
+    strategy_name: str
+    score: float
+    direction: StrategyDirection
+    strength: float
+    reason: str = ""
+    features: Dict[str, float] = Field(default_factory=dict)
+
+
+class FeatureFusionScore(BaseModel):
+    symbol: str
+    feature_score: float = 0.0
+    dominant_direction: StrategyDirection = "NEUTRAL"
+    ai_decision_score: float = 0.0
+    risk_penalty: float = 0.0
+    final_score: float = 0.0
+    final_action: PortfolioActionType = "HOLD"
+    feature_breakdown: Dict[str, float] = Field(default_factory=dict)
+    summary: str = ""
 
 
 class AIDecision(BaseModel):
@@ -88,6 +111,7 @@ class PortfolioManagerAction(BaseModel):
     reason: str = ""
     priority: float = 0.0
     source: List[str] = Field(default_factory=list)
+    mode_name: str = "legacy_review_mode"
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -108,6 +132,7 @@ class PlannedAction(BaseModel):
     reduce_pct: float = 0.0
     priority: float = 0.0
     source: List[str] = Field(default_factory=list)
+    mode_name: str = "legacy_review_mode"
     reason: str = ""
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

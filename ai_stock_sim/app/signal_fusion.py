@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Mapping, Optional
 
 from .ai_decision_service import AIDecisionService
-from .models import AIDecision, FinalSignal, MarketRegimeState, StrategySignal
+from .models import AIDecision, FeatureFusionScore, FinalSignal, MarketRegimeState, StrategyFeature, StrategySignal
 from .settings import Settings, load_settings
 
 
@@ -20,6 +20,7 @@ class SignalFusion:
         context_map: Optional[Dict[str, Mapping[str, object]]] = None,
         strategy_weights: Optional[Mapping[str, float]] = None,
         market_regime: Optional[MarketRegimeState] = None,
+        mode_name: str = "legacy_review_mode",
     ) -> tuple[List[FinalSignal], List[AIDecision]]:
         final_signals: List[FinalSignal] = []
         ai_decisions: List[AIDecision] = []
@@ -99,9 +100,71 @@ class SignalFusion:
                     ai_reason=ai_decision.reason,
                     strategy_reason=candidate.reason,
                     strategy_name=candidate.strategy,
-                    mode_name="strategy_plus_ai_plus_risk",
+                    mode_name=mode_name,
                     weighted_score=round(weighted_score, 4),
                     risk_penalty=round(risk_penalty, 4),
                 )
             )
         return final_signals, ai_decisions
+
+    def fuse_features(
+        self,
+        grouped_features: Dict[str, List[StrategyFeature]],
+        strategy_weights: Optional[Mapping[str, float]] = None,
+        market_regime: Optional[MarketRegimeState] = None,
+        portfolio_feedback: Optional[Mapping[str, object]] = None,
+    ) -> Dict[str, FeatureFusionScore]:
+        results: Dict[str, FeatureFusionScore] = {}
+        for symbol, features in grouped_features.items():
+            if not features:
+                continue
+            weighted_total = 0.0
+            total_weight = 0.0
+            breakdown: Dict[str, float] = {}
+            for item in features:
+                weight = float((strategy_weights or {}).get(item.strategy_name, 1.0))
+                value = item.score * weight
+                weighted_total += value
+                total_weight += abs(weight)
+                breakdown[item.strategy_name] = round(value, 4)
+            feature_score = 0.0 if total_weight <= 0 else weighted_total / total_weight
+            risk_penalty = 0.0
+            if market_regime:
+                if market_regime.regime == "HIGH_VOLATILITY":
+                    risk_penalty += 0.08
+                elif market_regime.regime == "RISK_OFF":
+                    risk_penalty += 0.14
+                elif market_regime.regime == "TRENDING_DOWN":
+                    risk_penalty += 0.05
+            if portfolio_feedback:
+                drawdown = float(portfolio_feedback.get("drawdown", 0.0) or 0.0)
+                total_position_pct = float(portfolio_feedback.get("total_position_pct", 0.0) or 0.0)
+                risk_penalty += min(0.18, drawdown * 1.6)
+                if total_position_pct >= self.settings.portfolio_feedback.high_position_threshold:
+                    risk_penalty += 0.05
+            final_score = max(-1.0, min(1.0, feature_score - risk_penalty))
+            dominant_direction = "NEUTRAL"
+            if final_score >= 0.12:
+                dominant_direction = "LONG"
+            elif final_score <= -0.12:
+                dominant_direction = "SHORT"
+            if final_score >= self.settings.fusion.min_final_score_to_buy:
+                final_action = "BUY"
+            elif final_score <= -self.settings.fusion.min_final_score_to_sell:
+                final_action = "SELL"
+            elif final_score < 0:
+                final_action = "AVOID_NEW_BUY"
+            else:
+                final_action = "HOLD"
+            results[symbol] = FeatureFusionScore(
+                symbol=symbol,
+                feature_score=round(feature_score, 4),
+                dominant_direction=dominant_direction,  # type: ignore[arg-type]
+                ai_decision_score=0.0,
+                risk_penalty=round(risk_penalty, 4),
+                final_score=round(final_score, 4),
+                final_action=final_action,  # type: ignore[arg-type]
+                feature_breakdown=breakdown,
+                summary=f"多策略特征综合分 {final_score:.2f}，主方向 {dominant_direction}",
+            )
+        return results

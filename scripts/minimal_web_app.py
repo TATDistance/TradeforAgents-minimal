@@ -1465,14 +1465,14 @@ def index() -> HTMLResponse:
         <div id="shareCards" class="share-grid"></div>
       </div>
       <div style="margin-top:18px">
-        <h4>步骤 4：持续监控中心（沿用上方候选池）</h4>
-        <p class="muted">这块不是另一套独立系统，而是把上一步自动选股得到的候选池同步到 `ai_stock_sim`，让它持续盯盘、持续记模拟账户变化。你可以把它理解成“交易计划的连续版监控”。</p>
+        <h4>步骤 4：实时 AI 决策中心（沿用上方候选池）</h4>
+        <p class="muted">这块不是另一套独立系统，而是把上一步自动选股得到的候选池同步到 `ai_stock_sim`，让它持续盯盘、持续做 AI 决策、持续更新模拟账户。你可以把它理解成“交易计划的实时驾驶舱”。</p>
         <div class="result-strip" style="margin-top:10px">
           <div class="result-main">
             <h4>你只需要这样用</h4>
             <div class="action-note">
               1. 先跑上面的“自动选股并生成计划”<br>
-              2. 再点“一键启动连续监控”，系统会沿用最新候选池<br>
+              2. 再点“一键启动 AI 实时决策”，系统会沿用最新候选池<br>
               2. 启动后：看下面的账户、持仓、成交和日志<br>
               3. 想看更完整的大盘：点“打开实时控制台”
             </div>
@@ -1480,12 +1480,12 @@ def index() -> HTMLResponse:
           <div class="result-side">
             <h4>这块和上面有什么关系</h4>
             <div class="subtle">
-              上面的“交易计划、模拟盘与复盘”偏盘后结果；这里偏持续监控。默认会优先用最新自动选股候选池，没有候选池时才退回默认观察池。
+              上面的“交易计划、模拟盘与复盘”偏盘后结果；这里偏实时决策与持续监控。默认会优先用最新自动选股候选池，没有候选池时才退回默认观察池。
             </div>
           </div>
         </div>
         <div class="toolbar">
-          <button id="simStartAll" type="button">一键启动连续监控</button>
+          <button id="simStartAll" type="button">一键启动 AI 实时决策</button>
           <button id="simOpenDashboard" type="button">打开实时控制台</button>
           <button id="simRefresh" type="button">刷新状态</button>
         </div>
@@ -1983,7 +1983,7 @@ def index() -> HTMLResponse:
         simBootstrap, simStartEngine, simStopEngine, simStartDashboard, simStopDashboard
       ].filter(Boolean);
       buttons.forEach(btn => btn.disabled = true);
-      simStatus.textContent = '正在准备环境并启动实时模拟...';
+      simStatus.textContent = '正在准备环境并启动实时 AI 决策...';
       try{
         let result = await fetchJsonSafe('/api/ai-stock-sim/status');
         let resp = result.resp;
@@ -2019,7 +2019,7 @@ def index() -> HTMLResponse:
         if(!resp.ok){
           throw new Error(formatErrorDetail(data.detail));
         }
-        simStatus.textContent = '持续监控已启动。现在它会优先沿用最新自动候选池；需要更完整页面时，再点“打开实时控制台”。';
+        simStatus.textContent = '实时 AI 决策中心已启动。现在它会优先沿用最新自动候选池；需要更完整页面时，再点“打开实时控制台”。';
         await loadAiStockSimStatus();
       }catch(err){
         simStatus.textContent = '一键启动失败：' + String(err);

@@ -179,10 +179,21 @@ class EvaluationService:
 
     def compute_mode_comparisons(self, conn) -> List[ModeComparison]:
         proxies = self._build_signal_mode_proxies(conn)
+        actual_by_mode = self._actual_mode_returns(conn)
         comparisons: List[ModeComparison] = []
-        for mode_name, values in proxies.items():
+        mode_order = [
+            "legacy_review_mode",
+            "ai_decision_engine_mode",
+            "strategy_only",
+            "strategy_plus_ai",
+            "strategy_plus_risk",
+            "strategy_plus_ai_plus_risk",
+        ]
+        for mode_name in mode_order:
+            values = actual_by_mode.get(mode_name) or proxies.get(mode_name) or []
             if not values:
-                comparison = ModeComparison(mode_name=mode_name, metadata_json=json.dumps({"basis": "signal_forward_return_proxy", "trades": 0}, ensure_ascii=False))
+                basis = "actual_closed_trades" if mode_name in actual_by_mode else "signal_forward_return_proxy"
+                comparison = ModeComparison(mode_name=mode_name, metadata_json=json.dumps({"basis": basis, "trades": 0}, ensure_ascii=False))
                 comparisons.append(comparison)
                 continue
             total_return = sum(values)
@@ -216,7 +227,13 @@ class EvaluationService:
                     profit_factor=round(0.0 if profit_factor == float("inf") else profit_factor, 6),
                     expectancy=round(expectancy, 6),
                     score_total=round(score.score_total, 2),
-                    metadata_json=json.dumps({"basis": "signal_forward_return_proxy", "trades": len(values)}, ensure_ascii=False),
+                    metadata_json=json.dumps(
+                        {
+                            "basis": "actual_closed_trades" if mode_name in actual_by_mode else "signal_forward_return_proxy",
+                            "trades": len(values),
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
             )
         return comparisons
@@ -466,6 +483,8 @@ class EvaluationService:
             grouped[(str(row["symbol"]), str(row["ts"])[:10])].append(row)
 
         comparisons: dict[str, List[float]] = {
+            "legacy_review_mode": [],
+            "ai_decision_engine_mode": [],
             "strategy_only": [],
             "strategy_plus_ai": [],
             "strategy_plus_risk": [],
@@ -489,6 +508,8 @@ class EvaluationService:
             risk_pass = position_pct <= self.settings.max_single_position_pct and entry_price > 0
             ai_row = ai_map.get((symbol, signal_date))
             ai_pass = bool(ai_row and int(ai_row.get("approved") or 0) == 1 and str(ai_row.get("ai_action") or "").upper() != "HOLD")
+            if ai_pass and risk_pass:
+                comparisons["legacy_review_mode"].append(proxy_return)
             if ai_pass:
                 comparisons["strategy_plus_ai"].append(proxy_return)
             if risk_pass:
@@ -496,6 +517,13 @@ class EvaluationService:
             if ai_pass and risk_pass:
                 comparisons["strategy_plus_ai_plus_risk"].append(proxy_return)
         return comparisons
+
+    def _actual_mode_returns(self, conn) -> dict[str, List[float]]:
+        closed_trades = self._load_closed_trades(conn, strategy_name="portfolio_actual")
+        grouped: dict[str, List[float]] = defaultdict(list)
+        for trade in closed_trades:
+            grouped[str(trade.mode_name or "legacy_review_mode")].append(float(trade.return_pct))
+        return grouped
 
     def _proxy_forward_return(self, symbol: str, signal_date: str, entry_price: float, action: str) -> Optional[float]:
         try:

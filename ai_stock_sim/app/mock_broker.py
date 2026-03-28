@@ -66,7 +66,7 @@ class MockBroker:
                 status="REJECTED",
                 note=risk.reject_reason or action.reason or "风控拒绝",
                 strategy_name="+".join(action.source),
-                mode_name="strategy_plus_ai_plus_risk",
+                mode_name=action.mode_name,
                 signal_id=signal_id,
             )
             write_order(conn, order)
@@ -83,7 +83,7 @@ class MockBroker:
             status="FILLED",
             note=action.reason,
             strategy_name="+".join(action.source),
-            mode_name="strategy_plus_ai_plus_risk",
+            mode_name=action.mode_name,
             signal_id=signal_id,
         )
         write_order(conn, order)

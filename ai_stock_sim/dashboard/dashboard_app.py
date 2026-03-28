@@ -31,6 +31,12 @@ COLOR_MAP = {
     "ai": "#2563eb",
 }
 
+MODE_LABELS = {
+    "legacy_review_mode": "旧模式：策略主导 + AI 审批",
+    "ai_decision_engine_mode": "新模式：AI 决策引擎",
+    "compare_mode": "对照模式：新旧同时输出",
+}
+
 
 @st.cache_data(ttl=5)
 def load_table(table: str, limit: int = 50) -> pd.DataFrame:
@@ -203,10 +209,33 @@ def save_post_close_execution_flag(enabled: bool) -> None:
     settings_path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
+def load_decision_mode() -> str:
+    settings_path = settings.project_root / "config" / "settings.yaml"
+    try:
+        payload = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return str(settings.decision_engine.mode)
+    decision_engine = payload.get("decision_engine") or {}
+    return str(decision_engine.get("mode") or settings.decision_engine.mode)
+
+
+def save_decision_mode(mode_name: str) -> None:
+    settings_path = settings.project_root / "config" / "settings.yaml"
+    payload = {}
+    if settings_path.exists():
+        payload = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
+    decision_engine = payload.get("decision_engine") or {}
+    decision_engine["mode"] = mode_name
+    payload["decision_engine"] = decision_engine
+    settings_path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
 if "auto_refresh" not in st.session_state:
     st.session_state["auto_refresh"] = False
 if "allow_post_close_execution" not in st.session_state:
     st.session_state["allow_post_close_execution"] = load_post_close_execution_flag()
+if "decision_engine_mode" not in st.session_state:
+    st.session_state["decision_engine_mode"] = load_decision_mode()
 
 st.title("AI 股票模拟交易控制台")
 st.caption("东财实时行情 + 公开策略 + TradeforAgents AI 审批 + A 股模拟撮合 + 周期评估")
@@ -239,6 +268,27 @@ with st.container(border=True):
             st.success("设置已保存。重启 8600 中的实时引擎后生效。")
     st.caption("这个设置会写回 config/settings.yaml。为了避免夜间误触发，默认仍建议保持关闭。")
 
+with st.container(border=True):
+    st.markdown("**决策模式设置**")
+    mode_cols = st.columns([1.3, 1.0, 1.1])
+    with mode_cols[0]:
+        options = list(MODE_LABELS.keys())
+        current_index = options.index(st.session_state["decision_engine_mode"]) if st.session_state["decision_engine_mode"] in options else 1
+        selected_mode = st.selectbox(
+            "当前决策模式",
+            options,
+            index=current_index,
+            format_func=lambda item: MODE_LABELS.get(item, item),
+        )
+        st.session_state["decision_engine_mode"] = selected_mode
+    with mode_cols[1]:
+        render_status_badge(MODE_LABELS.get(st.session_state["decision_engine_mode"], st.session_state["decision_engine_mode"]), "ai")
+    with mode_cols[2]:
+        if st.button("保存决策模式", use_container_width=True):
+            save_decision_mode(st.session_state["decision_engine_mode"])
+            st.success("决策模式已保存。重启实时引擎后生效。")
+    st.caption("第四阶段开始，AI 决策引擎与旧模式可以并行存在。推荐日常先看“新模式”，想做差异研究时再切到“对照模式”。")
+
 run_every = f"{settings.dashboard.auto_refresh_seconds}s" if st.session_state["auto_refresh"] else None
 
 
@@ -270,18 +320,29 @@ def render_dashboard() -> None:
         evaluations_df = load_table("strategy_evaluations", limit=80)
         comparisons_df = load_table("mode_comparisons", limit=20)
 
+    current_mode = str((live_state or {}).get("decision_mode") or settings.decision_engine.mode)
+    mode_label = MODE_LABELS.get(current_mode, current_mode)
+    with st.container(border=True):
+        st.markdown("**当前运行模式**")
+        summary_cols = st.columns(4)
+        summary_cols[0].metric("决策模式", mode_label)
+        summary_cols[1].metric("当前阶段", str((live_state or {}).get("phase", "-")))
+        summary_cols[2].metric("AI 决策标的数", len((live_state or {}).get("ai_decision_engine") or {}))
+        summary_cols[3].metric("计划动作数", len((live_state or {}).get("final_actions") or []))
+
     top_tabs = st.tabs(
         [
-            "市场总览",
+            "当前模式与总览",
             "市场状态机",
             "策略权重",
+            "AI 决策输入",
             "AI 审核员",
-            "AI 组合管理器",
-            "最终动作计划",
+            "AI 决策中心",
+            "执行结果",
             "账户与持仓",
             "策略评估",
             "周期统计",
-            "对照实验",
+            "模式对照",
             "成交流水",
             "日志筛选",
             "人工回填",
@@ -289,13 +350,20 @@ def render_dashboard() -> None:
     )
 
     with top_tabs[0]:
-        st.subheader("市场总览")
+        st.subheader("当前模式与市场总览")
+        st.write(f"当前实时主链运行在：**{mode_label}**")
         overview_cols = [col for col in ["ts", "symbol", "name", "strategy_name", "action", "score", "signal_price"] if col in signals_df.columns]
         st.dataframe(signals_df[overview_cols] if not signals_df.empty else signals_df, use_container_width=True, hide_index=True)
         if not final_signals_df.empty:
             st.markdown("**最终候选信号**")
             cols = [col for col in ["ts", "symbol", "name", "action", "confidence", "strategy_name", "mode_name"] if col in final_signals_df.columns]
             st.dataframe(final_signals_df[cols], use_container_width=True, hide_index=True)
+        live_engine = live_state.get("ai_decision_engine") if isinstance(live_state, dict) else {}
+        if isinstance(live_engine, dict) and live_engine:
+            quick_df = attach_symbol_name(pd.DataFrame([{"symbol": key, **value} for key, value in live_engine.items()]))
+            st.markdown("**AI 决策引擎本轮摘要**")
+            cols = [col for col in ["symbol", "name", "action", "confidence", "risk_mode", "final_score", "reason"] if col in quick_df.columns]
+            st.dataframe(quick_df[cols], use_container_width=True, hide_index=True)
 
     with top_tabs[1]:
         st.subheader("市场状态机")
@@ -323,6 +391,41 @@ def render_dashboard() -> None:
             st.info("暂无策略权重数据。")
 
     with top_tabs[3]:
+        st.subheader("AI 决策输入摘要")
+        context_map = live_state.get("decision_contexts") if isinstance(live_state, dict) else {}
+        feature_map = live_state.get("feature_fusions") if isinstance(live_state, dict) else {}
+        if isinstance(context_map, dict) and context_map:
+            rows = []
+            for symbol, payload in context_map.items():
+                if not isinstance(payload, dict):
+                    continue
+                snapshot = dict(payload.get("snapshot") or {})
+                portfolio_state = dict(payload.get("portfolio_state") or {})
+                position_state = dict(payload.get("position_state") or {})
+                market_regime = dict(payload.get("market_regime") or {})
+                fusion = dict((feature_map or {}).get(symbol) or {})
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "latest_price": snapshot.get("latest_price"),
+                        "pct_change": snapshot.get("pct_change"),
+                        "amount": snapshot.get("amount"),
+                        "cash_pct": portfolio_state.get("cash_pct"),
+                        "drawdown": portfolio_state.get("drawdown"),
+                        "has_position": position_state.get("has_position"),
+                        "hold_days": position_state.get("hold_days"),
+                        "market_regime": market_regime.get("regime"),
+                        "feature_score": fusion.get("feature_score"),
+                        "final_score": fusion.get("final_score"),
+                    }
+                )
+            context_df = attach_symbol_name(pd.DataFrame(rows))
+            cols = [col for col in ["symbol", "name", "latest_price", "pct_change", "amount", "cash_pct", "drawdown", "has_position", "hold_days", "market_regime", "feature_score", "final_score"] if col in context_df.columns]
+            st.dataframe(context_df[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("本轮暂无 AI 决策输入摘要。")
+
+    with top_tabs[4]:
         st.subheader("AI 审核员")
         reviewer = live_state.get("ai_reviewer") if isinstance(live_state, dict) else []
         reviewer_df = attach_symbol_name(pd.DataFrame(reviewer)) if reviewer else pd.DataFrame()
@@ -332,8 +435,22 @@ def render_dashboard() -> None:
         else:
             st.info("本轮暂无 AI 审核结果。")
 
-    with top_tabs[4]:
-        st.subheader("AI 组合管理器")
+    with top_tabs[5]:
+        st.subheader("AI 决策中心")
+        engine_payload = live_state.get("ai_decision_engine") if isinstance(live_state, dict) else {}
+        if isinstance(engine_payload, dict) and engine_payload:
+            engine_df = attach_symbol_name(pd.DataFrame([{"symbol": symbol, **value} for symbol, value in engine_payload.items()]))
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("新模式标的数", len(engine_df))
+            metric_cols[1].metric("BUY 建议数", int((engine_df["action"].astype(str) == "BUY").sum()) if "action" in engine_df.columns else 0)
+            metric_cols[2].metric("SELL/REDUCE 数", int(engine_df["action"].astype(str).isin(["SELL", "REDUCE"]).sum()) if "action" in engine_df.columns else 0)
+            metric_cols[3].metric("风险模式", str(engine_df["risk_mode"].mode().iloc[0]) if "risk_mode" in engine_df.columns and not engine_df["risk_mode"].empty else "-")
+            cols = [col for col in ["symbol", "name", "action", "position_pct", "reduce_pct", "confidence", "risk_mode", "final_score", "reason"] if col in engine_df.columns]
+            st.dataframe(engine_df[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("当前模式下暂无 AI 决策引擎输出。")
+
+        st.markdown("**第三阶段组合管理器参考视图**")
         manager = live_state.get("ai_portfolio_manager") if isinstance(live_state, dict) else {}
         if isinstance(manager, dict) and manager:
             header_cols = st.columns(3)
@@ -348,23 +465,23 @@ def render_dashboard() -> None:
         else:
             st.info("暂无组合管理建议。")
 
-    with top_tabs[5]:
-        st.subheader("最终动作计划")
+    with top_tabs[6]:
+        st.subheader("执行结果")
         final_actions = live_state.get("final_actions") if isinstance(live_state, dict) else []
         risks = live_state.get("risk_results") if isinstance(live_state, dict) else []
         actions_df = attach_symbol_name(pd.DataFrame(final_actions)) if final_actions else pd.DataFrame()
         risk_df = attach_symbol_name(pd.DataFrame(risks)) if risks else pd.DataFrame()
         if not actions_df.empty:
-            cols = [col for col in ["symbol", "name", "action", "planned_qty", "planned_price", "priority", "reason"] if col in actions_df.columns]
+            cols = [col for col in ["symbol", "name", "action", "planned_qty", "planned_price", "priority", "mode_name", "reason"] if col in actions_df.columns]
             st.dataframe(actions_df[cols], use_container_width=True, hide_index=True)
         else:
             st.info("本轮暂无最终动作计划。")
         if not risk_df.empty:
             st.markdown("**风控结果**")
-            cols = [col for col in ["symbol", "name", "action", "final_action", "allowed", "adjusted_qty", "risk_state", "reason"] if col in risk_df.columns]
+            cols = [col for col in ["symbol", "name", "action", "mode_name", "final_action", "allowed", "adjusted_qty", "risk_state", "reason"] if col in risk_df.columns]
             st.dataframe(risk_df[cols], use_container_width=True, hide_index=True)
 
-    with top_tabs[6]:
+    with top_tabs[7]:
         st.subheader("账户与持仓")
         feedback = live_state.get("portfolio_feedback") if isinstance(live_state, dict) else {}
         if isinstance(feedback, dict) and feedback:
@@ -390,7 +507,7 @@ def render_dashboard() -> None:
         else:
             st.info("暂无权益曲线数据。")
 
-    with top_tabs[7]:
+    with top_tabs[8]:
         st.subheader("策略评估面板")
         if evaluations_df.empty:
             st.info("暂无策略评估记录。")
@@ -445,7 +562,7 @@ def render_dashboard() -> None:
             else:
                 st.info("暂无卖出策略评分记录。需要先有真实平仓成交，才能判断哪种退出更好。")
 
-    with top_tabs[8]:
+    with top_tabs[9]:
         st.subheader("周期统计面板")
         period_options = {
             "今日": "daily",
@@ -461,14 +578,27 @@ def render_dashboard() -> None:
         else:
             st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-    with top_tabs[9]:
-        st.subheader("对照实验面板")
+    with top_tabs[10]:
+        st.subheader("模式对照")
+        live_compare = live_state.get("decision_compare") if isinstance(live_state, dict) else {}
+        if isinstance(live_compare, dict) and live_compare.get("rows"):
+            st.markdown("**实时决策差异**")
+            st.write(str(live_compare.get("summary") or ""))
+            live_compare_df = attach_symbol_name(pd.DataFrame(live_compare.get("rows") or []))
+            cols = [col for col in ["symbol", "name", "legacy_action", "legacy_confidence", "new_action", "new_confidence", "different"] if col in live_compare_df.columns]
+            st.dataframe(live_compare_df[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("当前轮次暂无实时新旧模式差异。切到 compare_mode 后会在这里显示。")
+
+        st.markdown("**历史对照实验面板**")
         if comparisons_df.empty:
             st.info("暂无对照实验记录。")
         else:
             chart_df = comparisons_df.copy()
             chart_df["显示模式"] = chart_df["mode_name"].map(
                 {
+                    "legacy_review_mode": "旧模式：策略主导 + AI 审批",
+                    "ai_decision_engine_mode": "新模式：AI 决策引擎",
                     "strategy_only": "纯策略",
                     "strategy_plus_ai": "策略+AI",
                     "strategy_plus_risk": "策略+风控",
@@ -480,7 +610,14 @@ def render_dashboard() -> None:
                 use_container_width=True,
             )
             cols = st.columns(4)
-            mode_names = {"strategy_only": "纯策略", "strategy_plus_ai": "策略+AI", "strategy_plus_risk": "策略+风控", "strategy_plus_ai_plus_risk": "策略+AI+风控"}
+            mode_names = {
+                "legacy_review_mode": "旧模式：策略主导 + AI 审批",
+                "ai_decision_engine_mode": "新模式：AI 决策引擎",
+                "strategy_only": "纯策略",
+                "strategy_plus_ai": "策略+AI",
+                "strategy_plus_risk": "策略+风控",
+                "strategy_plus_ai_plus_risk": "策略+AI+风控",
+            }
             for idx, (_, row) in enumerate(comparisons_df.head(4).iterrows()):
                 with cols[idx % 4]:
                     st.markdown(f"**{mode_names.get(str(row['mode_name']), str(row['mode_name']))}**")
@@ -491,7 +628,7 @@ def render_dashboard() -> None:
                     st.write(f"利润因子：{float(row['profit_factor']):.2f}")
             st.dataframe(comparisons_df, use_container_width=True, hide_index=True)
 
-    with top_tabs[10]:
+    with top_tabs[11]:
         st.subheader("成交流水")
         if not orders_df.empty:
             order_cols = [col for col in ["ts", "symbol", "name", "side", "price", "qty", "fee", "tax", "slippage", "status", "strategy_name", "mode_name"] if col in orders_df.columns]
@@ -502,7 +639,7 @@ def render_dashboard() -> None:
             st.markdown("**人工实盘回填记录**")
             st.dataframe(manual_df, use_container_width=True, hide_index=True)
 
-    with top_tabs[11]:
+    with top_tabs[12]:
         st.subheader("日志筛选")
         filter_cols = st.columns(4)
         with filter_cols[0]:
@@ -525,7 +662,7 @@ def render_dashboard() -> None:
                 filtered_logs = filtered_logs[filtered_logs["ts"].astype(str).str.contains(time_text, case=False, na=False)]
         st.dataframe(filtered_logs, use_container_width=True, hide_index=True)
 
-    with top_tabs[12]:
+    with top_tabs[13]:
         st.subheader("人工实盘成交回填")
         if final_signals_df.empty:
             st.info("暂无可回填的信号。")

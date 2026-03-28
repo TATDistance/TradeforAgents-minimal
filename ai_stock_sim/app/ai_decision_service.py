@@ -15,6 +15,9 @@ class AIDecisionService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
 
+    def load_research_decision(self, symbol: str, analysis_date: str) -> Optional[AIDecision]:
+        return self._load_decision_file(symbol, analysis_date)
+
     def review_signal(
         self,
         symbol: str,

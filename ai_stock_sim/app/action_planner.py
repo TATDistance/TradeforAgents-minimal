@@ -40,6 +40,7 @@ class ActionPlanner:
                         position_pct=action.position_pct,
                         priority=action.priority,
                         source=action.source,
+                        mode_name=action.mode_name,
                         reason=action.reason,
                         metadata=action.metadata,
                     )
@@ -58,6 +59,7 @@ class ActionPlanner:
                         reduce_pct=action.reduce_pct,
                         priority=action.priority,
                         source=action.source,
+                        mode_name=action.mode_name,
                         reason=action.reason,
                         metadata=action.metadata,
                     )
@@ -75,6 +77,7 @@ class ActionPlanner:
                         estimated_cost=round(qty * price, 4),
                         priority=action.priority,
                         source=action.source,
+                        mode_name=action.mode_name,
                         reason=action.reason,
                         metadata=action.metadata,
                     )
@@ -89,6 +92,7 @@ class ActionPlanner:
                         estimated_cost=0.0,
                         priority=action.priority,
                         source=action.source,
+                        mode_name=action.mode_name,
                         reason=action.reason,
                         metadata=action.metadata,
                     )

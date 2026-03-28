@@ -27,7 +27,14 @@ def main() -> int:
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
-    log_event(logger, "info", "main", "engine_starting", refresh_interval=settings.refresh_interval_seconds)
+    log_event(
+        logger,
+        "info",
+        "main",
+        "engine_starting",
+        refresh_interval=settings.refresh_interval_seconds,
+        decision_mode=settings.decision_engine.mode,
+    )
     scheduler.start()
     scheduler.run_cycle()
     while True:

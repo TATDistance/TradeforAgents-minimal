@@ -33,6 +33,7 @@ def test_smoke_bootstrap(tmp_path):
 def test_scheduler_skips_orders_after_close(tmp_path, monkeypatch):
     settings = load_settings()
     settings.project_root = tmp_path
+    settings.decision_engine.mode = "legacy_review_mode"
     initialize_db(settings)
     seed_account(settings, cash=100000)
     scheduler = TradingScheduler(settings=settings)
@@ -75,7 +76,7 @@ def test_scheduler_skips_orders_after_close(tmp_path, monkeypatch):
     monkeypatch.setattr(
         scheduler.signal_fusion,
         "fuse",
-        lambda grouped, trade_date=None: (
+        lambda grouped, trade_date=None, **kwargs: (
             [
                 FinalSignal(
                     symbol="600036",
