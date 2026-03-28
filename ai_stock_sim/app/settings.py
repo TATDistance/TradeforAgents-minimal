@@ -54,6 +54,29 @@ class CacheConfig:
 
 
 @dataclass
+class EvaluationConfig:
+    rolling_trade_windows: List[int] = field(default_factory=lambda: [20, 50])
+    rolling_day_windows: List[int] = field(default_factory=lambda: [20, 60])
+    enable_strategy_scoring: bool = True
+    report_auto_generate: bool = True
+
+
+@dataclass
+class ScoringConfig:
+    weight_return: float = 0.30
+    weight_risk: float = 0.30
+    weight_stability: float = 0.20
+    weight_execution: float = 0.20
+
+
+@dataclass
+class DashboardConfig:
+    auto_refresh_seconds: int = 10
+    enable_log_filter: bool = True
+    enable_mode_comparison: bool = True
+
+
+@dataclass
 class Settings:
     project_root: Path
     initial_cash: float = 100000.0
@@ -80,6 +103,9 @@ class Settings:
     paths: PathConfig = field(default_factory=PathConfig)
     market_session: MarketSessionConfig = field(default_factory=MarketSessionConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
 
     @property
     def data_dir(self) -> Path:
@@ -145,6 +171,8 @@ def load_settings(project_root: Path | None = None) -> Settings:
         payload = yaml.safe_load(settings_file.read_text(encoding="utf-8")) or {}
     settings = Settings(project_root=root)
     _merge_dataclass(settings, payload)
+    if settings.dashboard.auto_refresh_seconds:
+        settings.dashboard_refresh_seconds = settings.dashboard.auto_refresh_seconds
     return settings
 
 

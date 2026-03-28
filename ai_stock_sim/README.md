@@ -1,6 +1,6 @@
 # AI 股票模拟交易系统
 
-`ai_stock_sim` 是一个面向中国 A 股与 ETF 的模拟交易 MVP，目标是把以下链路先跑通：
+`ai_stock_sim` 是一个面向中国 A 股与 ETF 的 AI 模拟交易系统，当前已经完成两层能力：
 
 - 东财实时行情
 - 公开量化策略
@@ -9,6 +9,10 @@
 - 模拟撮合与账户
 - Streamlit 实时控制台
 - 盘后复盘与基础回测
+- 多周期评估与策略评分
+- 模式对照实验
+- 盘后日报导出
+- 人工实盘成交回填
 
 项目不会接入任何真实券商 API，也不会模拟点击券商 APP。
 
@@ -73,7 +77,7 @@ bash start.sh web
 ### 4. 运行回测
 
 ```bash
-bash scripts/run_backtest.sh 600036 momentum
+bash scripts/run_backtest.sh 600036 momentum strategy_plus_ai
 ```
 
 ### 5. 运行最小测试
@@ -81,6 +85,82 @@ bash scripts/run_backtest.sh 600036 momentum
 ```bash
 bash scripts/smoke_test.sh
 ```
+
+## 第二阶段新增能力
+
+### 1. 周期评估与策略评分
+
+系统现在会把模拟盘评估拆成：
+
+- 日评估
+- 周评估
+- 月评估
+- 最近 20/50 笔交易
+- 最近 20/60 个交易日
+
+核心指标包括：
+
+- 总收益率
+- 胜率
+- 盈亏比
+- 利润因子
+- 每笔期望收益
+- 最大回撤
+- 收益回撤比
+- 月度盈利占比
+
+同时会为策略输出综合评分：
+
+- 收益能力
+- 风险控制
+- 稳定性
+- 执行质量
+
+评分结果会写入：
+
+```text
+data/db.sqlite3
+```
+
+对应表：
+
+- `strategy_evaluations`
+- `mode_comparisons`
+- `manual_execution_logs`
+
+### 2. 模式对照实验
+
+控制台现在可以同时查看：
+
+- `strategy_only`
+- `strategy_plus_ai`
+- `strategy_plus_risk`
+- `strategy_plus_ai_plus_risk`
+
+当前第一版对照结果采用“信号前瞻收益代理 + 实际模拟成交”混合方式，用来判断 AI 和风控是否真的在改善策略质量。
+
+### 3. 日报导出
+
+收盘后会自动导出：
+
+- `data/reports/daily/`
+- `data/reports/weekly/`
+- `data/reports/monthly/`
+
+格式包括：
+
+- Markdown
+- HTML
+- JSON
+
+### 4. 人工实盘回填
+
+Streamlit 控制台新增“人工回填”页，可以记录：
+
+- 是否执行
+- 实际成交价
+- 实际成交数量
+- 备注和未执行原因
 
 ## 运行逻辑
 
@@ -93,6 +173,7 @@ bash scripts/smoke_test.sh
 5. 进入 A 股风控
 6. 通过后执行模拟撮合
 7. 更新账户、持仓、日志和权益曲线
+8. 按条件刷新评估记录与日报
 
 需要注意：
 
@@ -100,6 +181,8 @@ bash scripts/smoke_test.sh
 - 收盘后与非交易时段只会刷新状态、账户和日志
 - 持续监控中心会优先沿用网页“步骤 1”生成的最新候选池；若没有最新候选池，则回退到默认观察池
 - 控制台和网页中，股票默认显示为“代码 + 股票名”
+- 收盘后自动生成日报
+- 控制台可查看周期统计、策略评分、模式对照与日志筛选
 
 ## 核心模块
 
@@ -115,6 +198,18 @@ bash scripts/smoke_test.sh
   执行 A 股交易规则和仓位风险限制
 - `app/mock_broker.py`
   维护模拟成交、账户和持仓
+- `app/metrics_service.py`
+  统一指标计算层
+- `app/evaluation_service.py`
+  日/周/月/滚动窗口评估与模式对照
+- `app/scoring_service.py`
+  策略综合评分
+- `app/report_service.py`
+  日报、周报、月报导出
+- `app/manual_execution_service.py`
+  人工实盘成交回填
+- `app/vnpy_adapter.py`
+  vn.py 参数导出与结果回流适配
 - `dashboard/dashboard_app.py`
   Streamlit 实时控制台
 
@@ -134,6 +229,9 @@ bash scripts/smoke_test.sh
 - 最大回撤限制
 - 手续费、滑点、印花税
 - 观察池
+- 评估窗口
+- 评分权重
+- 控制台刷新与日志筛选
 
 其中：
 
@@ -145,18 +243,32 @@ bash scripts/smoke_test.sh
 - SQLite：`data/db.sqlite3`
 - 日志：`data/logs/`
 - 回测报告：`data/reports/backtest/`
+- 日报：`data/reports/daily/`
+- 周报：`data/reports/weekly/`
+- 月报：`data/reports/monthly/`
 - 复盘报告：`data/reports/`
 
 ## 当前限制
 
-- 第一版回测是“本地简化回测 + vn.py 工作区预留”，优先保证可跑通
+- 当前回测仍以“本地简化回测 + vn.py 参数导出” 为主，尚未完全迁移到 vn.py 原生引擎
 - 东财公开接口属于免费公开数据，稳定性不等同于机构专线
 - AI 审批依赖当前仓库里的 `TradeforAgents-minimal` 结果目录；不可用时会自动降级为无 AI 模式
 - 当前默认交易日判断只做工作日与时段判断，尚未接入完整节假日日历
+- 模式对照实验当前包含“前瞻收益代理”，适合作为质量评估参考，不应等同于真实实盘收益
+
+## 常用验收命令
+
+```bash
+bash scripts/bootstrap.sh
+bash scripts/run_engine.sh
+bash scripts/run_dashboard.sh
+bash scripts/run_backtest.sh 600036 momentum strategy_plus_ai
+bash scripts/smoke_test.sh
+```
 
 ## 下一阶段建议
 
-1. 把 `vn.py` 回测适配补成正式策略类
-2. 为实时引擎增加分钟级缓存层
-3. 扩展 AI 审批输入，让它读取候选信号明细而不是只读单股报告
-4. 增加手工实盘成交回填
+1. 把 `vn.py` 回测适配补成正式策略类和结果导入器
+2. 接入完整 A 股交易日日历
+3. 为模式对照实验增加更严格的历史撮合模拟
+4. 让 8600 页面直接查看阶段二评估报表

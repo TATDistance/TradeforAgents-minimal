@@ -19,7 +19,10 @@ def main() -> int:
 
     def _shutdown(*_args) -> None:
         log_event(logger, "info", "main", "shutting_down")
-        scheduler.shutdown()
+        try:
+            scheduler.shutdown()
+        except Exception:
+            pass
         raise SystemExit(0)
 
     signal.signal(signal.SIGINT, _shutdown)

@@ -12,7 +12,7 @@ class MockBroker:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
 
-    def execute_signal(self, conn, signal: FinalSignal, risk: RiskCheckResult, latest_price: float) -> OrderRecord:
+    def execute_signal(self, conn, signal: FinalSignal, risk: RiskCheckResult, latest_price: float, signal_id: int | None = None) -> OrderRecord:
         if not risk.allowed or risk.adjusted_qty <= 0:
             order = OrderRecord(
                 symbol=signal.symbol,
@@ -21,6 +21,9 @@ class MockBroker:
                 qty=0,
                 status="REJECTED",
                 note=risk.reject_reason or "风控拒绝",
+                strategy_name=signal.strategy_name,
+                mode_name=signal.mode_name,
+                signal_id=signal_id,
             )
             write_order(conn, order)
             return order
@@ -42,6 +45,9 @@ class MockBroker:
             slippage=round(turnover * self.settings.slippage_rate, 4),
             status="FILLED" if fill_qty == risk.adjusted_qty else "PARTIAL_FILLED",
             note="模拟成交",
+            strategy_name=signal.strategy_name,
+            mode_name=signal.mode_name,
+            signal_id=signal_id,
         )
         write_order(conn, order)
         self._apply_fill(conn, order, latest_price=latest_price)

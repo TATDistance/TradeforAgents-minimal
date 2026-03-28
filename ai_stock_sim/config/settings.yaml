@@ -17,6 +17,20 @@ min_listing_days: 120
 limit_up_filter_pct: 0.097
 limit_down_filter_pct: -0.097
 dashboard_refresh_seconds: 5
+evaluation:
+  rolling_trade_windows: [20, 50]
+  rolling_day_windows: [20, 60]
+  enable_strategy_scoring: true
+  report_auto_generate: true
+scoring:
+  weight_return: 0.30
+  weight_risk: 0.30
+  weight_stability: 0.20
+  weight_execution: 0.20
+dashboard:
+  auto_refresh_seconds: 10
+  enable_log_filter: true
+  enable_mode_comparison: true
 strategy:
   momentum_lookback: 20
   momentum_min_score: 0.55

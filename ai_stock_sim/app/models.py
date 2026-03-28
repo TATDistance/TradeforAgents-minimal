@@ -48,6 +48,8 @@ class AIDecision(BaseModel):
     approved: bool = True
     reason: str = ""
     source_mode: str = "disabled"
+    context_json: Optional[str] = None
+    context_summary: str = ""
 
 
 class FinalSignal(BaseModel):
@@ -62,6 +64,8 @@ class FinalSignal(BaseModel):
     ai_approved: bool = False
     ai_reason: str = ""
     strategy_reason: str = ""
+    strategy_name: str = ""
+    mode_name: str = "strategy_plus_ai_plus_risk"
 
 
 class RiskCheckResult(BaseModel):
@@ -86,6 +90,9 @@ class OrderRecord(BaseModel):
     status: str = "PENDING"
     ts: datetime = Field(default_factory=datetime.now)
     note: str = ""
+    strategy_name: str = ""
+    mode_name: str = "strategy_plus_ai_plus_risk"
+    signal_id: Optional[int] = None
 
 
 class PositionRecord(BaseModel):
@@ -119,3 +126,55 @@ class ReviewReport(BaseModel):
     max_drawdown: float
     ending_equity: float
     summary: str
+
+
+class StrategyEvaluation(BaseModel):
+    ts: datetime = Field(default_factory=datetime.now)
+    strategy_name: str
+    period_type: str
+    total_return: float = 0.0
+    max_drawdown: float = 0.0
+    current_drawdown: float = 0.0
+    win_rate: float = 0.0
+    pnl_ratio: float = 0.0
+    profit_factor: float = 0.0
+    expectancy: float = 0.0
+    return_drawdown_ratio: float = 0.0
+    monthly_positive_ratio: float = 0.0
+    recent_win_rate: float = 0.0
+    recent_profit_factor: float = 0.0
+    recent_expectancy: float = 0.0
+    score_total: float = 0.0
+    score_return: float = 0.0
+    score_risk: float = 0.0
+    score_stability: float = 0.0
+    score_execution: float = 0.0
+    grade: str = "D"
+    status: str = "OBSERVE"
+    total_trades: int = 0
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    metadata_json: Optional[str] = None
+
+
+class ModeComparison(BaseModel):
+    ts: datetime = Field(default_factory=datetime.now)
+    mode_name: str
+    total_return: float = 0.0
+    max_drawdown: float = 0.0
+    win_rate: float = 0.0
+    profit_factor: float = 0.0
+    expectancy: float = 0.0
+    score_total: float = 0.0
+    metadata_json: Optional[str] = None
+
+
+class ManualExecutionLog(BaseModel):
+    ts: datetime = Field(default_factory=datetime.now)
+    signal_id: int
+    symbol: str
+    executed: bool
+    actual_price: Optional[float] = None
+    actual_qty: Optional[int] = None
+    reason: str = ""
+    note: str = ""

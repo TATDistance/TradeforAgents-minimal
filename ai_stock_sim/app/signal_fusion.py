@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Mapping, Optional
 
 from .ai_decision_service import AIDecisionService
 from .models import AIDecision, FinalSignal, StrategySignal
@@ -13,7 +13,12 @@ class SignalFusion:
         self.settings = settings or load_settings()
         self.ai_service = ai_service or AIDecisionService(self.settings)
 
-    def fuse(self, grouped_signals: Dict[str, List[StrategySignal]], trade_date: str | None = None) -> tuple[List[FinalSignal], List[AIDecision]]:
+    def fuse(
+        self,
+        grouped_signals: Dict[str, List[StrategySignal]],
+        trade_date: str | None = None,
+        context_map: Optional[Dict[str, Mapping[str, object]]] = None,
+    ) -> tuple[List[FinalSignal], List[AIDecision]]:
         final_signals: List[FinalSignal] = []
         ai_decisions: List[AIDecision] = []
         for symbol, signals in grouped_signals.items():
@@ -40,7 +45,19 @@ class SignalFusion:
                 position_pct=min(sum(item.position_pct for item in same_side) / len(same_side), self.settings.max_single_position_pct),
                 reason="；".join(item.reason for item in same_side),
             )
-            ai_decision = self.ai_service.review_signal(symbol=symbol, candidate=candidate, trade_date=trade_date)
+            extra_context = dict((context_map or {}).get(symbol, {}))
+            try:
+                ai_decision = self.ai_service.review_signal(
+                    symbol=symbol,
+                    candidate=candidate,
+                    trade_date=trade_date,
+                    market_snapshot=extra_context.get("market_snapshot") if isinstance(extra_context, dict) else None,
+                    technical_summary=extra_context.get("technical_summary") if isinstance(extra_context, dict) else None,
+                    portfolio_context=extra_context.get("portfolio_context") if isinstance(extra_context, dict) else None,
+                    risk_constraints=extra_context.get("risk_constraints") if isinstance(extra_context, dict) else None,
+                )
+            except TypeError:
+                ai_decision = self.ai_service.review_signal(symbol=symbol, candidate=candidate, trade_date=trade_date)
             ai_decisions.append(ai_decision)
             if not ai_decision.approved or ai_decision.ai_action == "HOLD":
                 continue
@@ -61,6 +78,8 @@ class SignalFusion:
                     ai_approved=ai_decision.approved,
                     ai_reason=ai_decision.reason,
                     strategy_reason=candidate.reason,
+                    strategy_name=candidate.strategy,
+                    mode_name="strategy_plus_ai_plus_risk",
                 )
             )
         return final_signals, ai_decisions

@@ -7,6 +7,7 @@ from typing import Dict, List
 from .market_data_service import MarketDataService
 from .settings import Settings, load_settings
 from .strategy_engine import StrategyEngine
+from .vnpy_adapter import VnpyAdapter
 from strategies import breakout, mean_reversion, momentum
 
 
@@ -15,6 +16,7 @@ class BacktestService:
         self.settings = settings or load_settings()
         self.market_data = MarketDataService(self.settings)
         self.strategy_engine = StrategyEngine(self.settings, self.market_data)
+        self.vnpy_adapter = VnpyAdapter(self.settings)
 
     def run_simple_backtest(self, symbol: str, strategy_name: str = "momentum", asset_type: str = "stock") -> Dict[str, object]:
         frame = self.market_data.fetch_history_daily(symbol=symbol, asset_type=asset_type, limit=240)
@@ -60,4 +62,15 @@ class BacktestService:
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / f"{report['symbol']}_{report['strategy']}.json"
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.vnpy_adapter.export_backtest_result(report)
         return path
+
+    def export_vnpy_payload(self, symbol: str, strategy_name: str, mode_name: str = "strategy_only") -> Path:
+        params = {
+            "strategy": strategy_name,
+            "momentum_lookback": self.settings.strategy.momentum_lookback,
+            "breakout_window": self.settings.strategy.breakout_window,
+            "atr_window": self.settings.strategy.atr_window,
+            "rsi_low": self.settings.strategy.mean_reversion_rsi_low,
+        }
+        return self.vnpy_adapter.export_strategy_payload(strategy_name=strategy_name, symbol=symbol, params=params, mode_name=mode_name)

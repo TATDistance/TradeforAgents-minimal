@@ -18,6 +18,14 @@ def test_smoke_bootstrap(tmp_path):
     initialize_db(settings)
     seed_account(settings, cash=100000)
     assert settings.db_path.exists()
+    conn = sqlite3.connect(str(settings.db_path))
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+    assert "strategy_evaluations" in tables
+    assert "mode_comparisons" in tables
+    assert "manual_execution_logs" in tables
 
 
 def test_scheduler_skips_orders_after_close(tmp_path, monkeypatch):

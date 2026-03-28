@@ -65,6 +65,7 @@ http://127.0.0.1:8600
 4. `步骤 4` 继续沿用步骤 1 的候选池做持续监控与 AI 模拟交易
 
 页面里涉及股票代码的位置，都会尽量显示为“代码 + 股票名”。
+如果你打开 `8610` 控制台，还能继续看到第二阶段新增的策略评分、周期统计、对照实验和人工回填。
 
 ### 2. AI 分析
 
@@ -117,6 +118,18 @@ ai_stock_sim/
 - AI 二次审批
 - A 股规则模拟撮合
 - Streamlit 实时控制台
+- 策略评分与周期统计
+- 日报导出
+- 人工实盘成交回填
+
+`ai_stock_sim` 第二阶段已经补齐：
+
+- 日 / 周 / 月 / 滚动窗口评估
+- 胜率、盈亏比、利润因子、期望收益、最大回撤等指标
+- 策略综合评分
+- `strategy_only` / `strategy_plus_ai` / `strategy_plus_risk` / `strategy_plus_ai_plus_risk` 对照
+- Markdown / HTML / JSON 日报导出
+- Streamlit 中文评估面板与人工回填入口
 
 ## 快速开始
 
@@ -257,6 +270,14 @@ ai_trade_system/data/db.sqlite3
 
 ```text
 ai_stock_sim/data/db.sqlite3
+```
+
+第二阶段评估报表：
+
+```text
+ai_stock_sim/data/reports/daily/
+ai_stock_sim/data/reports/weekly/
+ai_stock_sim/data/reports/monthly/
 ```
 
 ## 数据与稳定性说明
