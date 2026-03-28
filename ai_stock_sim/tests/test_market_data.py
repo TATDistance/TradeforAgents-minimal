@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import requests
 
 from app.market_data_service import MarketDataService
 from app.market_clock import MarketClock
@@ -62,3 +63,26 @@ def test_market_clock_can_enable_post_close_execution():
     assert phase.phase_name == "post_close_execution"
     assert phase.should_run_strategy is True
     assert phase.should_place_orders is True
+
+
+def test_get_json_retries_before_success(monkeypatch):
+    service = MarketDataService(load_settings())
+    calls = {"count": 0}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_get(url, params=None, timeout=15):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise requests.exceptions.ConnectionError("temporary eastmoney dns error")
+        return FakeResponse()
+
+    monkeypatch.setattr(service.session, "get", fake_get)
+    payload = service._get_json("https://push2.eastmoney.com/api/test", {"x": 1})
+    assert payload == {"ok": True}
+    assert calls["count"] == 2

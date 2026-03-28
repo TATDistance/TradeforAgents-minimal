@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable
@@ -16,11 +17,13 @@ from app.manual_execution_service import ManualExecutionService
 from app.settings import load_settings
 
 
-st.set_page_config(page_title="AI Stock Sim 控制台", layout="wide")
+st.set_page_config(page_title="AI Stock Sim 调试面板", layout="wide")
 settings = load_settings(Path(__file__).resolve().parents[1])
 evaluation_service = EvaluationService(settings)
 manual_execution_service = ManualExecutionService(settings)
 SYMBOL_NAME_CACHE: Dict[str, str] = {}
+EASTMONEY_NAME_RETRY_ATTEMPTS = 3
+EASTMONEY_NAME_RETRY_BACKOFF_SECONDS = 0.25
 
 
 COLOR_MAP = {
@@ -135,26 +138,29 @@ def fetch_eastmoney_symbol_names(symbols: tuple[str, ...]) -> Dict[str, str]:
             mapping[symbol] = cached_name
             continue
         market = "1" if symbol.startswith(("5", "6", "9")) else "0"
-        try:
-            response = session.get(
-                "https://push2.eastmoney.com/api/qt/stock/get",
-                params={
-                    "secid": f"{market}.{symbol}",
-                    "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                    "invt": 2,
-                    "fltt": 2,
-                    "fields": "f57,f58",
-                },
-                timeout=2.5,
-            )
-            response.raise_for_status()
-            data = (response.json().get("data") or {})
-            name = str(data.get("f58") or "").strip()
-            if name:
-                SYMBOL_NAME_CACHE[symbol] = name
-                mapping[symbol] = name
-        except Exception:
-            continue
+        for attempt in range(1, EASTMONEY_NAME_RETRY_ATTEMPTS + 1):
+            try:
+                response = session.get(
+                    "https://push2.eastmoney.com/api/qt/stock/get",
+                    params={
+                        "secid": f"{market}.{symbol}",
+                        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                        "invt": 2,
+                        "fltt": 2,
+                        "fields": "f57,f58",
+                    },
+                    timeout=2.5,
+                )
+                response.raise_for_status()
+                data = (response.json().get("data") or {})
+                name = str(data.get("f58") or "").strip()
+                if name:
+                    SYMBOL_NAME_CACHE[symbol] = name
+                    mapping[symbol] = name
+                break
+            except Exception:
+                if attempt < EASTMONEY_NAME_RETRY_ATTEMPTS:
+                    time.sleep(EASTMONEY_NAME_RETRY_BACKOFF_SECONDS * attempt)
     return mapping
 
 
@@ -265,8 +271,8 @@ if "allow_post_close_execution" not in st.session_state:
 if "decision_engine_mode" not in st.session_state:
     st.session_state["decision_engine_mode"] = load_decision_mode()
 
-st.title("AI 股票模拟交易控制台")
-st.caption("东财实时行情 + 公开策略 + TradeforAgents AI 审批 + A 股模拟撮合 + 周期评估")
+st.title("AI 股票模拟交易调试面板")
+st.caption("这里保留特征、上下文、风控、日志和模式对照；默认产品入口请回到 8600 的 AI 首页。")
 
 toolbar_left, toolbar_mid, toolbar_right = st.columns([3, 1.3, 1.2])
 with toolbar_left:

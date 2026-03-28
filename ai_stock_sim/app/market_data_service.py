@@ -25,6 +25,8 @@ EASTMONEY_HEADERS = {
     "Referer": "https://quote.eastmoney.com/",
 }
 EASTMONEY_UT = "bd1d9ddb04089700cf9c27f6f7426281"
+EASTMONEY_RETRY_ATTEMPTS = 3
+EASTMONEY_RETRY_BACKOFF_SECONDS = 0.35
 
 
 def infer_market(symbol: str) -> str:
@@ -81,17 +83,24 @@ class MarketDataService:
         return raw / 100.0
 
     def _get_json(self, url: str, params: Dict[str, object], cache_path: Optional[Path] = None) -> Dict[str, object]:
-        try:
-            response = self.session.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            payload = response.json()
-            if cache_path:
-                cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            return payload
-        except Exception:
-            if cache_path and cache_path.exists():
-                return json.loads(cache_path.read_text(encoding="utf-8"))
-            raise
+        last_error: Exception | None = None
+        for attempt in range(1, EASTMONEY_RETRY_ATTEMPTS + 1):
+            try:
+                response = self.session.get(url, params=params, timeout=15)
+                response.raise_for_status()
+                payload = response.json()
+                if cache_path:
+                    cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                return payload
+            except Exception as exc:
+                last_error = exc
+                if attempt < EASTMONEY_RETRY_ATTEMPTS:
+                    time.sleep(EASTMONEY_RETRY_BACKOFF_SECONDS * attempt)
+        if cache_path and cache_path.exists():
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("eastmoney request failed without explicit exception")
 
     def fetch_realtime_snapshot(self, limit: int = 300, include_etf: bool = True) -> pd.DataFrame:
         cache_path = self._cache_file("snapshot_combined", f"{limit}_{int(include_etf)}")

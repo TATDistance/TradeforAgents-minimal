@@ -176,6 +176,13 @@ class CompareModeConfig:
 
 
 @dataclass
+class UIConfig:
+    default_page: str = "ai_home"
+    enable_research_center: bool = True
+    enable_debug_panel: bool = True
+
+
+@dataclass
 class Settings:
     project_root: Path
     initial_cash: float = 100000.0
@@ -216,6 +223,7 @@ class Settings:
     decision_engine: DecisionEngineConfig = field(default_factory=DecisionEngineConfig)
     feature_layer: FeatureLayerConfig = field(default_factory=FeatureLayerConfig)
     compare_mode: CompareModeConfig = field(default_factory=CompareModeConfig)
+    ui: UIConfig = field(default_factory=UIConfig)
 
     @property
     def data_dir(self) -> Path:

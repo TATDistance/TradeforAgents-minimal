@@ -25,9 +25,13 @@ from pydantic import BaseModel, Field
 import uvicorn
 import yaml
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = PROJECT_ROOT.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from ai_stock_sim.dashboard.pages.ai_trading_home import render_ai_trading_home
+from ai_stock_sim.dashboard.services.ui_home_service import get_debug_view, get_home_view
+
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "minimal_deepseek_report.py"
 RESULTS_DIR = PROJECT_ROOT / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -53,6 +57,8 @@ AI_STOCK_SIM_DASHBOARD_HEALTH_URL = "http://127.0.0.1:8610/_stcore/health"
 AI_STOCK_SIM_RUNTIME_SYMBOLS = AI_STOCK_SIM_HOME / "config" / "runtime_symbols.yaml"
 WEB_BUILD_TAG = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 SYMBOL_NAME_CACHE: Dict[str, str] = {}
+EASTMONEY_NAME_RETRY_ATTEMPTS = 3
+EASTMONEY_NAME_RETRY_BACKOFF_SECONDS = 0.25
 
 
 class AnalyzeRequest(BaseModel):
@@ -271,16 +277,19 @@ def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
             "?secid={0}&ut=bd1d9ddb04089700cf9c27f6f7426281&invt=2&fltt=2&fields=f57,f58"
         ).format(_eastmoney_secid(symbol))
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
-        try:
-            with opener.open(request, timeout=2.5) as response:
-                payload = json.loads(response.read().decode("utf-8", errors="ignore"))
-            data = payload.get("data") or {}
-            name = str(data.get("f58") or "").strip()
-            if name:
-                SYMBOL_NAME_CACHE[symbol] = name
-                result[symbol] = name
-        except Exception:
-            continue
+        for attempt in range(1, EASTMONEY_NAME_RETRY_ATTEMPTS + 1):
+            try:
+                with opener.open(request, timeout=2.5) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+                data = payload.get("data") or {}
+                name = str(data.get("f58") or "").strip()
+                if name:
+                    SYMBOL_NAME_CACHE[symbol] = name
+                    result[symbol] = name
+                break
+            except Exception:
+                if attempt < EASTMONEY_NAME_RETRY_ATTEMPTS:
+                    time.sleep(EASTMONEY_NAME_RETRY_BACKOFF_SECONDS * attempt)
     return result
 
 
@@ -1146,8 +1155,29 @@ def health(response: Response) -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/ui/home")
+def ui_home() -> Dict[str, object]:
+    return get_home_view()
+
+
+@app.get("/api/ui/debug")
+def ui_debug() -> Dict[str, object]:
+    return get_debug_view()
+
+
 @app.get("/", response_class=HTMLResponse)
-def index() -> HTMLResponse:
+def ai_home() -> HTMLResponse:
+    return HTMLResponse(
+        content=render_ai_trading_home(WEB_BUILD_TAG),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+def _render_research_page(active_page: str = "selector") -> HTMLResponse:
     html = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1275,30 +1305,24 @@ def index() -> HTMLResponse:
 
     <div class="card">
       <div class="section-title">
-        <h3>全局配置</h3>
-        <span class="badge">只填一次，下面流程都会复用</span>
+        <h3>AI 绑定说明</h3>
+        <span class="badge">已迁移到首页</span>
       </div>
       <div class="hint content-col">
-        推荐做法：先在这里填好 `API Key` 和 `Base URL`，然后直接使用下方的“自动选股与生成计划”。如果你只是想单独分析某只股票，再打开页面底部的高级工具。
-      </div>
-      <div class="row content-col" style="margin-top:12px">
-        <div>
-          <label>API Key（必填）</label>
-          <input id="apiKey" type="password" placeholder="sk-..." />
-        </div>
-        <div>
-          <label>Base URL</label>
-          <select id="baseUrl">
-            <option value="https://api.deepseek.com" selected>DeepSeek 官方（推荐）</option>
-            <option value="https://api.deepseek.com/v1">DeepSeek 兼容 /v1</option>
-            <option value="https://newapi.baosiapi.com/v1">OpenAI 中转示例（newapi.baosiapi.com）</option>
-          </select>
-        </div>
+        研究中心不再重复展示用户设置卡。这里会自动复用首页里保存的 `AI 平台 / 模型 / Base URL / API Key` 配置。
       </div>
       <div class="pill-row" style="margin-top:12px">
-        <span class="pill">适合个人：收盘后选股</span>
-        <span class="pill">次日计划：人工执行</span>
-        <span class="pill">系统职责：AI 分析 + 模拟盘验证</span>
+        <span class="pill">默认平台：DeepSeek</span>
+        <span class="pill">配置入口：AI 首页</span>
+        <span class="pill">这里仅负责研究与计划</span>
+      </div>
+      <div style="display:none" aria-hidden="true">
+        <input id="apiKey" type="password" placeholder="sk-..." />
+        <select id="baseUrl">
+          <option value="https://api.deepseek.com" selected>DeepSeek 官方（推荐）</option>
+          <option value="https://api.deepseek.com/v1">DeepSeek 兼容 /v1</option>
+          <option value="https://newapi.baosiapi.com/v1">OpenAI 中转示例（newapi.baosiapi.com）</option>
+        </select>
       </div>
     </div>
 
@@ -1727,12 +1751,14 @@ def index() -> HTMLResponse:
     // 浏览器本地保存（仅当前浏览器）
     apiKey.value = localStorage.getItem('ta_min_api_key') || '';
     mode.value = localStorage.getItem('ta_min_mode') || 'quick';
+    model.value = localStorage.getItem('ta_min_model') || 'deepseek-chat';
     const savedBaseUrl = localStorage.getItem('ta_min_base_url');
     if(savedBaseUrl){
       const exists = Array.from(baseUrl.options).some(opt => opt.value === savedBaseUrl);
       if(exists) baseUrl.value = savedBaseUrl;
     }
     apiKey.onchange = () => localStorage.setItem('ta_min_api_key', apiKey.value.trim());
+    model.onchange = () => localStorage.setItem('ta_min_model', model.value);
     mode.onchange = () => {
       localStorage.setItem('ta_min_mode', mode.value);
       if(mode.value === 'deep'){
@@ -2296,6 +2322,200 @@ def index() -> HTMLResponse:
     checkBackendHealth();
     loadReports();
     loadAiStockSimStatus();
+  </script>
+</body>
+</html>""".replace("__WEB_BUILD_TAG__", WEB_BUILD_TAG)
+    html = html.replace("<title>股票分析（极简版）</title>", "<title>研究与计划中心</title>")
+    html = html.replace("TradingAgents-CN 盘后选股工作台", "研究与计划中心")
+    html = html.replace("推荐入口：先自动选股，再看计划，最后点分享页", "辅助入口：查看研究过程、候选与计划")
+    html = html.replace(
+        "这套页面的目标不是把所有功能同时摊开，而是让用户按一条清晰路径走完：收盘后自动选股，AI 分析候选股，生成次日交易计划，最后在卡片里直接打开分享页查看。",
+        "这里保留自动选股、候选研究、单股分析、交易计划和复盘能力，适合需要追溯 AI 依据和盘后流程的用户。",
+    )
+    html = html.replace("<strong>步骤 1</strong>", "<strong>自动选股</strong>")
+    html = html.replace("<strong>步骤 2</strong>", "<strong>候选研究</strong>")
+    html = html.replace("<strong>步骤 3</strong>", "<strong>交易计划</strong>")
+    html = html.replace("<strong>步骤 4</strong>", "<strong>分享页查看</strong>")
+    html = html.replace("步骤 1：自动选股与生成计划", "自动选股")
+    html = html.replace("步骤 2：候选卡片", "候选卡片")
+    html = html.replace("步骤 3：交易计划、模拟盘与复盘", "交易计划、模拟盘与复盘")
+    html = html.replace(
+        '<div style="margin-top:16px">\n        <h4>步骤 2：候选卡片</h4>',
+        '<div id="candidatesSection" style="margin-top:16px">\n        <h4>候选卡片</h4>',
+    )
+    html = html.replace(
+        '<div style="margin-top:16px">\n        <h4>最近分析卡片</h4>',
+        '<div id="analysisSection" style="margin-top:16px">\n        <h4>最近分析卡片</h4>',
+    )
+    html = html.replace(
+        '<div style="margin-top:18px">\n        <h4>步骤 4：实时 AI 决策中心（沿用上方候选池）</h4>',
+        '<div id="simCenterBlock" style="margin-top:18px">\n        <h4>实时决策运行与控制（高级）</h4>',
+    )
+    html = html.replace(
+        "这块不是另一套独立系统，而是把上一步自动选股得到的候选池同步到 `ai_stock_sim`，让它持续盯盘、持续做 AI 决策、持续更新模拟账户。你可以把它理解成“交易计划的实时驾驶舱”。",
+        "实时 AI 首页已经承担默认观察入口；这里保留高级控制能力，适合在研究/计划中心里手动查看或控制持续监控与模拟运行。",
+    )
+    html = html.replace(
+        '<div class="hero-actions content-col">\n            <a class="primary" href="#autoFlow">开始推荐流程</a>\n            <a class="ghost" href="#tradeCenter">查看计划与复盘</a>\n            <a class="ghost" href="#manualTools">手动分析工具</a>\n          </div>',
+        '<div class="hero-actions content-col">\n            <a class="primary" href="/">返回 AI 首页</a>\n            <a class="ghost" href="/research/plan">查看计划与复盘</a>\n            <a class="ghost" href="/debug">调试总览</a>\n          </div>',
+    )
+    html = html.replace(
+        '<div class="flow-item"><strong>默认模式</strong><br>推荐使用 `quick + 自动计划 + 模拟执行`，第一次更容易看到完整结果。</div>',
+        '<div class="flow-item"><strong>研究中心定位</strong><br>这里更适合查看候选来源、手动分析和盘后计划，不是默认实时入口。</div>',
+    )
+    html = html.replace(
+        '<div class="flow-item"><strong>何时用 deep</strong><br>只在候选数量不多、你愿意多等几分钟时再切到 `deep`。</div>',
+        '<div class="flow-item"><strong>何时看候选</strong><br>当你想知道 AI 为什么关注这些股票，或者需要逐只看分享页时，再回到这里。</div>',
+    )
+    html = html.replace(
+        '<div class="flow-item"><strong>手动工具</strong><br>单股和股票池批量分析放在下方“高级工具”里，不影响主流程。</div>',
+        '<div class="flow-item"><strong>与首页关系</strong><br>实时 AI 决策已放到首页；这里保留研究、计划和分享页入口作为辅助模块。</div>',
+    )
+    html = html.replace(
+        "loadAiStockSimStatus();",
+        """
+    loadAiStockSimStatus();
+    const activePage = "__ACTIVE_PAGE__";
+    const focusMap = {
+      selector: "autoFlow",
+      candidates: "candidatesSection",
+      analysis: "analysisSection",
+      plan: "tradeCenter"
+    };
+    const hiddenMap = {
+      selector: [],
+      candidates: ["tradeCenter"],
+      analysis: ["tradeCenter"],
+      plan: ["autoFlow", "manualTools"]
+    };
+    const hiddenIds = hiddenMap[activePage] || [];
+    hiddenIds.forEach((id) => {
+      const node = document.getElementById(id);
+      if(node) node.style.display = 'none';
+    });
+    const simBlock = document.getElementById('simCenterBlock');
+    if(simBlock && activePage !== 'plan') simBlock.style.display = 'none';
+    const focusId = focusMap[activePage];
+    if(focusId){
+      const node = document.getElementById(focusId);
+      if(node){
+        setTimeout(() => node.scrollIntoView({behavior:'auto', block:'start'}), 10);
+      }
+    }
+""",
+    )
+    html = html.replace("__ACTIVE_PAGE__", active_page)
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@app.get("/research", response_class=HTMLResponse)
+def research_home() -> HTMLResponse:
+    return _render_research_page("selector")
+
+
+@app.get("/research/selector", response_class=HTMLResponse)
+def research_selector() -> HTMLResponse:
+    return _render_research_page("selector")
+
+
+@app.get("/research/candidates", response_class=HTMLResponse)
+def research_candidates() -> HTMLResponse:
+    return _render_research_page("candidates")
+
+
+@app.get("/research/analysis", response_class=HTMLResponse)
+def research_analysis() -> HTMLResponse:
+    return _render_research_page("analysis")
+
+
+@app.get("/research/plan", response_class=HTMLResponse)
+def research_plan() -> HTMLResponse:
+    return _render_research_page("plan")
+
+
+@app.get("/evaluation", response_class=HTMLResponse)
+def evaluation_home() -> HTMLResponse:
+    return _render_research_page("plan")
+
+
+@app.get("/debug", response_class=HTMLResponse)
+def debug_overview() -> HTMLResponse:
+    html = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <title>调试总览</title>
+  <style>
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;background:#07101d;color:#e5edf9}
+    .shell{max-width:1000px;margin:0 auto;padding:24px}
+    .top{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}
+    .nav{display:flex;gap:10px;flex-wrap:wrap}
+    .nav a{color:#cfe1ff;text-decoration:none;background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.18);padding:10px 14px;border-radius:999px;font-weight:600}
+    .card{margin-top:16px;background:#0f172a;border:1px solid #1e2d4d;border-radius:18px;padding:18px}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+    .mini{background:#111c33;border:1px solid #223355;border-radius:16px;padding:14px}
+    .label{color:#8da2c0;font-size:13px;margin-bottom:8px}
+    .value{font-size:22px;font-weight:700}
+    pre{background:#09111f;color:#d9e5f7;border-radius:14px;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+    @media (max-width:900px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="top">
+      <div>
+        <div style="font-size:12px;color:#8fb4ff;margin-bottom:6px">页面版本：__WEB_BUILD_TAG__</div>
+        <h1 style="margin:0">调试总览</h1>
+        <p style="margin:8px 0 0;color:#8da2c0">这里不重复实现完整调试台，只展示状态摘要、最近日志，并跳转到 8610。</p>
+      </div>
+      <div class="nav">
+        <a href="/">返回 AI 首页</a>
+        <a href="/research">研究中心</a>
+        <a href="/evaluation">复盘中心</a>
+        <a href="http://127.0.0.1:8610/" target="_blank">打开 8610 调试面板</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="grid">
+        <div class="mini"><div class="label">系统状态</div><div class="value" id="debugState">加载中</div></div>
+        <div class="mini"><div class="label">最近更新时间</div><div class="value" id="debugUpdated">-</div></div>
+        <div class="mini"><div class="label">8610 调试面板</div><div class="value" id="debugHealth">检测中</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">最近错误</h3>
+      <div id="debugError" style="color:#fecaca">暂无</div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">最近系统日志</h3>
+      <pre id="debugLogs">加载中…</pre>
+    </div>
+  </div>
+  <script>
+    async function loadDebug(){
+      const resp = await fetch('/api/ui/debug?ts=' + Date.now(), {cache:'no-store'});
+      const data = await resp.json();
+      const status = data.system_status || {};
+      document.getElementById('debugState').textContent = status.label || '-';
+      document.getElementById('debugUpdated').textContent = status.last_updated_at || '-';
+      document.getElementById('debugHealth').textContent = status.dashboard_healthy ? '可访问' : '未就绪';
+      document.getElementById('debugError').textContent = status.last_error || '暂无';
+      const logs = data.logs || [];
+      document.getElementById('debugLogs').textContent = logs.length
+        ? logs.map(item => [item.ts, item.level, item.module, item.message].join(' | ')).join('\\n')
+        : '暂无日志';
+    }
+    loadDebug();
+    setInterval(loadDebug, 5000);
   </script>
 </body>
 </html>""".replace("__WEB_BUILD_TAG__", WEB_BUILD_TAG)
