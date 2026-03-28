@@ -235,7 +235,7 @@ def _url_healthy(url: str, timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return 200 <= int(resp.status) < 300
-    except (urllib.error.URLError, TimeoutError, ValueError):
+    except (urllib.error.URLError, TimeoutError, ValueError, ConnectionResetError, OSError):
         return False
 
 
@@ -347,6 +347,7 @@ def _start_background_service(
     log_file: Path,
     health_url: Optional[str] = None,
     health_timeout_seconds: float = 8.0,
+    truncate_log: bool = False,
 ) -> Tuple[bool, str]:
     running, pid = _service_status(pid_file)
     if running and (not health_url or _url_healthy(health_url)):
@@ -354,6 +355,11 @@ def _start_background_service(
     if running and health_url and not _url_healthy(health_url):
         _stop_background_service(pid_file)
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    if truncate_log:
+        try:
+            log_file.write_text("", encoding="utf-8")
+        except Exception:
+            pass
     env = os.environ.copy()
     pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT), env.get("PYTHONPATH", "")]
     env["PYTHONPATH"] = os.pathsep.join(part for part in pythonpath_parts if part)
@@ -377,9 +383,15 @@ def _start_background_service(
             if proc.poll() is not None:
                 break
             time.sleep(0.4)
+        log_tail = _read_tail(log_file, limit=1200).strip()
+        log_hint = ""
+        if log_tail:
+            lines = [line for line in log_tail.splitlines() if line.strip()]
+            snippet = "\n".join(lines[-8:])
+            log_hint = "\n最近日志:\n{0}".format(snippet)
         if proc.poll() is not None:
-            return False, "服务启动失败，请查看日志。"
-        return False, "服务进程已启动，但健康检查未通过，请查看日志。"
+            return False, "服务启动失败，请查看日志。{0}".format(log_hint)
+        return False, "服务进程已启动，但健康检查未通过，请查看日志。{0}".format(log_hint)
     return True, "服务已启动，PID={0}".format(proc.pid)
 
 
@@ -1689,6 +1701,20 @@ def index() -> HTMLResponse:
       return String(detail);
     }
 
+    async function fetchJsonSafe(url, options){
+      const resp = await fetch(url, options);
+      const raw = await resp.text();
+      let data = {};
+      if(raw){
+        try{
+          data = JSON.parse(raw);
+        }catch(_err){
+          data = {detail: raw};
+        }
+      }
+      return {resp, data};
+    }
+
     function normalizeSymbolInput(raw){
       return (raw || '').trim().toUpperCase();
     }
@@ -1879,8 +1905,7 @@ def index() -> HTMLResponse:
 
     async function loadAiStockSimStatus(){
       try{
-        const resp = await fetch('/api/ai-stock-sim/status');
-        const data = await resp.json();
+        const {resp, data} = await fetchJsonSafe('/api/ai-stock-sim/status');
         if(!resp.ok){
           simStatus.textContent = '读取 ai_stock_sim 状态失败：' + formatErrorDetail(data.detail);
           return;
@@ -1960,32 +1985,37 @@ def index() -> HTMLResponse:
       buttons.forEach(btn => btn.disabled = true);
       simStatus.textContent = '正在准备环境并启动实时模拟...';
       try{
-        let resp = await fetch('/api/ai-stock-sim/status');
-        let data = await resp.json();
+        let result = await fetchJsonSafe('/api/ai-stock-sim/status');
+        let resp = result.resp;
+        let data = result.data;
         if(!resp.ok){
           throw new Error(formatErrorDetail(data.detail));
         }
-        resp = await fetch('/api/ai-stock-sim/sync-watchlist', {method:'POST'});
-        data = await resp.json();
+        result = await fetchJsonSafe('/api/ai-stock-sim/sync-watchlist', {method:'POST'});
+        resp = result.resp;
+        data = result.data;
         if(!resp.ok){
           simStatus.textContent = '候选池同步提示：' + formatErrorDetail(data.detail);
         }else{
           simStatus.textContent = data.message || '已同步最新候选池';
         }
         if(!data.bootstrap_ready){
-          resp = await fetch('/api/ai-stock-sim/bootstrap', {method:'POST'});
-          data = await resp.json();
+          result = await fetchJsonSafe('/api/ai-stock-sim/bootstrap', {method:'POST'});
+          resp = result.resp;
+          data = result.data;
           if(!resp.ok){
             throw new Error(formatErrorDetail(data.detail));
           }
         }
-        resp = await fetch('/api/ai-stock-sim/engine/start', {method:'POST'});
-        data = await resp.json();
+        result = await fetchJsonSafe('/api/ai-stock-sim/engine/start', {method:'POST'});
+        resp = result.resp;
+        data = result.data;
         if(!resp.ok){
           throw new Error(formatErrorDetail(data.detail));
         }
-        resp = await fetch('/api/ai-stock-sim/dashboard/start', {method:'POST'});
-        data = await resp.json();
+        result = await fetchJsonSafe('/api/ai-stock-sim/dashboard/start', {method:'POST'});
+        resp = result.resp;
+        data = result.data;
         if(!resp.ok){
           throw new Error(formatErrorDetail(data.detail));
         }
@@ -2466,6 +2496,8 @@ def start_ai_stock_sim_dashboard() -> Dict[str, object]:
         AI_STOCK_SIM_DASHBOARD_PID,
         AI_STOCK_SIM_DASHBOARD_LOG,
         health_url=AI_STOCK_SIM_DASHBOARD_HEALTH_URL,
+        health_timeout_seconds=20.0,
+        truncate_log=True,
     )
     if not ok:
         raise HTTPException(status_code=500, detail=message)

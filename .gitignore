@@ -1,6 +1,7 @@
 .env
 .venv/
 .venv310/
+.streamlit_home/
 __pycache__/
 *.pyc
 *.pyo
