@@ -5,6 +5,12 @@
 - 输入股票代码即可触发分析
 - 自动生成并打开 `wechat_share.html`
 
+当前云端网页侧的大模型接入约束：
+
+- 当前只支持 `DeepSeek`
+- 因此部署时必须准备可用的 `DeepSeek API Key`
+- 页面里虽然会显示模型与 Base URL，但当前推荐和默认都围绕 `DeepSeek`
+
 ## 1. 云服务器准备
 
 建议 Ubuntu 22.04，2C4G 起步。
@@ -50,6 +56,12 @@ pip install -r requirements.txt
 DEEPSEEK_API_KEY=sk-xxxx
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
+
+建议同步给使用者说明：
+
+- 第一次打开网页时，仍应在首页确认 `DeepSeek` 绑定配置
+- 如果网页端没有显式填写 `API Key`，系统可能会回退到服务器上的 `.env`
+- 如果你希望不同用户各自使用自己的 key，不要只依赖服务器 `.env`
 
 ## 3. 启动极简 Web
 
