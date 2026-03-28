@@ -37,6 +37,34 @@ MODE_LABELS = {
     "compare_mode": "对照模式：新旧同时输出",
 }
 
+FLOWCHART_TEXT = """\
+旧模式：
+实时行情
+ -> 股票池筛选
+ -> 六套策略输出候选信号
+ -> AI 审核员复核
+ -> 风控
+ -> 模拟成交
+ -> 更新账户
+
+新模式：
+实时行情
+ -> 股票池筛选
+ -> 六套策略输出特征与分数
+ -> 决策上下文构建
+ -> AI 决策引擎
+ -> 风控
+ -> 模拟成交
+ -> 更新账户
+
+对照模式：
+同一轮行情
+ -> 旧模式产出动作
+ -> 新模式产出动作
+ -> 记录差异
+ -> 控制台展示对照结果
+"""
+
 
 @st.cache_data(ttl=5)
 def load_table(table: str, limit: int = 50) -> pd.DataFrame:
@@ -329,6 +357,8 @@ def render_dashboard() -> None:
         summary_cols[1].metric("当前阶段", str((live_state or {}).get("phase", "-")))
         summary_cols[2].metric("AI 决策标的数", len((live_state or {}).get("ai_decision_engine") or {}))
         summary_cols[3].metric("计划动作数", len((live_state or {}).get("final_actions") or []))
+        with st.expander("查看当前版本 AI 单次轮询流程图"):
+            st.code(FLOWCHART_TEXT, language="text")
 
     top_tabs = st.tabs(
         [
