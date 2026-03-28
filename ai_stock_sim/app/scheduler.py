@@ -1,23 +1,29 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from .action_planner import ActionPlanner
+from .ai_portfolio_manager import AIPortfolioManager
 from .db import connect_db, initialize_db, write_ai_decision, write_final_signal, write_signal, write_system_log
+from .market_regime_service import MarketRegimeService
 from .logger import log_event
+from .models import FinalSignal, MarketRegimeState, PortfolioManagerDecision, StrategySignal
+from .portfolio_decision_service import PortfolioDecisionService
 from .evaluation_service import EvaluationService
 from .market_data_service import MarketDataService
 from .market_clock import MarketClock
 from .mock_broker import MockBroker
-from .models import StrategySignal
-from .portfolio_service import build_portfolio_state, mark_to_market
+from .portfolio_service import build_portfolio_feedback, build_portfolio_state, mark_to_market
 from .report_service import ReportService
 from .review_service import ReviewService
 from .risk_engine import RiskEngine
 from .settings import Settings, load_settings
 from .signal_fusion import SignalFusion
+from .strategy_weight_service import StrategyWeightService
 from .strategy_engine import StrategyEngine
 from .universe_service import UniverseService
 
@@ -29,8 +35,13 @@ class TradingScheduler:
         self.universe = UniverseService(self.settings)
         self.market_data = MarketDataService(self.settings)
         self.market_clock = MarketClock(self.settings.market_session)
+        self.market_regime_service = MarketRegimeService(self.settings)
+        self.strategy_weight_service = StrategyWeightService(self.settings)
         self.strategy_engine = StrategyEngine(self.settings, self.market_data)
         self.signal_fusion = SignalFusion(self.settings)
+        self.ai_portfolio_manager = AIPortfolioManager(self.settings)
+        self.portfolio_decision_service = PortfolioDecisionService(self.settings)
+        self.action_planner = ActionPlanner(self.settings)
         self.risk_engine = RiskEngine(self.settings)
         self.broker = MockBroker(self.settings)
         self.review_service = ReviewService()
@@ -64,9 +75,17 @@ class TradingScheduler:
                 for _, row in universe_result.snapshot.iterrows()
             }
             grouped: Dict[str, List[StrategySignal]] = {}
-            final_signals = []
+            final_signals: List[FinalSignal] = []
             ai_decisions = []
             portfolio = build_portfolio_state(conn)
+            portfolio_feedback = build_portfolio_feedback(conn, self.settings)
+            market_regime = self.market_regime_service.evaluate(universe_result.snapshot, portfolio_feedback)
+            self.market_regime_service.save_state(market_regime)
+            strategy_weights = self.strategy_weight_service.resolve_weights(market_regime, portfolio_feedback)
+            manager_decision = PortfolioManagerDecision(portfolio_view="暂无主动组合建议", risk_mode=portfolio_feedback.get("risk_mode", "NORMAL"), actions=[])
+            final_actions = []
+            planned_actions = []
+            risk_results: List[Dict[str, object]] = []
             if phase.should_run_strategy:
                 grouped = self.strategy_engine.run_batch(universe_result.selected_symbols, asset_type_map=asset_type_map)
                 for signal_list in grouped.values():
@@ -74,7 +93,13 @@ class TradingScheduler:
                         write_signal(conn, signal)
                 context_map = self._build_ai_context_map(universe_result, grouped, portfolio)
                 try:
-                    final_signals, ai_decisions = self.signal_fusion.fuse(grouped, trade_date=trade_date, context_map=context_map)
+                    final_signals, ai_decisions = self.signal_fusion.fuse(
+                        grouped,
+                        trade_date=trade_date,
+                        context_map=context_map,
+                        strategy_weights=strategy_weights,
+                        market_regime=market_regime,
+                    )
                 except TypeError:
                     final_signals, ai_decisions = self.signal_fusion.fuse(grouped, trade_date=trade_date)
                 for decision in ai_decisions:
@@ -82,33 +107,68 @@ class TradingScheduler:
                 signal_ids: Dict[str, int] = {}
                 for final_signal in final_signals:
                     signal_ids[final_signal.symbol] = write_final_signal(conn, final_signal)
+                manager_decision = self.ai_portfolio_manager.review(
+                    regime_state=market_regime,
+                    portfolio_feedback=portfolio_feedback,
+                    candidate_signals=final_signals,
+                    strategy_weights=strategy_weights,
+                )
+                final_actions = self.portfolio_decision_service.merge(final_signals, manager_decision, market_regime)
             else:
                 signal_ids = {}
 
-            execution_events: List[Dict[str, object]] = []
-            if phase.should_place_orders:
-                for final_signal in final_signals:
-                    try:
-                        quote = self.market_data.fetch_realtime_quote(final_signal.symbol)
-                    except Exception as exc:
-                        write_system_log(conn, "WARNING", "market_data", f"{final_signal.symbol} 实时行情获取失败，跳过成交: {exc}")
-                        continue
-                    risk = self.risk_engine.evaluate(final_signal, quote, portfolio)
-                    order = self.broker.execute_signal(conn, final_signal, risk, latest_price=quote.latest_price, signal_id=signal_ids.get(final_signal.symbol))
-                    execution_events.append({"symbol": final_signal.symbol, "status": order.status, "qty": order.qty})
-                    portfolio = build_portfolio_state(conn)
-            elif final_signals:
-                write_system_log(conn, "INFO", "scheduler", f"当前处于 {phase.phase_name}，仅生成信号，不执行模拟成交")
-
+            quote_symbols = list(
+                dict.fromkeys(
+                    universe_result.selected_symbols
+                    + list(portfolio.current_positions.keys())
+                    + [action.symbol for action in final_actions if action.symbol != "*"]
+                )
+            )
             latest_prices: Dict[str, float] = {}
-            quote_symbols = list(dict.fromkeys(universe_result.selected_symbols + list(portfolio.current_positions.keys())))
+            quote_map = {}
             for symbol in quote_symbols:
                 if not phase.should_fetch_realtime and symbol not in portfolio.current_positions:
                     continue
                 try:
-                    latest_prices[symbol] = self.market_data.fetch_realtime_quote(symbol).latest_price
+                    quote = self.market_data.fetch_realtime_quote(symbol)
+                    quote_map[symbol] = quote
+                    latest_prices[symbol] = quote.latest_price
                 except Exception as exc:
                     write_system_log(conn, "WARNING", "market_data", f"{symbol} 最新价刷新失败，已跳过: {exc}")
+
+            planned_actions = self.action_planner.plan(final_actions, portfolio_feedback, latest_prices)
+            execution_events: List[Dict[str, object]] = []
+            if phase.should_place_orders:
+                for action in planned_actions:
+                    if action.symbol == "*":
+                        write_system_log(conn, "INFO", "ai_pm", action.reason)
+                        continue
+                    quote = quote_map.get(action.symbol)
+                    if quote is None:
+                        write_system_log(conn, "WARNING", "market_data", f"{action.symbol} 实时行情获取失败，跳过动作执行")
+                        continue
+                    risk = self.risk_engine.evaluate_action(action, quote, portfolio, risk_mode=manager_decision.risk_mode)
+                    risk_results.append(
+                        {
+                            "symbol": action.symbol,
+                            "action": action.action,
+                            "allowed": risk.allowed,
+                            "final_action": risk.final_action,
+                            "adjusted_qty": risk.adjusted_qty,
+                            "risk_state": risk.risk_state,
+                            "reason": risk.reject_reason or action.reason,
+                        }
+                    )
+                    if action.action in {"HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"}:
+                        write_system_log(conn, "INFO", "portfolio_decision", f"{action.symbol} {action.action}: {action.reason}")
+                        continue
+                    order = self.broker.execute_action(conn, action, risk, latest_price=quote.latest_price, signal_id=signal_ids.get(action.symbol))
+                    if order is not None:
+                        execution_events.append({"symbol": action.symbol, "status": order.status, "qty": order.qty, "action": action.action})
+                    portfolio = build_portfolio_state(conn)
+            elif final_signals:
+                write_system_log(conn, "INFO", "scheduler", f"当前处于 {phase.phase_name}，仅生成信号与组合动作计划，不执行模拟成交")
+
             snapshot = mark_to_market(conn, latest_prices)
             from .db import write_account_snapshot  # local import to avoid cycle
 
@@ -124,6 +184,17 @@ class TradingScheduler:
                 self._last_report_trade_date = trade_date
             for warning in universe_result.warnings:
                 write_system_log(conn, "WARNING", "universe", warning)
+            self._write_live_state(
+                phase_name=phase.phase_name,
+                market_regime=market_regime,
+                strategy_weights=strategy_weights,
+                ai_decisions=ai_decisions,
+                manager_decision=manager_decision,
+                planned_actions=planned_actions,
+                risk_results=risk_results,
+                portfolio_feedback=portfolio_feedback,
+                final_signals=final_signals,
+            )
             conn.commit()
             if self.logger:
                 log_event(
@@ -141,6 +212,7 @@ class TradingScheduler:
                 "phase": phase.phase_name,
                 "candidate_count": len(universe_result.selected_symbols),
                 "final_signal_count": len(final_signals),
+                "planned_action_count": len(planned_actions),
                 "execution_events": execution_events,
                 "warnings": universe_result.warnings,
             }
@@ -192,12 +264,39 @@ class TradingScheduler:
             }
         return context_map
 
+    def _write_live_state(
+        self,
+        phase_name: str,
+        market_regime: MarketRegimeState,
+        strategy_weights: Dict[str, float],
+        ai_decisions,
+        manager_decision: PortfolioManagerDecision,
+        planned_actions,
+        risk_results,
+        portfolio_feedback,
+        final_signals: List[FinalSignal],
+    ) -> None:
+        payload = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "phase": phase_name,
+            "market_regime": market_regime.model_dump(),
+            "strategy_weights": strategy_weights,
+            "ai_reviewer": [decision.model_dump() for decision in ai_decisions],
+            "ai_portfolio_manager": manager_decision.model_dump(),
+            "final_actions": [action.model_dump() for action in planned_actions],
+            "risk_results": risk_results,
+            "portfolio_feedback": portfolio_feedback,
+            "final_signals": [signal.model_dump() for signal in final_signals],
+        }
+        self.settings.live_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.live_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
     def _should_persist_evaluation(self, trade_date: str, phase_name: str, execution_events: List[Dict[str, object]]) -> bool:
         if self._last_evaluation_trade_date != trade_date:
             return True
         if execution_events:
             return True
-        return phase_name in {"post_close_analysis", "after_hours"}
+        return phase_name in {"post_close_analysis", "post_close_execution", "after_hours"}
 
     def run_end_of_day_review(self) -> Dict[str, object]:
         conn = connect_db(self.settings)

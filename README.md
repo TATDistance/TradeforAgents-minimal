@@ -114,8 +114,9 @@ ai_stock_sim/
 它负责：
 
 - 东财实时快照监控
-- 三套基础策略实时出信号
+- 六套公开规则策略实时出信号
 - AI 二次审批
+- AI 主动组合管理
 - A 股规则模拟撮合
 - Streamlit 实时控制台
 - 策略评分与周期统计
@@ -130,6 +131,15 @@ ai_stock_sim/
 - `strategy_only` / `strategy_plus_ai` / `strategy_plus_risk` / `strategy_plus_ai_plus_risk` 对照
 - Markdown / HTML / JSON 日报导出
 - Streamlit 中文评估面板与人工回填入口
+
+第三阶段已经继续补齐：
+
+- 市场状态机
+- 动态策略权重
+- AI 审核员增强上下文
+- AI 主动组合管理器
+- 最终动作计划：`BUY / SELL / REDUCE / HOLD`
+- 账户状态回流
 
 ## 快速开始
 
@@ -210,6 +220,15 @@ python3 -m ai_trade_system.scripts.run_review
 ```
 
 这是正常现象，表示当前不是 A 股交易时段。系统会继续展示账户、持仓和日志，但不会新开模拟成交。
+
+如果你需要做盘后纸面回放，可以在 [ai_stock_sim/config/settings.yaml](/home/alientek/workspace/tools/TradeforAgents-minimal/ai_stock_sim/config/settings.yaml) 里把：
+
+```yaml
+market_session:
+  allow_post_close_paper_execution: true
+```
+
+打开。默认仍然保持 `false`，这样更接近真实 A 股节奏，也更安全。
 
 ## 项目结构
 

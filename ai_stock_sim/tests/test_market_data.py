@@ -46,8 +46,19 @@ def test_history_prefers_fresh_cache(tmp_path):
 
 def test_market_clock_reports_post_close_phase():
     settings = load_settings()
+    settings.market_session.allow_post_close_paper_execution = False
     clock = MarketClock(settings.market_session)
     phase = clock.phase(now=pd.Timestamp("2026-03-27 15:30:00", tz="Asia/Shanghai").to_pydatetime())
     assert phase.phase_name == "post_close_analysis"
     assert phase.should_run_strategy is True
     assert phase.should_place_orders is False
+
+
+def test_market_clock_can_enable_post_close_execution():
+    settings = load_settings()
+    settings.market_session.allow_post_close_paper_execution = True
+    clock = MarketClock(settings.market_session)
+    phase = clock.phase(now=pd.Timestamp("2026-03-27 15:30:00", tz="Asia/Shanghai").to_pydatetime())
+    assert phase.phase_name == "post_close_execution"
+    assert phase.should_run_strategy is True
+    assert phase.should_place_orders is True

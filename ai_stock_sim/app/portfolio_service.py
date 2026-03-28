@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List
 
-from .db import fetch_latest_account, fetch_positions, max_equity
+from .db import fetch_latest_account, fetch_positions, fetch_rows_by_sql, max_equity
 from .models import AccountSnapshot, PositionRecord
 from .risk_engine import PortfolioState
 
@@ -31,6 +31,80 @@ def build_portfolio_state(conn) -> PortfolioState:
         current_positions=position_map,
         today_open_ratio=0.0 if account["equity"] <= 0 else account["market_value"] / max(account["equity"], 1.0),
     )
+
+
+def build_portfolio_feedback(conn, settings) -> Dict[str, object]:
+    portfolio = build_portfolio_state(conn)
+    positions = fetch_positions(conn)
+    positions_detail: List[Dict[str, object]] = []
+    for row in positions:
+        qty = int(row["qty"])
+        avg_cost = float(row["avg_cost"])
+        last_price = float(row["last_price"])
+        unrealized_pct = 0.0 if avg_cost <= 0 else (last_price - avg_cost) / avg_cost
+        updated_at = str(row["updated_at"])
+        hold_days = 0
+        try:
+            hold_days = max(0, (datetime.now() - datetime.fromisoformat(updated_at)).days)
+        except Exception:
+            hold_days = 0
+        positions_detail.append(
+            {
+                "symbol": str(row["symbol"]),
+                "qty": qty,
+                "avg_cost": avg_cost,
+                "last_price": last_price,
+                "market_value": float(row["market_value"]),
+                "unrealized_pnl": float(row["unrealized_pnl"]),
+                "unrealized_pct": unrealized_pct,
+                "can_sell_qty": int(row["can_sell_qty"]),
+                "hold_days": hold_days,
+            }
+        )
+
+    eval_rows = [
+        dict(row)
+        for row in fetch_rows_by_sql(
+            conn,
+            """
+            SELECT strategy_name, score_total
+            FROM strategy_evaluations
+            WHERE period_type = ?
+            ORDER BY ts DESC
+            """,
+            (f"rolling_trade_{settings.evaluation.rolling_trade_windows[0]}",),
+        )
+    ]
+    strategy_scores: Dict[str, float] = {}
+    for row in eval_rows:
+        strategy_name = str(row["strategy_name"])
+        if strategy_name in {"portfolio_actual"} or strategy_name.startswith("exit::") or strategy_name in strategy_scores:
+            continue
+        strategy_scores[strategy_name] = float(row["score_total"] or 0.0)
+
+    position_value = sum(float(item["market_value"]) for item in positions_detail)
+    total_position_pct = 0.0 if portfolio.equity <= 0 else position_value / max(portfolio.equity, 1.0)
+    cash_pct = 0.0 if portfolio.equity <= 0 else portfolio.cash / max(portfolio.equity, 1.0)
+    risk_mode = "NORMAL"
+    if portfolio.drawdown >= settings.portfolio_feedback.drawdown_risk_off_threshold:
+        risk_mode = "RISK_OFF"
+    elif (
+        portfolio.drawdown >= settings.portfolio_feedback.drawdown_defensive_threshold
+        or total_position_pct >= settings.portfolio_feedback.high_position_threshold
+    ):
+        risk_mode = "DEFENSIVE"
+    return {
+        "cash": portfolio.cash,
+        "equity": portfolio.equity,
+        "market_value": portfolio.market_value,
+        "drawdown": portfolio.drawdown,
+        "cash_pct": cash_pct,
+        "total_position_pct": total_position_pct,
+        "today_open_ratio": portfolio.today_open_ratio,
+        "risk_mode": risk_mode,
+        "positions_detail": positions_detail,
+        "strategy_scores": strategy_scores,
+    }
 
 
 def mark_to_market(conn, latest_quotes: Dict[str, float]) -> AccountSnapshot:

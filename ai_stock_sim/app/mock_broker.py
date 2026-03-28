@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, List
 
 from .db import delete_position, fetch_latest_account, fetch_positions, upsert_position, write_account_snapshot, write_order
-from .models import AccountSnapshot, FinalSignal, OrderRecord, PositionRecord, RiskCheckResult
+from .models import AccountSnapshot, FinalSignal, OrderRecord, PlannedAction, PositionRecord, RiskCheckResult
 from .settings import Settings, load_settings
 
 
@@ -47,6 +47,43 @@ class MockBroker:
             note="模拟成交",
             strategy_name=signal.strategy_name,
             mode_name=signal.mode_name,
+            signal_id=signal_id,
+        )
+        write_order(conn, order)
+        self._apply_fill(conn, order, latest_price=latest_price)
+        return order
+
+    def execute_action(self, conn, action: PlannedAction, risk: RiskCheckResult, latest_price: float, signal_id: int | None = None) -> OrderRecord | None:
+        if action.action in {"HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"}:
+            return None
+        side = "BUY" if action.action == "BUY" else "SELL"
+        if not risk.allowed or risk.adjusted_qty <= 0:
+            order = OrderRecord(
+                symbol=action.symbol,
+                side=side,  # type: ignore[arg-type]
+                price=action.planned_price,
+                qty=0,
+                status="REJECTED",
+                note=risk.reject_reason or action.reason or "风控拒绝",
+                strategy_name="+".join(action.source),
+                mode_name="strategy_plus_ai_plus_risk",
+                signal_id=signal_id,
+            )
+            write_order(conn, order)
+            return order
+
+        order = OrderRecord(
+            symbol=action.symbol,
+            side=side,  # type: ignore[arg-type]
+            price=round(action.planned_price * (1 + self.settings.slippage_rate if side == "BUY" else 1 - self.settings.slippage_rate), 3),
+            qty=risk.adjusted_qty,
+            fee=round(risk.est_fee, 4),
+            tax=round(risk.est_tax, 4),
+            slippage=round(risk.est_slippage, 4),
+            status="FILLED",
+            note=action.reason,
+            strategy_name="+".join(action.source),
+            mode_name="strategy_plus_ai_plus_risk",
             signal_id=signal_id,
         )
         write_order(conn, order)

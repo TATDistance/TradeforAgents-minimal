@@ -13,6 +13,9 @@
 - 模式对照实验
 - 盘后日报导出
 - 人工实盘成交回填
+- 市场状态机与动态策略权重
+- AI 审核员与 AI 主动组合管理器
+- 最终动作计划与组合级风控
 
 项目不会接入任何真实券商 API，也不会模拟点击券商 APP。
 
@@ -116,6 +119,11 @@ bash scripts/smoke_test.sh
 - 稳定性
 - 执行质量
 
+控制台里还会额外拆开两类比较：
+
+- 入场策略横向比较
+- 卖出策略评分比较
+
 评分结果会写入：
 
 ```text
@@ -168,7 +176,7 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 
 1. 抓取东财实时行情
 2. 筛选股票池
-3. 运行动量、均值回归、突破三类策略
+3. 运行动量、双均线、MACD 趋势、均值回归、突破、趋势回踩六类策略
 4. 至少两个策略同向后，交给 AI 审批
 5. 进入 A 股风控
 6. 通过后执行模拟撮合
@@ -177,8 +185,9 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 
 需要注意：
 
-- 交易时段内才会新开模拟成交
-- 收盘后与非交易时段只会刷新状态、账户和日志
+- 默认只有交易时段内才会新开模拟成交
+- 收盘后与非交易时段默认只会刷新状态、账户和日志
+- 如果你需要做盘后纸面回放，可以把 `config/settings.yaml` 中的 `market_session.allow_post_close_paper_execution` 打开
 - 持续监控中心会优先沿用网页“步骤 1”生成的最新候选池；若没有最新候选池，则回退到默认观察池
 - 控制台和网页中，股票默认显示为“代码 + 股票名”
 - 收盘后自动生成日报
@@ -191,7 +200,7 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 - `app/universe_service.py`
   股票池筛选，过滤 ST、低流动性、上市不足天数
 - `app/strategy_engine.py`
-  统一调度公开策略
+  统一调度公开策略，当前已接入 `momentum`、`dual_ma`、`macd_trend`、`mean_reversion`、`breakout`、`trend_pullback`
 - `app/ai_decision_service.py`
   读取 `TradeforAgents-minimal/results/.../decision.json`，必要时可调用 subprocess
 - `app/risk_engine.py`
@@ -209,9 +218,9 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 - `app/manual_execution_service.py`
   人工实盘成交回填
 - `app/vnpy_adapter.py`
-  vn.py 参数导出与结果回流适配
+  vn.py CTA/Alpha 参数导出、桥接 stub 生成与结果回流适配
 - `dashboard/dashboard_app.py`
-  Streamlit 实时控制台
+  Streamlit 实时控制台，支持策略横向比较、卖出策略评分、模式对照和人工回填
 
 ## 配置
 
@@ -250,7 +259,7 @@ Streamlit 控制台新增“人工回填”页，可以记录：
 
 ## 当前限制
 
-- 当前回测仍以“本地简化回测 + vn.py 参数导出” 为主，尚未完全迁移到 vn.py 原生引擎
+- 当前回测仍以“本地简化回测 + vn.py CTA/Alpha 桥接导出” 为主，尚未完全迁移到 vn.py 原生引擎
 - 东财公开接口属于免费公开数据，稳定性不等同于机构专线
 - AI 审批依赖当前仓库里的 `TradeforAgents-minimal` 结果目录；不可用时会自动降级为无 AI 模式
 - 当前默认交易日判断只做工作日与时段判断，尚未接入完整节假日日历

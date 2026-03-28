@@ -16,6 +16,19 @@ def annualized_volatility(series: pd.Series, window: int = 20) -> pd.Series:
     return returns.rolling(window).std(ddof=0) * math.sqrt(252)
 
 
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
+
+
+def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    fast_ema = ema(series, fast)
+    slow_ema = ema(series, slow)
+    dif = fast_ema - slow_ema
+    dea = dif.ewm(span=signal, adjust=False).mean()
+    hist = dif - dea
+    return dif, dea, hist
+
+
 def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / window, adjust=False).mean()

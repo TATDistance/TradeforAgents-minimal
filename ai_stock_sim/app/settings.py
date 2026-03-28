@@ -13,10 +13,18 @@ from dotenv import load_dotenv
 class StrategyConfig:
     momentum_lookback: int = 20
     momentum_min_score: float = 0.55
+    dual_ma_fast_window: int = 10
+    dual_ma_slow_window: int = 30
+    macd_fast_window: int = 12
+    macd_slow_window: int = 26
+    macd_signal_window: int = 9
     mean_reversion_rsi_low: float = 30.0
     mean_reversion_boll_window: int = 20
     breakout_window: int = 20
     atr_window: int = 14
+    trend_pullback_fast_window: int = 20
+    trend_pullback_slow_window: int = 60
+    trend_pullback_max_distance_pct: float = 0.03
 
 
 @dataclass
@@ -43,6 +51,7 @@ class MarketSessionConfig:
     post_close_analysis_start: str = "15:05"
     post_close_analysis_end: str = "18:00"
     enable_weekend_guard: bool = True
+    allow_post_close_paper_execution: bool = False
 
 
 @dataclass
@@ -77,6 +86,42 @@ class DashboardConfig:
 
 
 @dataclass
+class MarketRegimeConfig:
+    enabled: bool = True
+    default_regime: str = "RANGE_BOUND"
+
+
+@dataclass
+class StrategyWeightConfig:
+    enabled: bool = True
+    dynamic_adjustment: bool = True
+
+
+@dataclass
+class AIPortfolioManagerConfig:
+    enabled: bool = True
+    default_risk_mode: str = "NORMAL"
+    allow_reduce_actions: bool = True
+    allow_sell_actions: bool = True
+    allow_new_buy_actions: bool = True
+
+
+@dataclass
+class PortfolioFeedbackConfig:
+    enabled: bool = True
+    drawdown_defensive_threshold: float = 0.03
+    drawdown_risk_off_threshold: float = 0.05
+    high_position_threshold: float = 0.7
+
+
+@dataclass
+class FusionConfig:
+    use_weighted_scoring: bool = True
+    min_final_score_to_buy: float = 0.65
+    min_final_score_to_sell: float = 0.58
+
+
+@dataclass
 class Settings:
     project_root: Path
     initial_cash: float = 100000.0
@@ -106,6 +151,11 @@ class Settings:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    market_regime: MarketRegimeConfig = field(default_factory=MarketRegimeConfig)
+    strategy_weights: StrategyWeightConfig = field(default_factory=StrategyWeightConfig)
+    ai_portfolio_manager: AIPortfolioManagerConfig = field(default_factory=AIPortfolioManagerConfig)
+    portfolio_feedback: PortfolioFeedbackConfig = field(default_factory=PortfolioFeedbackConfig)
+    fusion: FusionConfig = field(default_factory=FusionConfig)
 
     @property
     def data_dir(self) -> Path:
@@ -126,6 +176,10 @@ class Settings:
     @property
     def reports_dir(self) -> Path:
         return self.data_dir / "reports"
+
+    @property
+    def live_state_path(self) -> Path:
+        return self.cache_dir / "live_decision_state.json"
 
     @property
     def tradeforagents_results_dir(self) -> Path:

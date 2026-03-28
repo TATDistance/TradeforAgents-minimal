@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
-Action = Literal["BUY", "SELL", "HOLD"]
+SignalAction = Literal["BUY", "SELL", "HOLD"]
+PortfolioActionType = Literal["BUY", "SELL", "REDUCE", "HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"]
 
 
 class MarketQuote(BaseModel):
@@ -31,7 +32,7 @@ class MarketQuote(BaseModel):
 class StrategySignal(BaseModel):
     symbol: str
     strategy: str
-    action: Action
+    action: SignalAction
     score: float
     signal_price: float
     stop_loss: Optional[float] = None
@@ -42,7 +43,7 @@ class StrategySignal(BaseModel):
 
 class AIDecision(BaseModel):
     symbol: str
-    ai_action: Action
+    ai_action: SignalAction
     confidence: float = 0.5
     risk_score: float = 0.5
     approved: bool = True
@@ -54,7 +55,7 @@ class AIDecision(BaseModel):
 
 class FinalSignal(BaseModel):
     symbol: str
-    action: Action
+    action: SignalAction
     entry_price: float
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
@@ -66,6 +67,49 @@ class FinalSignal(BaseModel):
     strategy_reason: str = ""
     strategy_name: str = ""
     mode_name: str = "strategy_plus_ai_plus_risk"
+    weighted_score: float = 0.0
+    risk_penalty: float = 0.0
+
+
+class MarketRegimeState(BaseModel):
+    regime: str
+    confidence: float = 0.5
+    reason: str = ""
+    risk_bias: str = "NORMAL"
+    breadth: float = 0.0
+    volatility: float = 0.0
+
+
+class PortfolioManagerAction(BaseModel):
+    symbol: str
+    action: PortfolioActionType
+    position_pct: float = 0.0
+    reduce_pct: float = 0.0
+    reason: str = ""
+    priority: float = 0.0
+    source: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PortfolioManagerDecision(BaseModel):
+    portfolio_view: str = ""
+    risk_mode: str = "NORMAL"
+    actions: List[PortfolioManagerAction] = Field(default_factory=list)
+    reason: str = ""
+
+
+class PlannedAction(BaseModel):
+    symbol: str
+    action: PortfolioActionType
+    planned_qty: int = 0
+    planned_price: float = 0.0
+    estimated_cost: float = 0.0
+    position_pct: float = 0.0
+    reduce_pct: float = 0.0
+    priority: float = 0.0
+    source: List[str] = Field(default_factory=list)
+    reason: str = ""
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RiskCheckResult(BaseModel):
@@ -74,6 +118,8 @@ class RiskCheckResult(BaseModel):
     adjusted_position_pct: float
     reject_reason: Optional[str] = None
     risk_state: str = "REJECT"
+    final_action: PortfolioActionType = "HOLD"
+    risk_mode: str = "NORMAL"
     est_fee: float = 0.0
     est_tax: float = 0.0
     est_slippage: float = 0.0

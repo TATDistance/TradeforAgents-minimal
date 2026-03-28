@@ -11,6 +11,7 @@ cd "$PROJECT_ROOT"
 SYMBOL="${1:-600036}"
 STRATEGY="${2:-momentum}"
 MODE_NAME="${3:-strategy_only}"
+echo "运行回测: symbol=${SYMBOL} strategy=${STRATEGY} mode=${MODE_NAME}"
 PYTHONPATH="$PROJECT_ROOT" python - <<PY
 from app.backtest_service import BacktestService
 from app.settings import load_settings

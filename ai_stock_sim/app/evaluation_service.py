@@ -33,6 +33,7 @@ class ClosedTrade:
     qty: int
     side: str
     strategy_name: str
+    exit_strategy_name: str
     mode_name: str
 
 
@@ -41,10 +42,22 @@ class EvaluationService:
         self.settings = settings or load_settings()
         self.scoring = scoring_service or ScoringService(self.settings)
 
-    def compute_daily_metrics(self, conn, trade_date: str, strategy_name: str = "portfolio_actual") -> StrategyEvaluation:
+    def compute_daily_metrics(
+        self,
+        conn,
+        trade_date: str,
+        strategy_name: str = "portfolio_actual",
+        attribution: str = "entry",
+    ) -> StrategyEvaluation:
         target_date = datetime.fromisoformat(trade_date).date()
         snapshots = self._load_snapshots(conn, start_date=target_date, end_date=target_date)
-        closed_trades = self._load_closed_trades(conn, strategy_name=strategy_name, start_date=target_date, end_date=target_date)
+        closed_trades = self._load_closed_trades(
+            conn,
+            strategy_name=strategy_name,
+            start_date=target_date,
+            end_date=target_date,
+            attribution=attribution,
+        )
         return self._build_evaluation(
             strategy_name=strategy_name,
             period_type="daily",
@@ -54,11 +67,24 @@ class EvaluationService:
             closed_trades=closed_trades,
         )
 
-    def compute_weekly_metrics(self, conn, week_start: str, week_end: str, strategy_name: str = "portfolio_actual") -> StrategyEvaluation:
+    def compute_weekly_metrics(
+        self,
+        conn,
+        week_start: str,
+        week_end: str,
+        strategy_name: str = "portfolio_actual",
+        attribution: str = "entry",
+    ) -> StrategyEvaluation:
         start = datetime.fromisoformat(week_start).date()
         end = datetime.fromisoformat(week_end).date()
         snapshots = self._load_snapshots(conn, start_date=start, end_date=end)
-        closed_trades = self._load_closed_trades(conn, strategy_name=strategy_name, start_date=start, end_date=end)
+        closed_trades = self._load_closed_trades(
+            conn,
+            strategy_name=strategy_name,
+            start_date=start,
+            end_date=end,
+            attribution=attribution,
+        )
         return self._build_evaluation(
             strategy_name=strategy_name,
             period_type="weekly",
@@ -68,12 +94,24 @@ class EvaluationService:
             closed_trades=closed_trades,
         )
 
-    def compute_monthly_metrics(self, conn, month: str, strategy_name: str = "portfolio_actual") -> StrategyEvaluation:
+    def compute_monthly_metrics(
+        self,
+        conn,
+        month: str,
+        strategy_name: str = "portfolio_actual",
+        attribution: str = "entry",
+    ) -> StrategyEvaluation:
         period_start = datetime.strptime(month, "%Y-%m").date().replace(day=1)
         next_month = (period_start.replace(day=28) + timedelta(days=4)).replace(day=1)
         period_end = next_month - timedelta(days=1)
         snapshots = self._load_snapshots(conn, start_date=period_start, end_date=period_end)
-        closed_trades = self._load_closed_trades(conn, strategy_name=strategy_name, start_date=period_start, end_date=period_end)
+        closed_trades = self._load_closed_trades(
+            conn,
+            strategy_name=strategy_name,
+            start_date=period_start,
+            end_date=period_end,
+            attribution=attribution,
+        )
         return self._build_evaluation(
             strategy_name=strategy_name,
             period_type="monthly",
@@ -83,8 +121,14 @@ class EvaluationService:
             closed_trades=closed_trades,
         )
 
-    def compute_rolling_trade_metrics(self, conn, last_n_trades: int = 20, strategy_name: str = "portfolio_actual") -> StrategyEvaluation:
-        closed_trades = self._load_closed_trades(conn, strategy_name=strategy_name)
+    def compute_rolling_trade_metrics(
+        self,
+        conn,
+        last_n_trades: int = 20,
+        strategy_name: str = "portfolio_actual",
+        attribution: str = "entry",
+    ) -> StrategyEvaluation:
+        closed_trades = self._load_closed_trades(conn, strategy_name=strategy_name, attribution=attribution)
         selected = closed_trades[-last_n_trades:] if last_n_trades > 0 else closed_trades
         if selected:
             start = selected[0].closed_ts.date()
@@ -101,7 +145,13 @@ class EvaluationService:
             closed_trades=selected,
         )
 
-    def compute_rolling_day_metrics(self, conn, last_n_days: int = 20, strategy_name: str = "portfolio_actual") -> StrategyEvaluation:
+    def compute_rolling_day_metrics(
+        self,
+        conn,
+        last_n_days: int = 20,
+        strategy_name: str = "portfolio_actual",
+        attribution: str = "entry",
+    ) -> StrategyEvaluation:
         snapshots = self._load_snapshots(conn)
         daily_snapshots = self._compress_daily_snapshots(snapshots)
         selected_daily = daily_snapshots[-last_n_days:] if last_n_days > 0 else daily_snapshots
@@ -111,7 +161,13 @@ class EvaluationService:
         else:
             start = None
             end = None
-        closed_trades = self._load_closed_trades(conn, strategy_name=strategy_name, start_date=start, end_date=end)
+        closed_trades = self._load_closed_trades(
+            conn,
+            strategy_name=strategy_name,
+            start_date=start,
+            end_date=end,
+            attribution=attribution,
+        )
         return self._build_evaluation(
             strategy_name=strategy_name,
             period_type=f"rolling_day_{last_n_days}",
@@ -181,6 +237,22 @@ class EvaluationService:
             evaluations.append(self.compute_rolling_day_metrics(conn, last_n_days=int(window)))
         for evaluation in evaluations:
             write_strategy_evaluation(conn, evaluation)
+
+        strategy_names = self._strategy_names()
+        for strategy_name in strategy_names:
+            write_strategy_evaluation(conn, self.compute_daily_metrics(conn, trade_date, strategy_name=strategy_name, attribution="entry"))
+            rolling_trade_window = int(self.settings.evaluation.rolling_trade_windows[0]) if self.settings.evaluation.rolling_trade_windows else 20
+            write_strategy_evaluation(
+                conn,
+                self.compute_rolling_trade_metrics(conn, last_n_trades=rolling_trade_window, strategy_name=strategy_name, attribution="entry"),
+            )
+
+            exit_name = f"exit::{strategy_name}"
+            write_strategy_evaluation(conn, self.compute_daily_metrics(conn, trade_date, strategy_name=exit_name, attribution="exit"))
+            write_strategy_evaluation(
+                conn,
+                self.compute_rolling_trade_metrics(conn, last_n_trades=rolling_trade_window, strategy_name=exit_name, attribution="exit"),
+            )
 
         comparisons = self.compute_mode_comparisons(conn)
         for comparison in comparisons:
@@ -295,12 +367,10 @@ class EvaluationService:
         strategy_name: str = "portfolio_actual",
         start_date: date | None = None,
         end_date: date | None = None,
+        attribution: str = "entry",
     ) -> List[ClosedTrade]:
         sql = "SELECT * FROM orders WHERE status IN ('FILLED', 'PARTIAL_FILLED')"
         params: List[object] = []
-        if strategy_name != "portfolio_actual":
-            sql += " AND COALESCE(strategy_name, '') = ?"
-            params.append(strategy_name)
         if start_date:
             sql += " AND date(ts) >= ?"
             params.append(start_date.isoformat())
@@ -349,6 +419,7 @@ class EvaluationService:
                         qty=matched,
                         side=side,
                         strategy_name=str(lot["strategy_name"]),
+                        exit_strategy_name=str(strategy_value),
                         mode_name=str(lot["mode_name"]),
                     )
                 )
@@ -357,7 +428,12 @@ class EvaluationService:
                     inventories[symbol].popleft()
                 else:
                     lot["qty"] = float(lot_qty - matched)
-        return closed_trades
+        if strategy_name == "portfolio_actual":
+            return closed_trades
+        if attribution == "exit":
+            exit_key = strategy_name.replace("exit::", "", 1)
+            return [trade for trade in closed_trades if trade.exit_strategy_name == exit_key]
+        return [trade for trade in closed_trades if trade.strategy_name == strategy_name]
 
     def _compress_daily_snapshots(self, snapshots: Sequence[Mapping[str, object]]) -> List[Mapping[str, object]]:
         by_day: dict[str, Mapping[str, object]] = {}
@@ -466,3 +542,9 @@ class EvaluationService:
         avg = sum(values) / len(values)
         variance = sum((value - avg) ** 2 for value in values) / (len(values) - 1)
         return variance ** 0.5
+
+    @staticmethod
+    def _strategy_names() -> List[str]:
+        from .strategy_engine import STRATEGY_REGISTRY
+
+        return sorted(STRATEGY_REGISTRY.keys())

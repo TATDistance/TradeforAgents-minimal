@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Mapping, Optional
 
 from .ai_decision_service import AIDecisionService
-from .models import AIDecision, FinalSignal, StrategySignal
+from .models import AIDecision, FinalSignal, MarketRegimeState, StrategySignal
 from .settings import Settings, load_settings
 
 
@@ -18,22 +18,40 @@ class SignalFusion:
         grouped_signals: Dict[str, List[StrategySignal]],
         trade_date: str | None = None,
         context_map: Optional[Dict[str, Mapping[str, object]]] = None,
+        strategy_weights: Optional[Mapping[str, float]] = None,
+        market_regime: Optional[MarketRegimeState] = None,
     ) -> tuple[List[FinalSignal], List[AIDecision]]:
         final_signals: List[FinalSignal] = []
         ai_decisions: List[AIDecision] = []
         for symbol, signals in grouped_signals.items():
-            if len(signals) < 2:
-                continue
             by_action: Dict[str, List[StrategySignal]] = defaultdict(list)
             for signal in signals:
                 by_action[signal.action].append(signal)
-            dominant_action, same_side = max(by_action.items(), key=lambda item: len(item[1]))
-            if dominant_action == "HOLD" or len(same_side) < 2:
+            action_scores: Dict[str, float] = {}
+            for action, items in by_action.items():
+                total = 0.0
+                for item in items:
+                    weight = float((strategy_weights or {}).get(item.strategy, 1.0))
+                    total += item.score * weight
+                action_scores[action] = total / max(len(items), 1)
+            dominant_action = max(action_scores.items(), key=lambda item: item[1])[0]
+            same_side = by_action[dominant_action]
+            if dominant_action == "HOLD":
+                continue
+            weighted_score = float(action_scores.get(dominant_action, 0.0))
+            min_score = self.settings.fusion.min_final_score_to_buy if dominant_action == "BUY" else self.settings.fusion.min_final_score_to_sell
+            if weighted_score < min_score:
                 continue
             stop_candidates = [item.stop_loss for item in same_side if item.stop_loss is not None]
             take_candidates = [item.take_profit for item in same_side if item.take_profit is not None]
 
             avg_score = sum(item.score for item in same_side) / len(same_side)
+            risk_penalty = 0.0
+            if market_regime:
+                if market_regime.regime == "HIGH_VOLATILITY":
+                    risk_penalty += 0.08
+                elif market_regime.regime == "RISK_OFF":
+                    risk_penalty += 0.12
             candidate = StrategySignal(
                 symbol=symbol,
                 strategy="+".join(item.strategy for item in same_side),
@@ -55,6 +73,7 @@ class SignalFusion:
                     technical_summary=extra_context.get("technical_summary") if isinstance(extra_context, dict) else None,
                     portfolio_context=extra_context.get("portfolio_context") if isinstance(extra_context, dict) else None,
                     risk_constraints=extra_context.get("risk_constraints") if isinstance(extra_context, dict) else None,
+                    market_regime=market_regime.model_dump() if market_regime else None,
                 )
             except TypeError:
                 ai_decision = self.ai_service.review_signal(symbol=symbol, candidate=candidate, trade_date=trade_date)
@@ -64,6 +83,7 @@ class SignalFusion:
             position_pct = candidate.position_pct
             if ai_decision.confidence < self.settings.ai.approval_confidence_floor:
                 position_pct *= self.settings.ai.low_confidence_scale
+            position_pct = max(0.03, position_pct * max(0.5, 1.0 - risk_penalty))
 
             final_signals.append(
                 FinalSignal(
@@ -80,6 +100,8 @@ class SignalFusion:
                     strategy_reason=candidate.reason,
                     strategy_name=candidate.strategy,
                     mode_name="strategy_plus_ai_plus_risk",
+                    weighted_score=round(weighted_score, 4),
+                    risk_penalty=round(risk_penalty, 4),
                 )
             )
         return final_signals, ai_decisions

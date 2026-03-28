@@ -23,6 +23,7 @@ class AIDecisionService:
         technical_summary: Optional[Mapping[str, object]] = None,
         portfolio_context: Optional[Mapping[str, object]] = None,
         risk_constraints: Optional[Mapping[str, object]] = None,
+        market_regime: Optional[Mapping[str, object]] = None,
         mode: Optional[str] = None,
         trade_date: Optional[str] = None,
         use_subprocess: bool = False,
@@ -34,6 +35,7 @@ class AIDecisionService:
             technical_summary=technical_summary,
             portfolio_context=portfolio_context,
             risk_constraints=risk_constraints,
+            market_regime=market_regime,
         )
         if not self.settings.enable_ai:
             return AIDecision(
@@ -100,6 +102,7 @@ class AIDecisionService:
         technical_summary: Optional[Mapping[str, object]],
         portfolio_context: Optional[Mapping[str, object]],
         risk_constraints: Optional[Mapping[str, object]],
+        market_regime: Optional[Mapping[str, object]],
     ) -> Dict[str, object]:
         return {
             "symbol": symbol,
@@ -107,6 +110,7 @@ class AIDecisionService:
             "technical_summary": dict(technical_summary or {}),
             "portfolio_context": dict(portfolio_context or {}),
             "risk_constraints": dict(risk_constraints or {}),
+            "market_regime": dict(market_regime or {}),
             "candidate_signal": candidate.model_dump(),
         }
 
@@ -114,11 +118,13 @@ class AIDecisionService:
     def _summarize_context(context: Mapping[str, object]) -> str:
         snapshot = context.get("market_snapshot") or {}
         portfolio = context.get("portfolio_context") or {}
+        regime = context.get("market_regime") or {}
         candidate = context.get("candidate_signal") or {}
         latest_price = snapshot.get("latest_price") if isinstance(snapshot, Mapping) else None
         cash = portfolio.get("cash") if isinstance(portfolio, Mapping) else None
         action = candidate.get("action") if isinstance(candidate, Mapping) else None
-        return f"候选动作={action}，最新价={latest_price}，可用现金={cash}"
+        regime_name = regime.get("regime") if isinstance(regime, Mapping) else None
+        return f"候选动作={action}，最新价={latest_price}，可用现金={cash}，市场状态={regime_name}"
 
     def _trigger_analysis_subprocess(self, symbol: str, mode: str, analysis_date: str) -> None:
         script = self.settings.tradeforagents_script

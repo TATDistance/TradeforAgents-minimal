@@ -5,9 +5,11 @@ from datetime import datetime
 
 import pandas as pd
 
-from app.db import initialize_db, seed_account
+from app.db import initialize_db, seed_account, write_account_snapshot, write_order
+from app.evaluation_service import EvaluationService
+from app.backtest_service import BacktestService
 from app.market_clock import MarketPhase
-from app.models import AIDecision, FinalSignal, MarketQuote, StrategySignal
+from app.models import AIDecision, AccountSnapshot, FinalSignal, MarketQuote, OrderRecord, StrategySignal
 from app.scheduler import TradingScheduler
 from app.settings import load_settings
 
@@ -136,3 +138,99 @@ def test_scheduler_skips_orders_after_close(tmp_path, monkeypatch):
         conn.close()
     assert order_count == 0
     assert signal_count == 1
+
+
+def test_backtest_report_lists_expanded_strategies(tmp_path, monkeypatch):
+    settings = load_settings()
+    settings.project_root = tmp_path
+    service = BacktestService(settings)
+
+    fake_frame = pd.DataFrame(
+        [
+            {"trade_date": f"2026-01-{idx:02d}", "open": 10 + idx * 0.1, "close": 10 + idx * 0.12, "high": 10 + idx * 0.13, "low": 10 + idx * 0.08, "volume": 1000 + idx, "amount": 100000 + idx * 100}
+            for idx in range(1, 100)
+        ]
+    )
+    monkeypatch.setattr(service.market_data, "fetch_history_daily", lambda *args, **kwargs: fake_frame)
+    report = service.run_simple_backtest("600036", strategy_name="dual_ma")
+    assert "dual_ma" == report["strategy"]
+    assert "macd_trend" in report["available_strategies"]
+    assert "trend_pullback" in report["available_strategies"]
+
+
+def test_evaluation_persists_exit_strategy_scores(tmp_path):
+    settings = load_settings()
+    settings.project_root = tmp_path
+    initialize_db(settings)
+    seed_account(settings, cash=100000)
+    conn = sqlite3.connect(str(settings.db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        write_account_snapshot(
+            conn,
+            AccountSnapshot(
+                ts=datetime(2026, 3, 27, 9, 30),
+                cash=100000,
+                equity=100000,
+                market_value=0,
+                realized_pnl=0,
+                unrealized_pnl=0,
+                drawdown=0,
+            ),
+        )
+        write_order(
+            conn,
+            OrderRecord(
+                symbol="600036",
+                side="BUY",
+                price=40.0,
+                qty=100,
+                fee=5,
+                tax=0,
+                slippage=2,
+                status="FILLED",
+                strategy_name="momentum",
+                mode_name="strategy_plus_ai_plus_risk",
+                ts=datetime(2026, 3, 27, 9, 35),
+            ),
+        )
+        write_order(
+            conn,
+            OrderRecord(
+                symbol="600036",
+                side="SELL",
+                price=42.0,
+                qty=100,
+                fee=5,
+                tax=2,
+                slippage=2,
+                status="FILLED",
+                strategy_name="dual_ma",
+                mode_name="strategy_plus_ai_plus_risk",
+                ts=datetime(2026, 3, 27, 14, 30),
+            ),
+        )
+        write_account_snapshot(
+            conn,
+            AccountSnapshot(
+                ts=datetime(2026, 3, 27, 15, 0),
+                cash=100186,
+                equity=100186,
+                market_value=0,
+                realized_pnl=186,
+                unrealized_pnl=0,
+                drawdown=0,
+            ),
+        )
+        service = EvaluationService(settings)
+        service.persist_evaluations(conn, reference_date="2026-03-27")
+        conn.commit()
+        row = conn.execute(
+            "SELECT strategy_name, total_trades FROM strategy_evaluations WHERE strategy_name = ? AND period_type = ?",
+            ("exit::dual_ma", "daily"),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["strategy_name"] == "exit::dual_ma"
+    assert int(row["total_trades"]) >= 1

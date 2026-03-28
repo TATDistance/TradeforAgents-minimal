@@ -62,7 +62,7 @@ class MarketClock:
             is_post_close_analysis=in_post_close,
             should_fetch_realtime=should_fetch,
             should_run_strategy=in_trading or in_post_close,
-            should_place_orders=in_trading,
+            should_place_orders=in_trading or (in_post_close and self.config.allow_post_close_paper_execution),
             phase_name=self._phase_name(current_time, in_trading, in_post_close),
         )
 
@@ -72,7 +72,7 @@ class MarketClock:
         if self.lunch_start <= current_time < self.lunch_end:
             return "lunch_break"
         if in_post_close:
-            return "post_close_analysis"
+            return "post_close_execution" if self.config.allow_post_close_paper_execution else "post_close_analysis"
         if current_time < self.trade_start:
             return "pre_open"
         return "after_hours"
