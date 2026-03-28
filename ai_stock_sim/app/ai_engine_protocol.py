@@ -5,7 +5,17 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-DecisionEngineAction = Literal["BUY", "SELL", "REDUCE", "HOLD", "AVOID_NEW_BUY"]
+DecisionEngineAction = Literal[
+    "BUY",
+    "SELL",
+    "REDUCE",
+    "HOLD",
+    "AVOID_NEW_BUY",
+    "WATCH_NEXT_DAY",
+    "PREPARE_BUY",
+    "PREPARE_REDUCE",
+    "HOLD_FOR_TOMORROW",
+]
 
 
 class AIDecisionEngineOutput(BaseModel):
@@ -26,7 +36,7 @@ class AIDecisionEngineOutput(BaseModel):
 
 def normalize_engine_output(payload: Dict[str, Any], symbol: str, fallback_reason: str = "") -> AIDecisionEngineOutput:
     action = str(payload.get("action") or "HOLD").upper()
-    if action not in {"BUY", "SELL", "REDUCE", "HOLD", "AVOID_NEW_BUY"}:
+    if action not in {"BUY", "SELL", "REDUCE", "HOLD", "AVOID_NEW_BUY", "WATCH_NEXT_DAY", "PREPARE_BUY", "PREPARE_REDUCE", "HOLD_FOR_TOMORROW"}:
         action = "HOLD"
     risk_mode = str(payload.get("risk_mode") or "NORMAL").upper()
     if risk_mode not in {"NORMAL", "DEFENSIVE", "RISK_OFF"}:

@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS orders (
     note TEXT,
     strategy_name TEXT,
     mode_name TEXT,
-    signal_id INTEGER
+    signal_id INTEGER,
+    intent_only INTEGER NOT NULL DEFAULT 0,
+    phase TEXT
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -182,6 +184,8 @@ REQUIRED_COLUMNS = {
         "strategy_name": "TEXT",
         "mode_name": "TEXT",
         "signal_id": "INTEGER",
+        "intent_only": "INTEGER NOT NULL DEFAULT 0",
+        "phase": "TEXT",
     },
     "final_signals": {
         "strategy_name": "TEXT",
@@ -208,6 +212,7 @@ def initialize_db(settings: Settings | None = None) -> None:
     cfg.logs_dir.mkdir(parents=True, exist_ok=True)
     cfg.cache_dir.mkdir(parents=True, exist_ok=True)
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    cfg.calendars_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("backtest", "daily", "weekly", "monthly"):
         (cfg.reports_dir / subdir).mkdir(parents=True, exist_ok=True)
     conn = connect_db(cfg)
@@ -330,8 +335,8 @@ def write_final_signal(conn: sqlite3.Connection, signal: FinalSignal) -> int:
 def write_order(conn: sqlite3.Connection, order: OrderRecord) -> int:
     cursor = conn.execute(
         """
-        INSERT INTO orders (ts, symbol, side, price, qty, fee, tax, slippage, status, note, strategy_name, mode_name, signal_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO orders (ts, symbol, side, price, qty, fee, tax, slippage, status, note, strategy_name, mode_name, signal_id, intent_only, phase)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             order.ts.isoformat(timespec="seconds"),
@@ -347,6 +352,8 @@ def write_order(conn: sqlite3.Connection, order: OrderRecord) -> int:
             order.strategy_name,
             order.mode_name,
             order.signal_id,
+            1 if order.intent_only else 0,
+            order.phase,
         ),
     )
     return int(cursor.lastrowid)

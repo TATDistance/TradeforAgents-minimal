@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Mapping
 
-from .models import PlannedAction, PortfolioManagerAction
+from .models import ExecutionGateState, MarketPhaseState, PlannedAction, PortfolioManagerAction
 from .settings import Settings, load_settings
 
 
@@ -18,6 +18,8 @@ class ActionPlanner:
         actions: Iterable[PortfolioManagerAction],
         portfolio_feedback: Mapping[str, object],
         quotes: Mapping[str, float],
+        phase_state: MarketPhaseState,
+        execution_gate: ExecutionGateState,
     ) -> List[PlannedAction]:
         planned: List[PlannedAction] = []
         cash = float(portfolio_feedback.get("cash", 0.0) or 0.0)
@@ -27,6 +29,8 @@ class ActionPlanner:
 
         for action in actions:
             price = float(quotes.get(action.symbol, 0.0) or 0.0)
+            executable_now = self._is_executable(action.action, execution_gate)
+            intent_only = action.action in {"BUY", "SELL", "REDUCE"} and not executable_now
             if action.action == "BUY":
                 target_value = min(cash, equity * float(action.position_pct or 0.0))
                 qty = self._round_lot(int(target_value / max(price, 0.01)))
@@ -42,6 +46,9 @@ class ActionPlanner:
                         source=action.source,
                         mode_name=action.mode_name,
                         reason=action.reason,
+                        intent_only=intent_only,
+                        executable_now=executable_now,
+                        phase=phase_state.phase,
                         metadata=action.metadata,
                     )
                 )
@@ -61,6 +68,9 @@ class ActionPlanner:
                         source=action.source,
                         mode_name=action.mode_name,
                         reason=action.reason,
+                        intent_only=intent_only,
+                        executable_now=executable_now,
+                        phase=phase_state.phase,
                         metadata=action.metadata,
                     )
                 )
@@ -79,6 +89,9 @@ class ActionPlanner:
                         source=action.source,
                         mode_name=action.mode_name,
                         reason=action.reason,
+                        intent_only=intent_only,
+                        executable_now=executable_now,
+                        phase=phase_state.phase,
                         metadata=action.metadata,
                     )
                 )
@@ -94,6 +107,9 @@ class ActionPlanner:
                         source=action.source,
                         mode_name=action.mode_name,
                         reason=action.reason,
+                        intent_only=False,
+                        executable_now=False,
+                        phase=phase_state.phase,
                         metadata=action.metadata,
                     )
                 )
@@ -104,3 +120,11 @@ class ActionPlanner:
         if quantity <= 0:
             return 0
         return quantity // BOARD_LOT * BOARD_LOT
+
+    @staticmethod
+    def _is_executable(action: str, execution_gate: ExecutionGateState) -> bool:
+        if action == "BUY":
+            return execution_gate.can_open_position and execution_gate.can_execute_fill
+        if action in {"SELL", "REDUCE"}:
+            return execution_gate.can_reduce_position and execution_gate.can_execute_fill
+        return False

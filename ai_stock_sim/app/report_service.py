@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .db import fetch_recent_rows
+from .db import fetch_recent_rows, fetch_rows_by_sql
 from .evaluation_service import EvaluationService
 from .settings import Settings, load_settings
 
@@ -32,20 +32,47 @@ class ReportService:
         return self._write_report_bundle(self.settings.reports_dir / "monthly", f"monthly_{month}", payload)
 
     def _build_report_payload(self, conn, evaluation, label: str, report_scope: str) -> dict[str, Any]:
-        account_rows = [dict(row) for row in fetch_recent_rows(conn, "account_snapshots", limit=20)]
-        orders = [dict(row) for row in fetch_recent_rows(conn, "orders", limit=50)]
+        period_start = str(getattr(evaluation, "period_start", None) or label)
+        period_end = str(getattr(evaluation, "period_end", None) or label)
+        account_rows = [dict(row) for row in fetch_rows_by_sql(conn, "SELECT * FROM account_snapshots WHERE date(ts) BETWEEN ? AND ? ORDER BY id DESC LIMIT 50", (period_start, period_end))]
+        orders = [dict(row) for row in fetch_rows_by_sql(conn, "SELECT * FROM orders WHERE date(ts) BETWEEN ? AND ? ORDER BY id DESC LIMIT 100", (period_start, period_end))]
         positions = [dict(row) for row in fetch_recent_rows(conn, "positions", limit=50)]
-        ai_rows = [dict(row) for row in fetch_recent_rows(conn, "ai_decisions", limit=50)]
-        logs = [dict(row) for row in fetch_recent_rows(conn, "system_logs", limit=100) if str(row["module"]).lower() in {"risk", "risk_engine", "scheduler"}]
+        ai_rows = [dict(row) for row in fetch_rows_by_sql(conn, "SELECT * FROM ai_decisions WHERE date(ts) BETWEEN ? AND ? ORDER BY id DESC LIMIT 50", (period_start, period_end))]
+        logs = [
+            dict(row)
+            for row in fetch_rows_by_sql(
+                conn,
+                """
+                SELECT * FROM system_logs
+                WHERE date(ts) BETWEEN ? AND ?
+                  AND lower(module) IN ('risk', 'risk_engine', 'scheduler', 'market_phase')
+                ORDER BY id DESC LIMIT 120
+                """,
+                (period_start, period_end),
+            )
+        ]
+        phase_logs = [row for row in logs if str(row["module"]).lower() == "market_phase"]
+        actual_orders = [row for row in orders if not bool(row.get("intent_only")) and str(row.get("status")) in {"FILLED", "PARTIAL_FILLED"}]
+        intent_orders = [row for row in orders if bool(row.get("intent_only")) or str(row.get("status")) == "INTENT_ONLY"]
+        tomorrow_actions = [row for row in intent_orders if str(row.get("phase") or "") == "POST_CLOSE"]
         return {
             "report_scope": report_scope,
             "label": label,
             "evaluation": evaluation.model_dump(),
             "account_tail": account_rows,
             "orders": orders,
+            "actual_orders": actual_orders,
+            "intent_orders": intent_orders,
             "positions": positions,
             "ai_decisions": ai_rows,
             "risk_logs": logs,
+            "phase_logs": phase_logs,
+            "tomorrow_actions": tomorrow_actions,
+            "summary": {
+                "phase_blocked_actions": len(intent_orders),
+                "actual_fills": len(actual_orders),
+                "post_close_preparations": len(tomorrow_actions),
+            },
         }
 
     def _write_report_bundle(self, output_dir: Path, stem: str, payload: Mapping[str, Any]) -> dict[str, Path]:
@@ -62,8 +89,13 @@ class ReportService:
     def _render_markdown(self, payload: Mapping[str, Any]) -> str:
         evaluation = payload["evaluation"]
         orders = payload["orders"]
+        actual_orders = payload["actual_orders"]
+        intent_orders = payload["intent_orders"]
         ai_rows = payload["ai_decisions"]
         risk_logs = payload["risk_logs"]
+        phase_logs = payload["phase_logs"]
+        tomorrow_actions = payload["tomorrow_actions"]
+        summary = payload["summary"]
         lines = [
             f"# {payload['report_scope']} 报告",
             "",
@@ -75,14 +107,34 @@ class ReportService:
             f"- 利润因子：{evaluation['profit_factor']:.2f}",
             f"- 期望收益：{evaluation['expectancy']:.4f}",
             f"- 策略评分：{evaluation['score_total']:.2f} / {evaluation['grade']}",
+            f"- 今日真实成交数：{summary['actual_fills']}",
+            f"- 今日阶段拦截动作数：{summary['phase_blocked_actions']}",
+            f"- 盘后明日准备动作数：{summary['post_close_preparations']}",
+            "",
+            "## 今日交易阶段流转",
+        ]
+        if phase_logs:
+            for row in phase_logs[:20]:
+                lines.append(f"- {row['ts']} {row['message']}")
+        else:
+            lines.append("- 无阶段流转日志")
+        lines.extend([
             "",
             "## 当日成交",
-        ]
-        if orders:
-            for row in orders[:20]:
+        ])
+        if actual_orders:
+            for row in actual_orders[:20]:
                 lines.append(f"- {row['ts']} {row['symbol']} {row['side']} {row['qty']} 股 @ {row['price']}")
         else:
             lines.append("- 无成交")
+        lines.append("")
+        lines.append("## 动作意图与盘后计划")
+        if intent_orders:
+            for row in intent_orders[:20]:
+                phase = str(row.get("phase") or "-")
+                lines.append(f"- {row['ts']} [{phase}] {row['symbol']} {row['side']} 意图 {row['qty']} 股：{row['note']}")
+        else:
+            lines.append("- 无动作意图")
         lines.append("")
         lines.append("## AI 审批摘要")
         if ai_rows:
@@ -97,6 +149,13 @@ class ReportService:
                 lines.append(f"- [{row['level']}] {row['module']}：{row['message']}")
         else:
             lines.append("- 无告警")
+        lines.append("")
+        lines.append("## 明日观察与准备动作")
+        if tomorrow_actions:
+            for row in tomorrow_actions[:20]:
+                lines.append(f"- {row['symbol']} {row['side']} 计划 {row['qty']} 股：{row['note']}")
+        else:
+            lines.append("- 无盘后准备动作")
         return "\n".join(lines)
 
     def _render_html(self, payload: Mapping[str, Any]) -> str:

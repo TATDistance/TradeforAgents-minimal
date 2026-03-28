@@ -4,7 +4,7 @@ import pandas as pd
 
 from app.decision_context_builder import DecisionContextBuilder
 from app.feature_service import FeatureService
-from app.models import MarketRegimeState
+from app.models import ExecutionGateState, MarketPhaseState, MarketRegimeState
 from app.settings import load_settings
 
 
@@ -45,12 +45,16 @@ def test_decision_context_builder_contains_required_sections() -> None:
             "risk_mode": "NORMAL",
             "positions_detail": [],
         },
+        phase_state=MarketPhaseState(is_trading_day=True, phase="CONTINUOUS_AUCTION_AM", allow_market_update=True, allow_signal_generation=True, allow_ai_decision=True, allow_new_buy=True, allow_sell_reduce=True, allow_simulate_fill=True, trade_date="2026-03-27"),
+        execution_gate=ExecutionGateState(can_update_market=True, can_generate_signal=True, can_run_ai_decision=True, can_plan_actions=True, can_open_position=True, can_reduce_position=True, can_execute_fill=True, phase="CONTINUOUS_AUCTION_AM", is_trading_day=True),
     )
     assert context["symbol"] == "600036"
     assert "snapshot" in context
     assert "strategy_features" in context
     assert "technical_features" in context
     assert "market_regime" in context
+    assert "market_phase" in context
+    assert "execution_gate" in context
     assert "portfolio_state" in context
     assert "position_state" in context
     assert "risk_constraints" in context

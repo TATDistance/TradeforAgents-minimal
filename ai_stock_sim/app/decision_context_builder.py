@@ -4,7 +4,7 @@ from typing import Dict, Mapping, Sequence
 
 import pandas as pd
 
-from .models import MarketRegimeState, StrategyFeature
+from .models import ExecutionGateState, MarketPhaseState, MarketRegimeState, StrategyFeature
 from .settings import Settings, load_settings
 from strategies.common import atr, macd, rsi, safe_pct_change
 
@@ -21,6 +21,8 @@ class DecisionContextBuilder:
         frame: pd.DataFrame | None,
         market_regime: MarketRegimeState,
         portfolio_feedback: Mapping[str, object],
+        phase_state: MarketPhaseState,
+        execution_gate: ExecutionGateState,
     ) -> Dict[str, object]:
         position_state = self._resolve_position_state(symbol, portfolio_feedback)
         technical_features = self._technical_features(frame)
@@ -39,6 +41,8 @@ class DecisionContextBuilder:
             },
             "technical_features": technical_features,
             "market_regime": market_regime.model_dump(),
+            "market_phase": phase_state.model_dump(),
+            "execution_gate": execution_gate.model_dump(),
             "portfolio_state": {
                 "equity": float(portfolio_feedback.get("equity", 0.0) or 0.0),
                 "cash": float(portfolio_feedback.get("cash", 0.0) or 0.0),
@@ -53,9 +57,10 @@ class DecisionContextBuilder:
                 "max_single_position_pct": self.settings.max_single_position_pct,
                 "max_daily_open_position_pct": self.settings.max_daily_open_position_pct,
                 "max_drawdown_pct": self.settings.max_drawdown_pct,
-                "allow_new_buy": position_state.get("allow_new_buy", True),
-                "allow_reduce": True,
-                "allow_sell": int(position_state.get("can_sell_qty", 0)) > 0,
+                "allow_new_buy": execution_gate.can_open_position and position_state.get("allow_new_buy", True),
+                "allow_reduce": execution_gate.can_reduce_position,
+                "allow_sell": execution_gate.can_reduce_position and int(position_state.get("can_sell_qty", 0)) > 0,
+                "allow_execute_fill": execution_gate.can_execute_fill,
             },
         }
 
@@ -67,6 +72,8 @@ class DecisionContextBuilder:
         frame_map: Mapping[str, pd.DataFrame],
         market_regime: MarketRegimeState,
         portfolio_feedback: Mapping[str, object],
+        phase_state: MarketPhaseState,
+        execution_gate: ExecutionGateState,
     ) -> Dict[str, Dict[str, object]]:
         return {
             symbol: self.build_for_symbol(
@@ -76,6 +83,8 @@ class DecisionContextBuilder:
                 frame=frame_map.get(symbol),
                 market_regime=market_regime,
                 portfolio_feedback=portfolio_feedback,
+                phase_state=phase_state,
+                execution_gate=execution_gate,
             )
             for symbol in symbols
         }

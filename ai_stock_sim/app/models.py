@@ -7,7 +7,18 @@ from pydantic import BaseModel, Field
 
 
 SignalAction = Literal["BUY", "SELL", "HOLD"]
-PortfolioActionType = Literal["BUY", "SELL", "REDUCE", "HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"]
+PortfolioActionType = Literal[
+    "BUY",
+    "SELL",
+    "REDUCE",
+    "HOLD",
+    "AVOID_NEW_BUY",
+    "ENTER_DEFENSIVE_MODE",
+    "WATCH_NEXT_DAY",
+    "PREPARE_BUY",
+    "PREPARE_REDUCE",
+    "HOLD_FOR_TOMORROW",
+]
 StrategyDirection = Literal["LONG", "SHORT", "NEUTRAL"]
 
 
@@ -103,6 +114,39 @@ class MarketRegimeState(BaseModel):
     volatility: float = 0.0
 
 
+class MarketPhaseState(BaseModel):
+    is_trading_day: bool
+    phase: str
+    allow_market_update: bool = False
+    allow_signal_generation: bool = False
+    allow_ai_decision: bool = False
+    allow_new_buy: bool = False
+    allow_sell_reduce: bool = False
+    allow_simulate_fill: bool = False
+    allow_post_close_analysis: bool = False
+    allow_report_generation: bool = False
+    reason: str = ""
+    trade_date: str = ""
+    next_trading_day: Optional[str] = None
+    previous_trading_day: Optional[str] = None
+
+
+class ExecutionGateState(BaseModel):
+    can_update_market: bool = False
+    can_generate_signal: bool = False
+    can_run_ai_decision: bool = False
+    can_plan_actions: bool = False
+    can_open_position: bool = False
+    can_reduce_position: bool = False
+    can_execute_fill: bool = False
+    can_generate_report: bool = False
+    can_mark_to_market: bool = True
+    intent_only_mode: bool = False
+    reason: str = ""
+    phase: str = ""
+    is_trading_day: bool = False
+
+
 class PortfolioManagerAction(BaseModel):
     symbol: str
     action: PortfolioActionType
@@ -134,6 +178,9 @@ class PlannedAction(BaseModel):
     source: List[str] = Field(default_factory=list)
     mode_name: str = "legacy_review_mode"
     reason: str = ""
+    intent_only: bool = False
+    executable_now: bool = False
+    phase: str = ""
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -148,6 +195,7 @@ class RiskCheckResult(BaseModel):
     est_fee: float = 0.0
     est_tax: float = 0.0
     est_slippage: float = 0.0
+    phase_blocked: bool = False
 
 
 class OrderRecord(BaseModel):
@@ -164,6 +212,8 @@ class OrderRecord(BaseModel):
     strategy_name: str = ""
     mode_name: str = "strategy_plus_ai_plus_risk"
     signal_id: Optional[int] = None
+    intent_only: bool = False
+    phase: str = ""
 
 
 class PositionRecord(BaseModel):

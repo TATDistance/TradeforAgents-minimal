@@ -283,18 +283,18 @@ with st.container(border=True):
     setting_cols = st.columns([1.4, 1.0, 1.2])
     with setting_cols[0]:
         st.toggle(
-            "允许盘后纸面执行",
+            "允许盘后保留准备动作",
             key="allow_post_close_execution",
-            help="打开后，15:05-18:00 也允许触发纸面模拟成交。默认关闭，更接近真实 A 股交易时段。",
+            help="打开后，收盘后仍会保留 PREPARE_BUY / PREPARE_REDUCE 这类次日准备动作；关闭时更偏保守，只保留观察建议。",
         )
     with setting_cols[1]:
-        current_label = "盘后纸面执行：开启" if st.session_state["allow_post_close_execution"] else "仅交易时段成交（推荐）"
+        current_label = "盘后准备动作：开启" if st.session_state["allow_post_close_execution"] else "盘后仅观察（推荐）"
         render_status_badge(current_label, "ai" if st.session_state["allow_post_close_execution"] else "warn")
     with setting_cols[2]:
         if st.button("保存模拟时段设置", use_container_width=True):
             save_post_close_execution_flag(bool(st.session_state["allow_post_close_execution"]))
             st.success("设置已保存。重启 8600 中的实时引擎后生效。")
-    st.caption("这个设置会写回 config/settings.yaml。为了避免夜间误触发，默认仍建议保持关闭。")
+    st.caption("这个设置会写回 config/settings.yaml。无论开关如何，盘后都不会新增真实模拟成交。")
 
 with st.container(border=True):
     st.markdown("**决策模式设置**")
@@ -350,19 +350,33 @@ def render_dashboard() -> None:
 
     current_mode = str((live_state or {}).get("decision_mode") or settings.decision_engine.mode)
     mode_label = MODE_LABELS.get(current_mode, current_mode)
+    trading_calendar = live_state.get("trading_calendar") if isinstance(live_state, dict) else {}
+    execution_gate = live_state.get("execution_gate") if isinstance(live_state, dict) else {}
     with st.container(border=True):
         st.markdown("**当前运行模式**")
-        summary_cols = st.columns(4)
+        summary_cols = st.columns(5)
         summary_cols[0].metric("决策模式", mode_label)
         summary_cols[1].metric("当前阶段", str((live_state or {}).get("phase", "-")))
         summary_cols[2].metric("AI 决策标的数", len((live_state or {}).get("ai_decision_engine") or {}))
         summary_cols[3].metric("计划动作数", len((live_state or {}).get("final_actions") or []))
+        summary_cols[4].metric("可成交", "是" if bool((execution_gate or {}).get("can_execute_fill")) else "否")
+        if isinstance(trading_calendar, dict) and trading_calendar:
+            st.caption(
+                f"交易日：{'是' if bool(trading_calendar.get('is_trading_day')) else '否'} | "
+                f"下一交易日：{trading_calendar.get('next_trading_day') or '-'} | "
+                f"最近交易日：{trading_calendar.get('previous_trading_day') or '-'}"
+            )
         with st.expander("查看当前版本 AI 单次轮询流程图"):
             st.code(FLOWCHART_TEXT, language="text")
 
     top_tabs = st.tabs(
         [
             "当前模式与总览",
+            "交易日历状态",
+            "当前交易阶段",
+            "当前执行权限",
+            "动作意图 vs 实际成交",
+            "盘后模式",
             "市场状态机",
             "策略权重",
             "AI 决策输入",
@@ -396,6 +410,104 @@ def render_dashboard() -> None:
             st.dataframe(quick_df[cols], use_container_width=True, hide_index=True)
 
     with top_tabs[1]:
+        st.subheader("交易日历状态")
+        if isinstance(trading_calendar, dict) and trading_calendar:
+            cols = st.columns(3)
+            cols[0].metric("今天是否交易日", "是" if bool(trading_calendar.get("is_trading_day")) else "否")
+            cols[1].metric("下一交易日", str(trading_calendar.get("next_trading_day") or "-"))
+            cols[2].metric("最近交易日", str(trading_calendar.get("previous_trading_day") or "-"))
+        else:
+            st.info("暂无交易日历状态。")
+
+    with top_tabs[2]:
+        st.subheader("当前交易阶段")
+        phase_name = str((live_state or {}).get("phase", "-"))
+        phase_color = "profit" if "CONTINUOUS_AUCTION" in phase_name else "warn" if phase_name in {"PRE_OPEN", "OPEN_CALL_AUCTION", "MIDDAY_BREAK"} else "reject"
+        render_status_badge(phase_name, phase_color)
+        if isinstance(execution_gate, dict) and execution_gate:
+            st.write(str(execution_gate.get("reason") or ""))
+        else:
+            st.info("暂无阶段状态。")
+
+    with top_tabs[3]:
+        st.subheader("当前执行权限")
+        if isinstance(execution_gate, dict) and execution_gate:
+            gate_df = pd.DataFrame(
+                [
+                    {"权限": "更新行情", "是否允许": bool(execution_gate.get("can_update_market"))},
+                    {"权限": "生成信号", "是否允许": bool(execution_gate.get("can_generate_signal"))},
+                    {"权限": "运行 AI 决策", "是否允许": bool(execution_gate.get("can_run_ai_decision"))},
+                    {"权限": "新开仓", "是否允许": bool(execution_gate.get("can_open_position"))},
+                    {"权限": "减仓/卖出", "是否允许": bool(execution_gate.get("can_reduce_position"))},
+                    {"权限": "真实模拟成交", "是否允许": bool(execution_gate.get("can_execute_fill"))},
+                    {"权限": "盘后报表", "是否允许": bool(execution_gate.get("can_generate_report"))},
+                ]
+            )
+            st.dataframe(gate_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("暂无执行权限数据。")
+
+    with top_tabs[4]:
+        st.subheader("动作意图 vs 实际成交")
+        planned_rows = live_state.get("final_actions") if isinstance(live_state, dict) else []
+        planned_df = attach_symbol_name(pd.DataFrame(planned_rows)) if planned_rows else pd.DataFrame()
+        if not planned_df.empty:
+            intent_df = planned_df[planned_df["intent_only"].astype(bool)] if "intent_only" in planned_df.columns else pd.DataFrame()
+            exec_df = planned_df[planned_df["executable_now"].astype(bool)] if "executable_now" in planned_df.columns else pd.DataFrame()
+            st.markdown("**本轮动作意图**")
+            if not intent_df.empty:
+                cols = [col for col in ["symbol", "name", "action", "planned_qty", "planned_price", "phase", "reason"] if col in intent_df.columns]
+                st.dataframe(intent_df[cols], use_container_width=True, hide_index=True)
+            else:
+                st.info("本轮暂无仅意图动作。")
+            st.markdown("**本轮可执行动作**")
+            if not exec_df.empty:
+                cols = [col for col in ["symbol", "name", "action", "planned_qty", "planned_price", "phase", "reason"] if col in exec_df.columns]
+                st.dataframe(exec_df[cols], use_container_width=True, hide_index=True)
+            else:
+                st.info("本轮暂无可立即执行动作。")
+        if not orders_df.empty and "intent_only" in orders_df.columns:
+            actual_orders = orders_df[orders_df["intent_only"] == 0]
+            intent_orders = orders_df[orders_df["intent_only"] == 1]
+        elif not orders_df.empty and "status" in orders_df.columns:
+            actual_orders = orders_df[orders_df["status"].astype(str).str.contains("FILLED", na=False)]
+            intent_orders = orders_df[orders_df["status"].astype(str) == "INTENT_ONLY"]
+        else:
+            actual_orders = pd.DataFrame()
+            intent_orders = pd.DataFrame()
+        st.markdown("**订单表中的真实成交**")
+        if not actual_orders.empty:
+            cols = [col for col in ["ts", "symbol", "name", "side", "price", "qty", "status", "phase"] if col in actual_orders.columns]
+            st.dataframe(actual_orders[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("暂无真实成交。")
+        st.markdown("**订单表中的动作意图**")
+        if not intent_orders.empty:
+            cols = [col for col in ["ts", "symbol", "name", "side", "price", "qty", "status", "phase", "note"] if col in intent_orders.columns]
+            st.dataframe(intent_orders[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("暂无动作意图记录。")
+
+    with top_tabs[5]:
+        st.subheader("盘后模式")
+        post_close_intents = orders_df[orders_df["phase"].astype(str) == "POST_CLOSE"] if not orders_df.empty and "phase" in orders_df.columns else pd.DataFrame()
+        if not post_close_intents.empty:
+            st.markdown("**明日观察与准备动作**")
+            cols = [col for col in ["ts", "symbol", "name", "side", "qty", "note"] if col in post_close_intents.columns]
+            st.dataframe(post_close_intents[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("当前暂无盘后准备动作。")
+        risk_df = pd.DataFrame(live_state.get("risk_results") or []) if isinstance(live_state, dict) else pd.DataFrame()
+        if not risk_df.empty and "phase_blocked" in risk_df.columns:
+            blocked_df = attach_symbol_name(risk_df[risk_df["phase_blocked"].astype(bool)].copy())
+            st.markdown("**今日因阶段权限被拦截的动作**")
+            if not blocked_df.empty:
+                cols = [col for col in ["symbol", "name", "action", "phase", "reason"] if col in blocked_df.columns]
+                st.dataframe(blocked_df[cols], use_container_width=True, hide_index=True)
+            else:
+                st.info("暂无阶段拦截动作。")
+
+    with top_tabs[6]:
         st.subheader("市场状态机")
         regime = live_state.get("market_regime") if isinstance(live_state, dict) else {}
         if isinstance(regime, dict) and regime:
@@ -408,7 +520,7 @@ def render_dashboard() -> None:
         else:
             st.info("暂无市场状态缓存。")
 
-    with top_tabs[2]:
+    with top_tabs[7]:
         st.subheader("策略权重")
         weights = live_state.get("strategy_weights") if isinstance(live_state, dict) else {}
         if isinstance(weights, dict) and weights:
@@ -420,7 +532,7 @@ def render_dashboard() -> None:
         else:
             st.info("暂无策略权重数据。")
 
-    with top_tabs[3]:
+    with top_tabs[8]:
         st.subheader("AI 决策输入摘要")
         context_map = live_state.get("decision_contexts") if isinstance(live_state, dict) else {}
         feature_map = live_state.get("feature_fusions") if isinstance(live_state, dict) else {}
@@ -455,7 +567,7 @@ def render_dashboard() -> None:
         else:
             st.info("本轮暂无 AI 决策输入摘要。")
 
-    with top_tabs[4]:
+    with top_tabs[9]:
         st.subheader("AI 审核员")
         reviewer = live_state.get("ai_reviewer") if isinstance(live_state, dict) else []
         reviewer_df = attach_symbol_name(pd.DataFrame(reviewer)) if reviewer else pd.DataFrame()
@@ -465,7 +577,7 @@ def render_dashboard() -> None:
         else:
             st.info("本轮暂无 AI 审核结果。")
 
-    with top_tabs[5]:
+    with top_tabs[10]:
         st.subheader("AI 决策中心")
         engine_payload = live_state.get("ai_decision_engine") if isinstance(live_state, dict) else {}
         if isinstance(engine_payload, dict) and engine_payload:
@@ -495,7 +607,7 @@ def render_dashboard() -> None:
         else:
             st.info("暂无组合管理建议。")
 
-    with top_tabs[6]:
+    with top_tabs[11]:
         st.subheader("执行结果")
         final_actions = live_state.get("final_actions") if isinstance(live_state, dict) else []
         risks = live_state.get("risk_results") if isinstance(live_state, dict) else []
@@ -511,7 +623,7 @@ def render_dashboard() -> None:
             cols = [col for col in ["symbol", "name", "action", "mode_name", "final_action", "allowed", "adjusted_qty", "risk_state", "reason"] if col in risk_df.columns]
             st.dataframe(risk_df[cols], use_container_width=True, hide_index=True)
 
-    with top_tabs[7]:
+    with top_tabs[12]:
         st.subheader("账户与持仓")
         feedback = live_state.get("portfolio_feedback") if isinstance(live_state, dict) else {}
         if isinstance(feedback, dict) and feedback:
@@ -537,7 +649,7 @@ def render_dashboard() -> None:
         else:
             st.info("暂无权益曲线数据。")
 
-    with top_tabs[8]:
+    with top_tabs[13]:
         st.subheader("策略评估面板")
         if evaluations_df.empty:
             st.info("暂无策略评估记录。")
@@ -592,7 +704,7 @@ def render_dashboard() -> None:
             else:
                 st.info("暂无卖出策略评分记录。需要先有真实平仓成交，才能判断哪种退出更好。")
 
-    with top_tabs[9]:
+    with top_tabs[14]:
         st.subheader("周期统计面板")
         period_options = {
             "今日": "daily",
@@ -608,7 +720,7 @@ def render_dashboard() -> None:
         else:
             st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-    with top_tabs[10]:
+    with top_tabs[15]:
         st.subheader("模式对照")
         live_compare = live_state.get("decision_compare") if isinstance(live_state, dict) else {}
         if isinstance(live_compare, dict) and live_compare.get("rows"):
@@ -658,10 +770,10 @@ def render_dashboard() -> None:
                     st.write(f"利润因子：{float(row['profit_factor']):.2f}")
             st.dataframe(comparisons_df, use_container_width=True, hide_index=True)
 
-    with top_tabs[11]:
+    with top_tabs[16]:
         st.subheader("成交流水")
         if not orders_df.empty:
-            order_cols = [col for col in ["ts", "symbol", "name", "side", "price", "qty", "fee", "tax", "slippage", "status", "strategy_name", "mode_name"] if col in orders_df.columns]
+            order_cols = [col for col in ["ts", "symbol", "name", "side", "price", "qty", "fee", "tax", "slippage", "status", "intent_only", "phase", "strategy_name", "mode_name"] if col in orders_df.columns]
             st.dataframe(orders_df[order_cols], use_container_width=True, hide_index=True)
         else:
             st.info("暂无成交记录。")
@@ -669,7 +781,7 @@ def render_dashboard() -> None:
             st.markdown("**人工实盘回填记录**")
             st.dataframe(manual_df, use_container_width=True, hide_index=True)
 
-    with top_tabs[12]:
+    with top_tabs[17]:
         st.subheader("日志筛选")
         filter_cols = st.columns(4)
         with filter_cols[0]:
@@ -692,7 +804,7 @@ def render_dashboard() -> None:
                 filtered_logs = filtered_logs[filtered_logs["ts"].astype(str).str.contains(time_text, case=False, na=False)]
         st.dataframe(filtered_logs, use_container_width=True, hide_index=True)
 
-    with top_tabs[13]:
+    with top_tabs[18]:
         st.subheader("人工实盘成交回填")
         if final_signals_df.empty:
             st.info("暂无可回填的信号。")

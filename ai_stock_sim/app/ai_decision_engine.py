@@ -41,6 +41,8 @@ class AIDecisionEngine:
         risk_constraints = dict(context.get("risk_constraints") or {})
         snapshot = dict(context.get("snapshot") or {})
         technical = dict(context.get("technical_features") or {})
+        market_phase = dict(context.get("market_phase") or {})
+        execution_gate = dict(context.get("execution_gate") or {})
         research = self._load_research_cache(symbol, trade_date or date.today().isoformat())
 
         regime_name = str(market_regime.get("regime") or self.settings.market_regime.default_regime)
@@ -62,10 +64,26 @@ class AIDecisionEngine:
         unrealized_pct = float(position_state.get("unrealized_pct") or 0.0)
         hold_days = int(position_state.get("hold_days") or 0)
         allow_new_buy = bool(risk_constraints.get("allow_new_buy", True))
+        allow_execute_fill = bool(execution_gate.get("can_execute_fill", False))
+        phase_name = str(market_phase.get("phase") or "NON_TRADING_DAY")
         research_bias = float(research.get("bias_score") or 0.0)
         technical_bonus = self._technical_bonus(technical)
         decision_score = final_score * 0.55 + feature_score * 0.25 + research_bias * 0.12 + technical_bonus * 0.08
         decision_score = max(-1.0, min(1.0, decision_score))
+
+        if not allow_execute_fill:
+            return self._build_non_executable_decision(
+                symbol=symbol,
+                has_position=has_position,
+                can_sell_qty=can_sell_qty,
+                direction=direction,
+                decision_score=decision_score,
+                feature_score=feature_score,
+                risk_mode=risk_mode,
+                warnings=warnings,
+                allow_new_buy=allow_new_buy,
+                phase_name=phase_name,
+            )
 
         if risk_mode == "RISK_OFF" and not has_position:
             return normalize_engine_output(
@@ -178,6 +196,87 @@ class AIDecisionEngine:
                 "risk_mode": risk_mode,
                 "holding_bias": "SHORT_TERM",
                 "reason": "当前没有形成足够强的新开仓优势，继续等待更明确机会。",
+                "warnings": warnings,
+                "final_score": round(decision_score, 4),
+                "feature_score": round(feature_score, 4),
+            },
+            symbol,
+        )
+
+    def _build_non_executable_decision(
+        self,
+        symbol: str,
+        has_position: bool,
+        can_sell_qty: int,
+        direction: str,
+        decision_score: float,
+        feature_score: float,
+        risk_mode: str,
+        warnings: list[str],
+        allow_new_buy: bool,
+        phase_name: str,
+    ) -> AIDecisionEngineOutput:
+        allow_prepare_actions = not (phase_name == "POST_CLOSE" and not self.settings.market_session.allow_post_close_paper_execution)
+        if has_position:
+            if allow_prepare_actions and can_sell_qty > 0 and (risk_mode == "RISK_OFF" or decision_score <= -0.42):
+                return normalize_engine_output(
+                    {
+                        "symbol": symbol,
+                        "action": "PREPARE_REDUCE",
+                        "reduce_pct": 1.0,
+                        "confidence": min(0.94, 0.62 + abs(decision_score) * 0.2),
+                        "risk_mode": risk_mode,
+                        "holding_bias": "SHORT_TERM",
+                        "reason": f"当前处于 {phase_name}，先保留次一可成交阶段的减仓/卖出意图。",
+                        "warnings": warnings,
+                        "final_score": round(decision_score, 4),
+                        "feature_score": round(feature_score, 4),
+                    },
+                    symbol,
+                )
+            return normalize_engine_output(
+                {
+                    "symbol": symbol,
+                    "action": "HOLD_FOR_TOMORROW",
+                    "confidence": min(0.86, 0.52 + abs(decision_score) * 0.18),
+                    "risk_mode": risk_mode,
+                    "holding_bias": "SHORT_TERM",
+                    "reason": f"当前处于 {phase_name}，持仓先进入观察与次日决策模式。",
+                    "warnings": warnings,
+                    "final_score": round(decision_score, 4),
+                    "feature_score": round(feature_score, 4),
+                },
+                symbol,
+            )
+
+        if allow_prepare_actions and allow_new_buy and direction == "LONG" and decision_score >= self.settings.fusion.min_final_score_to_buy:
+            base_pct = min(self.settings.max_single_position_pct, 0.06 + decision_score * 0.12)
+            if risk_mode == "DEFENSIVE":
+                base_pct *= 0.65
+            return normalize_engine_output(
+                {
+                    "symbol": symbol,
+                    "action": "PREPARE_BUY",
+                    "position_pct": round(max(0.03, min(base_pct, self.settings.max_single_position_pct)), 4),
+                    "confidence": min(0.92, 0.58 + decision_score * 0.2),
+                    "risk_mode": risk_mode,
+                    "holding_bias": "SHORT_TERM",
+                    "reason": f"当前处于 {phase_name}，先记录次一可成交阶段的买入意图。",
+                    "warnings": warnings,
+                    "final_score": round(decision_score, 4),
+                    "feature_score": round(feature_score, 4),
+                },
+                symbol,
+            )
+
+        return normalize_engine_output(
+            {
+                "symbol": symbol,
+                "action": "WATCH_NEXT_DAY",
+                "confidence": min(0.82, 0.5 + abs(decision_score) * 0.16),
+                "risk_mode": risk_mode,
+                "holding_bias": "SHORT_TERM",
+                "reason": f"当前处于 {phase_name}，继续观察，等待下一可成交阶段。",
                 "warnings": warnings,
                 "final_score": round(decision_score, 4),
                 "feature_score": round(feature_score, 4),

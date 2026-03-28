@@ -19,6 +19,10 @@ ai_stock_sim/__pycache__/
 ai_stock_sim/**/__pycache__/
 ai_stock_sim/.pytest_cache/
 ai_stock_sim/data/
+!ai_stock_sim/data/
+ai_stock_sim/data/*
+!ai_stock_sim/data/calendars/
+!ai_stock_sim/data/calendars/cn_a_2026.json
 ai_stock_sim/external/vnpy_workspace/exports/*.json
 ai_stock_sim/external/vnpy_workspace/generated_strategies/
 .DS_Store

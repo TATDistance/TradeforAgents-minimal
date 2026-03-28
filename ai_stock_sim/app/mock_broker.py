@@ -24,6 +24,8 @@ class MockBroker:
                 strategy_name=signal.strategy_name,
                 mode_name=signal.mode_name,
                 signal_id=signal_id,
+                intent_only=False,
+                phase="",
             )
             write_order(conn, order)
             return order
@@ -48,9 +50,45 @@ class MockBroker:
             strategy_name=signal.strategy_name,
             mode_name=signal.mode_name,
             signal_id=signal_id,
+            intent_only=False,
+            phase="",
         )
         write_order(conn, order)
         self._apply_fill(conn, order, latest_price=latest_price)
+        return order
+
+    def record_action_intent(self, conn, action: PlannedAction, risk: RiskCheckResult, signal_id: int | None = None) -> OrderRecord | None:
+        if action.action not in {"BUY", "SELL", "REDUCE"}:
+            return None
+        side = "BUY" if action.action == "BUY" else "SELL"
+        conn.execute(
+            """
+            DELETE FROM orders
+            WHERE intent_only = 1
+              AND symbol = ?
+              AND side = ?
+              AND COALESCE(phase, '') = COALESCE(?, '')
+              AND date(ts) = date('now', 'localtime')
+            """,
+            (action.symbol, side, action.phase),
+        )
+        order = OrderRecord(
+            symbol=action.symbol,
+            side=side,  # type: ignore[arg-type]
+            price=action.planned_price,
+            qty=action.planned_qty,
+            fee=0.0,
+            tax=0.0,
+            slippage=0.0,
+            status="INTENT_ONLY",
+            note=risk.reject_reason or action.reason,
+            strategy_name="+".join(action.source),
+            mode_name=action.mode_name,
+            signal_id=signal_id,
+            intent_only=True,
+            phase=action.phase,
+        )
+        write_order(conn, order)
         return order
 
     def execute_action(self, conn, action: PlannedAction, risk: RiskCheckResult, latest_price: float, signal_id: int | None = None) -> OrderRecord | None:
@@ -68,6 +106,8 @@ class MockBroker:
                 strategy_name="+".join(action.source),
                 mode_name=action.mode_name,
                 signal_id=signal_id,
+                intent_only=False,
+                phase=action.phase,
             )
             write_order(conn, order)
             return order
@@ -85,6 +125,8 @@ class MockBroker:
             strategy_name="+".join(action.source),
             mode_name=action.mode_name,
             signal_id=signal_id,
+            intent_only=False,
+            phase=action.phase,
         )
         write_order(conn, order)
         self._apply_fill(conn, order, latest_price=latest_price)

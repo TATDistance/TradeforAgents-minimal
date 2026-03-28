@@ -99,6 +99,28 @@ market_session:
   post_close_analysis_end: '18:00'
   enable_weekend_guard: true
   allow_post_close_paper_execution: false
+trading_calendar:
+  enabled: true
+  timezone: Asia/Shanghai
+  calendar_source: local_file
+  calendar_file: data/calendars/cn_a_2026.json
+market_phase:
+  enabled: true
+  pre_open_start: 09:00:00
+  open_call_start: 09:15:00
+  open_call_end: 09:25:00
+  am_continuous_start: 09:30:00
+  am_continuous_end: '11:30:00'
+  midday_start: '11:30:00'
+  midday_end: '13:00:00'
+  pm_continuous_start: '13:00:00'
+  pm_continuous_end: 14:57:00
+  closing_call_start: 14:57:00
+  closing_call_end: '15:00:00'
+execution_gate:
+  block_new_buy_in_closing_call: true
+  block_all_fill_outside_continuous_auction: true
+  allow_post_close_analysis: true
 cache:
   snapshot_ttl_seconds: 8
   quote_ttl_seconds: 8

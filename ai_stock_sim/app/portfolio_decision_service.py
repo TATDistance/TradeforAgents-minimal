@@ -84,20 +84,26 @@ class PortfolioDecisionService:
         actions: List[PortfolioManagerAction] = []
         defensive_inserted = False
         for symbol, decision in engine_decisions.items():
-            if decision.action == "HOLD":
+            mapped_action = {
+                "PREPARE_BUY": "BUY",
+                "PREPARE_REDUCE": "REDUCE",
+                "WATCH_NEXT_DAY": "HOLD",
+                "HOLD_FOR_TOMORROW": "HOLD",
+            }.get(decision.action, decision.action)
+            if mapped_action == "HOLD":
                 priority = 0.25
-            elif decision.action == "BUY":
+            elif mapped_action == "BUY":
                 priority = 0.55 + decision.confidence * 0.35
-            elif decision.action == "REDUCE":
+            elif mapped_action == "REDUCE":
                 priority = 0.72 + decision.confidence * 0.18
-            elif decision.action == "SELL":
+            elif mapped_action == "SELL":
                 priority = 0.85 + decision.confidence * 0.12
             else:
                 priority = 0.8
             actions.append(
                 PortfolioManagerAction(
                     symbol=symbol,
-                    action=decision.action,  # type: ignore[arg-type]
+                    action=mapped_action,  # type: ignore[arg-type]
                     position_pct=decision.position_pct,
                     reduce_pct=decision.reduce_pct or 0.0,
                     reason=decision.reason,
@@ -110,6 +116,7 @@ class PortfolioDecisionService:
                         "feature_score": decision.feature_score,
                         "risk_mode": decision.risk_mode,
                         "warnings": decision.warnings,
+                        "engine_action": decision.action,
                         "mode_name": decision.source_mode,
                     },
                 )

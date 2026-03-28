@@ -14,6 +14,8 @@ def test_ai_decision_engine_can_open_buy() -> None:
         "position_state": {"has_position": False, "can_sell_qty": 0},
         "risk_constraints": {"allow_new_buy": True},
         "market_regime": {"regime": "TRENDING_UP"},
+        "market_phase": {"phase": "CONTINUOUS_AUCTION_AM"},
+        "execution_gate": {"can_execute_fill": True},
     }
     decision = engine.decide_symbol(
         symbol="600036",
@@ -35,6 +37,8 @@ def test_ai_decision_engine_can_reduce_or_sell_position() -> None:
         "position_state": {"has_position": True, "can_sell_qty": 1000, "unrealized_pct": 0.08, "hold_days": 12},
         "risk_constraints": {"allow_new_buy": False},
         "market_regime": {"regime": "HIGH_VOLATILITY"},
+        "market_phase": {"phase": "CONTINUOUS_AUCTION_PM"},
+        "execution_gate": {"can_execute_fill": True},
     }
     decision = engine.decide_symbol(
         symbol="600036",

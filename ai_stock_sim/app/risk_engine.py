@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from .models import FinalSignal, MarketQuote, PlannedAction, RiskCheckResult
+from .models import ExecutionGateState, FinalSignal, MarketPhaseState, MarketQuote, PlannedAction, RiskCheckResult
 from .settings import Settings, load_settings
 
 
@@ -72,7 +72,15 @@ class RiskEngine:
             est_slippage=round(slip, 4),
         )
 
-    def evaluate_action(self, action: PlannedAction, quote: MarketQuote, portfolio: PortfolioState, risk_mode: str = "NORMAL") -> RiskCheckResult:
+    def evaluate_action(
+        self,
+        action: PlannedAction,
+        quote: MarketQuote,
+        portfolio: PortfolioState,
+        risk_mode: str = "NORMAL",
+        phase_state: MarketPhaseState | None = None,
+        execution_gate: ExecutionGateState | None = None,
+    ) -> RiskCheckResult:
         if action.action in {"HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"}:
             return RiskCheckResult(
                 allowed=False,
@@ -82,6 +90,18 @@ class RiskEngine:
                 risk_state="INFO",
                 final_action=action.action,
                 risk_mode=risk_mode,
+            )
+
+        if phase_state is not None and execution_gate is not None and not action.executable_now:
+            return RiskCheckResult(
+                allowed=False,
+                adjusted_qty=0,
+                adjusted_position_pct=0.0,
+                reject_reason=f"当前阶段 {phase_state.phase} 不允许真实成交，已保留为动作意图",
+                risk_state="PHASE_BLOCK",
+                final_action=action.action,
+                risk_mode=risk_mode,
+                phase_blocked=True,
             )
 
         if portfolio.drawdown >= self.settings.max_drawdown_pct and action.action == "BUY":

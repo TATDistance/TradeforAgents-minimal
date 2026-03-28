@@ -55,6 +55,37 @@ class MarketSessionConfig:
 
 
 @dataclass
+class TradingCalendarConfig:
+    enabled: bool = True
+    timezone: str = "Asia/Shanghai"
+    calendar_source: str = "local_file"
+    calendar_file: str = "data/calendars/cn_a_2026.json"
+
+
+@dataclass
+class MarketPhaseConfig:
+    enabled: bool = True
+    pre_open_start: str = "09:00:00"
+    open_call_start: str = "09:15:00"
+    open_call_end: str = "09:25:00"
+    am_continuous_start: str = "09:30:00"
+    am_continuous_end: str = "11:30:00"
+    midday_start: str = "11:30:00"
+    midday_end: str = "13:00:00"
+    pm_continuous_start: str = "13:00:00"
+    pm_continuous_end: str = "14:57:00"
+    closing_call_start: str = "14:57:00"
+    closing_call_end: str = "15:00:00"
+
+
+@dataclass
+class ExecutionGateConfig:
+    block_new_buy_in_closing_call: bool = True
+    block_all_fill_outside_continuous_auction: bool = True
+    allow_post_close_analysis: bool = True
+
+
+@dataclass
 class CacheConfig:
     snapshot_ttl_seconds: int = 8
     quote_ttl_seconds: int = 8
@@ -170,6 +201,9 @@ class Settings:
     ai: AIConfig = field(default_factory=AIConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     market_session: MarketSessionConfig = field(default_factory=MarketSessionConfig)
+    trading_calendar: TradingCalendarConfig = field(default_factory=TradingCalendarConfig)
+    market_phase: MarketPhaseConfig = field(default_factory=MarketPhaseConfig)
+    execution_gate: ExecutionGateConfig = field(default_factory=ExecutionGateConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
@@ -204,8 +238,16 @@ class Settings:
         return self.data_dir / "reports"
 
     @property
+    def calendars_dir(self) -> Path:
+        return self.data_dir / "calendars"
+
+    @property
     def live_state_path(self) -> Path:
         return self.cache_dir / "live_decision_state.json"
+
+    @property
+    def trading_calendar_file(self) -> Path:
+        return (self.project_root / self.trading_calendar.calendar_file).resolve()
 
     @property
     def tradeforagents_results_dir(self) -> Path:

@@ -8,8 +8,7 @@ import pandas as pd
 from app.db import initialize_db, seed_account, write_account_snapshot, write_order
 from app.evaluation_service import EvaluationService
 from app.backtest_service import BacktestService
-from app.market_clock import MarketPhase
-from app.models import AIDecision, AccountSnapshot, FinalSignal, MarketQuote, OrderRecord, StrategySignal
+from app.models import AIDecision, AccountSnapshot, ExecutionGateState, FinalSignal, MarketPhaseState, MarketQuote, OrderRecord, StrategySignal
 from app.scheduler import TradingScheduler
 from app.settings import load_settings
 
@@ -38,20 +37,39 @@ def test_scheduler_skips_orders_after_close(tmp_path, monkeypatch):
     seed_account(settings, cash=100000)
     scheduler = TradingScheduler(settings=settings)
 
-    monkeypatch.setattr(
-        scheduler.market_clock,
-        "phase",
-        lambda: MarketPhase(
-            now=datetime(2026, 3, 27, 15, 30),
-            is_trading_day=True,
-            is_trading_session=False,
-            is_post_close_analysis=True,
-            should_fetch_realtime=True,
-            should_run_strategy=True,
-            should_place_orders=False,
-            phase_name="post_close_analysis",
-        ),
+    phase_state = MarketPhaseState(
+        is_trading_day=True,
+        phase="POST_CLOSE",
+        allow_market_update=True,
+        allow_signal_generation=True,
+        allow_ai_decision=True,
+        allow_new_buy=False,
+        allow_sell_reduce=False,
+        allow_simulate_fill=False,
+        allow_post_close_analysis=True,
+        allow_report_generation=True,
+        trade_date="2026-03-27",
+        next_trading_day="2026-03-30",
+        previous_trading_day="2026-03-26",
+        reason="收盘后分析阶段",
     )
+    gate_state = ExecutionGateState(
+        can_update_market=True,
+        can_generate_signal=True,
+        can_run_ai_decision=True,
+        can_plan_actions=True,
+        can_open_position=False,
+        can_reduce_position=False,
+        can_execute_fill=False,
+        can_generate_report=True,
+        can_mark_to_market=True,
+        intent_only_mode=True,
+        reason="收盘后只允许盘后分析",
+        phase="POST_CLOSE",
+        is_trading_day=True,
+    )
+    monkeypatch.setattr(scheduler.market_phase_service, "resolve", lambda now=None: phase_state)
+    monkeypatch.setattr(scheduler.execution_gate_service, "resolve", lambda _phase: gate_state)
     monkeypatch.setattr(
         scheduler.universe,
         "build_universe",
@@ -127,17 +145,18 @@ def test_scheduler_skips_orders_after_close(tmp_path, monkeypatch):
     )
 
     result = scheduler.run_cycle()
-    assert result["phase"] == "post_close_analysis"
+    assert result["phase"] == "POST_CLOSE"
     assert result["final_signal_count"] == 1
-    assert result["execution_events"] == []
+    assert any(event["intent_only"] for event in result["execution_events"])
 
     conn = sqlite3.connect(str(settings.db_path))
     try:
-        order_count = conn.execute("SELECT COUNT(1) FROM orders").fetchone()[0]
+        rows = conn.execute("SELECT status, intent_only FROM orders").fetchall()
         signal_count = conn.execute("SELECT COUNT(1) FROM final_signals").fetchone()[0]
     finally:
         conn.close()
-    assert order_count == 0
+    assert rows
+    assert all(int(row[1]) == 1 for row in rows)
     assert signal_count == 1
 
 
