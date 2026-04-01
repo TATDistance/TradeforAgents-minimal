@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, timedelta, timezone
+
+try:  # pragma: no cover - runtime compatibility path
+    from zoneinfo import ZoneInfo
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.9 or stripped runtime
+    try:
+        from backports.zoneinfo import ZoneInfo  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover - final fallback
+        def ZoneInfo(key: str):  # type: ignore[misc]
+            if key == "Asia/Shanghai":
+                return timezone(timedelta(hours=8))
+            return timezone.utc
 
 from .settings import Settings, load_settings
 

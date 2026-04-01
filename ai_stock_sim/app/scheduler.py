@@ -352,6 +352,8 @@ class TradingScheduler:
                     else:
                         _safe_log("WARNING", "market_data", f"{symbol} 最新价刷新失败，已跳过: {exc}")
 
+            self._persist_intraday_points(quote_map, trade_date)
+
             planned_actions = self.action_planner.plan(final_actions, portfolio_feedback, latest_prices, phase_state, execution_gate)
             execution_events: List[Dict[str, object]] = []
             if execution_gate.can_execute_fill or execution_gate.intent_only_mode:
@@ -628,6 +630,39 @@ class TradingScheduler:
         }
         self.settings.live_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings.live_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+    def _persist_intraday_points(
+        self,
+        quote_map: Mapping[str, object],
+        trade_date: str,
+    ) -> None:
+        chart_dir = self.settings.cache_dir / "charts"
+        chart_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().isoformat(timespec="seconds")
+        for symbol, quote in quote_map.items():
+            latest_price = float(getattr(quote, "latest_price", 0.0) or 0.0)
+            if latest_price <= 0:
+                continue
+            path = chart_dir / f"intraday_{symbol}_{trade_date}.json"
+            existing = {"symbol": symbol, "trade_date": trade_date, "points": []}
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = {"symbol": symbol, "trade_date": trade_date, "points": []}
+            points = list(existing.get("points") or [])
+            point = {
+                "ts": ts,
+                "price": latest_price,
+                "pct_change": float(getattr(quote, "pct_change", 0.0) or 0.0),
+                "amount": float(getattr(quote, "amount", 0.0) or 0.0),
+            }
+            if points and str(points[-1].get("ts") or "") == point["ts"]:
+                points[-1] = point
+            else:
+                points.append(point)
+            existing["points"] = points[-300:]
+            path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _should_persist_evaluation(self, trade_date: str, phase_name: str, execution_events: List[Dict[str, object]]) -> bool:
         if self._last_evaluation_trade_date != trade_date:

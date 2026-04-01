@@ -29,7 +29,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = PROJECT_ROOT.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+from ai_stock_sim.app.settings import load_settings, load_symbol_yaml
+from ai_stock_sim.app.watchlist_service import get_active_watchlist
+from ai_stock_sim.app.watchlist_sync_service import load_runtime_watchlist, refresh_watchlist_if_needed, sync_watchlist_to_runtime
 from ai_stock_sim.dashboard.pages.ai_trading_home import render_ai_trading_home
+from ai_stock_sim.dashboard.services.ui_chart_service import get_equity_curve_data, get_intraday_chart_data, get_kline_chart_data
 from ai_stock_sim.dashboard.services.ui_home_service import get_debug_view, get_home_view
 
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "minimal_deepseek_report.py"
@@ -57,6 +61,7 @@ AI_STOCK_SIM_DASHBOARD_PID = AI_STOCK_SIM_HOME / "data" / "dashboard.pid"
 AI_STOCK_SIM_DASHBOARD_URL = "http://127.0.0.1:8610"
 AI_STOCK_SIM_DASHBOARD_HEALTH_URL = "http://127.0.0.1:8610/_stcore/health"
 AI_STOCK_SIM_RUNTIME_SYMBOLS = AI_STOCK_SIM_HOME / "config" / "runtime_symbols.yaml"
+AI_STOCK_SIM_SETTINGS = load_settings(AI_STOCK_SIM_HOME)
 WEB_BUILD_TAG = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 SYMBOL_NAME_CACHE: Dict[str, str] = {}
 EASTMONEY_NAME_RETRY_ATTEMPTS = 3
@@ -319,45 +324,40 @@ def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
 
 def _sync_ai_stock_sim_runtime_watchlist(source_path: Optional[Path] = None) -> Tuple[bool, str]:
     watchlist_path = source_path or _latest_auto_watchlist()
-    symbols: List[str] = []
+    watchlist = get_active_watchlist(AI_STOCK_SIM_SETTINGS)
     if watchlist_path and watchlist_path.exists():
         symbols = [line.strip() for line in watchlist_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if not symbols:
+        if symbols:
+            watchlist = dict(watchlist)
+            watchlist["symbols"] = list(dict.fromkeys(symbols))
+            watchlist["source"] = "auto_selector_today"
+            watchlist["generated_at"] = datetime.fromtimestamp(watchlist_path.stat().st_mtime).isoformat(timespec="seconds")
+            watchlist["trading_day"] = watchlist_path.stem.replace("auto_watchlist_", "").strip()
+    if not list(watchlist.get("symbols") or []):
         auto_payload = _read_json(_latest_auto_candidates_json())
         selected = auto_payload.get("selected") or []
         if isinstance(selected, list):
             symbols = [str(item.get("symbol") or "").strip() for item in selected if isinstance(item, dict) and str(item.get("symbol") or "").strip()]
-    if not symbols:
+            if symbols:
+                watchlist = dict(watchlist)
+                watchlist["symbols"] = list(dict.fromkeys(symbols))
+    if not list(watchlist.get("symbols") or []):
         return False, "未找到最新自动选股候选池，实时模拟中心将继续沿用默认观察池。"
-
-    symbols = list(dict.fromkeys(symbols))
-    if not symbols:
-        return False, "最新自动选股候选池为空，未同步到实时模拟中心。"
-
-    stocks = [symbol for symbol in symbols if _classify_asset_type(symbol) == "stock"]
-    etfs = [symbol for symbol in symbols if _classify_asset_type(symbol) == "etf"]
-    lines = ["watchlist:"]
-    if stocks:
-        lines.append("  stocks:")
-        lines.extend([f"    - {symbol}" for symbol in stocks])
-    else:
-        lines.append("  stocks: []")
-    if etfs:
-        lines.append("  etfs:")
-        lines.extend([f"    - {symbol}" for symbol in etfs])
-    else:
-        lines.append("  etfs: []")
-    lines.extend(
-        [
-            "blacklist: []",
-            "universe:",
-            "  include_stocks: true",
-            "  include_etfs: true",
-        ]
+    synced = sync_watchlist_to_runtime(watchlist, AI_STOCK_SIM_SETTINGS)
+    return True, "已把 {0} 同步到实时模拟中心，共 {1} 只。".format(
+        str(synced.get("source") or "watchlist"),
+        len(list(synced.get("symbols") or [])),
     )
-    AI_STOCK_SIM_RUNTIME_SYMBOLS.parent.mkdir(parents=True, exist_ok=True)
-    AI_STOCK_SIM_RUNTIME_SYMBOLS.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return True, "已把最新自动选股候选池同步到实时模拟中心，共 {0} 只。".format(len(symbols))
+
+
+def _prepare_watchlist_for_runtime() -> Dict[str, object]:
+    current = get_active_watchlist(AI_STOCK_SIM_SETTINGS)
+    synced = refresh_watchlist_if_needed(AI_STOCK_SIM_SETTINGS)
+    return {
+        "before": current,
+        "active": synced,
+        "used_fallback": bool(synced.get("stale")) or str(synced.get("source") or "") in {"recent_candidates", "default_fallback"},
+    }
 
 
 def _read_ai_stock_sim_default_watchlist() -> List[str]:
@@ -365,7 +365,7 @@ def _read_ai_stock_sim_default_watchlist() -> List[str]:
     if not symbols_path.exists():
         return []
     try:
-        payload = yaml.safe_load(symbols_path.read_text(encoding="utf-8")) or {}
+        payload = load_symbol_yaml(symbols_path)
     except Exception:
         return []
     watchlist = payload.get("watchlist") or {}
@@ -501,16 +501,10 @@ def _ai_stock_sim_status_payload() -> Dict[str, object]:
     )
     review_files = sorted((AI_STOCK_SIM_HOME / "data" / "reports").glob("review_*.json"))
     latest_review = review_files[-1] if review_files else None
-    watchlist_source = "default_config"
-    watchlist_symbols: List[str] = []
-    if AI_STOCK_SIM_RUNTIME_SYMBOLS.exists():
-        watchlist_source = "latest_auto_watchlist"
-        for line in AI_STOCK_SIM_RUNTIME_SYMBOLS.read_text(encoding="utf-8").splitlines():
-            value = line.strip()
-            if value.startswith("- "):
-                watchlist_symbols.append(value[2:].strip())
-    if not watchlist_symbols:
-        watchlist_symbols = _read_ai_stock_sim_default_watchlist()
+    runtime_watchlist = load_runtime_watchlist(AI_STOCK_SIM_SETTINGS)
+    active_watchlist = runtime_watchlist if runtime_watchlist.get("symbols") else get_active_watchlist(AI_STOCK_SIM_SETTINGS)
+    watchlist_source = str(active_watchlist.get("source") or "default_fallback")
+    watchlist_symbols = list(active_watchlist.get("symbols") or [])
     for row in positions:
         symbol = str(row.get("symbol") or "")
         row["name"] = symbol_names.get(symbol, symbol)
@@ -535,10 +529,22 @@ def _ai_stock_sim_status_payload() -> Dict[str, object]:
         "latest_review_filename": latest_review.name if latest_review else None,
         "watchlist_source": watchlist_source,
         "watchlist_symbols": watchlist_symbols[:12],
+        "watchlist_generated_at": active_watchlist.get("generated_at"),
+        "watchlist_valid_until": active_watchlist.get("valid_until"),
+        "watchlist_trading_day": active_watchlist.get("trading_day"),
+        "watchlist_stale": bool(active_watchlist.get("stale")),
         "watchlist_display": [
             "{0} {1}".format(symbol, symbol_names.get(symbol, symbol)).strip()
             for symbol in watchlist_symbols[:12]
         ],
+        "watchlist": {
+            "source": watchlist_source,
+            "symbols": watchlist_symbols[:24],
+            "generated_at": active_watchlist.get("generated_at"),
+            "valid_until": active_watchlist.get("valid_until"),
+            "trading_day": active_watchlist.get("trading_day"),
+            "stale": bool(active_watchlist.get("stale")),
+        },
     }
 
 
@@ -1200,6 +1206,19 @@ def ui_home() -> Dict[str, object]:
 @app.get("/api/ui/debug")
 def ui_debug() -> Dict[str, object]:
     return get_debug_view()
+
+
+@app.get("/api/ui/chart")
+def ui_chart(symbol: str) -> Dict[str, object]:
+    code = symbol.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="symbol 不能为空")
+    return {
+        "symbol": code,
+        "intraday": get_intraday_chart_data(code, AI_STOCK_SIM_SETTINGS),
+        "kline": get_kline_chart_data(code, AI_STOCK_SIM_SETTINGS),
+        "equity": get_equity_curve_data(AI_STOCK_SIM_SETTINGS),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2723,6 +2742,43 @@ def sync_ai_stock_sim_watchlist() -> Dict[str, object]:
     if not ok:
         raise HTTPException(status_code=400, detail=message)
     return {"message": message, "status": _ai_stock_sim_status_payload()}
+
+
+@app.post("/api/ai-stock-sim/start-all")
+def start_ai_stock_sim_all() -> Dict[str, object]:
+    watchlist = _prepare_watchlist_for_runtime()
+    bootstrap_ready = (AI_STOCK_SIM_HOME / ".venv310" / "bin" / "python").exists()
+    if not bootstrap_ready:
+        try:
+            code, output = _run_workspace_command(["bash", str(AI_STOCK_SIM_HOME / "scripts" / "bootstrap.sh")], timeout=1800)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="ai_stock_sim 初始化超时")
+        if code != 0:
+            raise HTTPException(status_code=500, detail=output or "ai_stock_sim 初始化失败")
+    _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
+    ok, engine_message = _start_background_service(
+        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
+        AI_STOCK_SIM_ENGINE_PID,
+        AI_STOCK_SIM_ENGINE_LOG,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail=engine_message)
+    _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
+    ok, dashboard_message = _start_background_service(
+        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
+        AI_STOCK_SIM_DASHBOARD_PID,
+        AI_STOCK_SIM_DASHBOARD_LOG,
+        health_url=AI_STOCK_SIM_DASHBOARD_HEALTH_URL,
+        health_timeout_seconds=20.0,
+        truncate_log=True,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail=dashboard_message)
+    return {
+        "message": "已完成监控池同步并启动实时引擎/调试面板",
+        "watchlist": watchlist["active"],
+        "status": _ai_stock_sim_status_payload(),
+    }
 
 
 @app.post("/api/ai-stock-sim/engine/start")

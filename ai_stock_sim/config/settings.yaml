@@ -83,10 +83,19 @@ trigger:
   portfolio_state_delta_threshold: 0.05
   cooldown_seconds: 20
   stale_refresh_seconds: 120
+watchlist:
+  enable_auto_refresh_on_start: true
+  use_recent_candidates_as_fallback: true
+  use_default_watchlist_as_last_resort: true
 ui:
   default_page: ai_home
   enable_research_center: true
   enable_debug_panel: true
+  show_intraday_chart: true
+  show_kline_chart: true
+  show_equity_curve: true
+  show_action_timeline: true
+  default_symbol_selection_mode: priority_based
 strategy:
   momentum_lookback: 20
   momentum_min_score: 0.55

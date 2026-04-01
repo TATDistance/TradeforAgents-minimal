@@ -15,6 +15,8 @@ from app.db import connect_db, fetch_recent_equity_curve, fetch_recent_rows
 from app.evaluation_service import EvaluationService
 from app.manual_execution_service import ManualExecutionService
 from app.settings import load_settings
+from app.watchlist_service import get_active_watchlist
+from app.watchlist_sync_service import load_runtime_watchlist
 
 
 st.set_page_config(page_title="AI Stock Sim 调试面板", layout="wide")
@@ -176,6 +178,14 @@ def attach_symbol_name(df: pd.DataFrame) -> pd.DataFrame:
     insert_at = int(enriched.columns.get_loc("symbol")) + 1
     enriched.insert(insert_at, "name", symbols.map(lambda symbol: mapping.get(symbol, symbol)))
     return enriched
+
+
+@st.cache_data(ttl=10)
+def load_watchlist_payload() -> Dict[str, object]:
+    payload = load_runtime_watchlist(settings)
+    if payload.get("symbols"):
+        return payload
+    return get_active_watchlist(settings)
 
 
 def color_text(text: str, color_key: str) -> str:
@@ -404,6 +414,17 @@ def render_dashboard() -> None:
     with top_tabs[0]:
         st.subheader("当前模式与市场总览")
         st.write(f"当前实时主链运行在：**{mode_label}**")
+        watchlist_payload = load_watchlist_payload()
+        if watchlist_payload:
+            st.markdown("**当前监控池生命周期**")
+            watch_cols = st.columns(4)
+            watch_cols[0].metric("来源", str(watchlist_payload.get("source") or "-"))
+            watch_cols[1].metric("交易日", str(watchlist_payload.get("trading_day") or "-"))
+            watch_cols[2].metric("生成时间", str(watchlist_payload.get("generated_at") or "-"))
+            watch_cols[3].metric("过期状态", "是" if bool(watchlist_payload.get("stale")) else "否")
+            symbols = [str(item) for item in watchlist_payload.get("symbols") or []]
+            if symbols:
+                st.caption("当前监控池：" + "、".join(symbols[:16]))
         overview_cols = [col for col in ["ts", "symbol", "name", "strategy_name", "action", "score", "signal_price"] if col in signals_df.columns]
         st.dataframe(signals_df[overview_cols] if not signals_df.empty else signals_df, use_container_width=True, hide_index=True)
         if not final_signals_df.empty:

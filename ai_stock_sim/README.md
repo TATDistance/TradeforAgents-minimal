@@ -16,8 +16,14 @@
 
 - 东财实时快照
 - 监控池 / 候选池
+- watchlist 生命周期管理
 - 交易日历与交易阶段驱动
 - 动作意图与真实成交分离
+- 分时图 / K 线图 / 收益曲线数据缓存
+- 前导 `0` 股票代码的稳定字符串处理（避免 `002155 -> 1133` 这类 YAML 解析错误）
+- 图表数据回退链路：
+  - 分时图优先读 intraday 缓存，其次最近 quote
+  - K 线优先读本地历史缓存，其次按需补拉最近日线
 
 ### 策略层
 
@@ -106,6 +112,25 @@ bash start.sh web
 
 - 在 `8600` 首页先看结果
 - 在 `8610` 调试面板再看底层输入和日志
+
+现在首页点击：
+
+- `一键启动 AI 实时决策`
+
+会自动尝试完成：
+
+```text
+检查当前 watchlist
+-> 若缺失 / 过期 / 仅有默认观察池，则先自动选股
+-> 同步 runtime watchlist
+-> 启动实时引擎
+-> 启动 8610 调试面板
+```
+
+图表相关说明：
+
+- 分时图依赖当天盘中缓存的 intraday 点；如果当天没有积累到足够点位，页面会优先回退展示最近可用 quote
+- K 线图不依赖当天是否开市；只要本地历史缓存或候补历史数据可用，就应该能在闭市后继续查看
 
 ## 运行模式
 
@@ -242,6 +267,51 @@ scoring:
 - 收盘后不新增真实成交
 - 收盘后只保留观察、明日准备动作、日报
 
+## 第八阶段：监控池闭环与首页图表化
+
+这一阶段主要补了两件事。
+
+### 1. watchlist 闭环
+
+系统现在会把当前监控池当成一个有生命周期的对象管理：
+
+```json
+{
+  "symbols": ["300750", "688525"],
+  "source": "auto_selector_today",
+  "generated_at": "2026-04-01T09:31:22",
+  "valid_until": "2026-04-01T15:00:00",
+  "trading_day": "2026-04-01"
+}
+```
+
+优先级是：
+
+1. 今日自动选股结果
+2. 最近一次有效候选池
+3. 默认观察池（最后兜底）
+
+这样即使用户不先进研究中心，首页一键启动时也能自动获得合理监控池。
+
+### 2. 首页图表层
+
+首页现在会展示：
+
+- 当前监控池与持仓池
+- 分时图
+- K 线图
+- 账户收益曲线
+- 动作时间线
+
+这些图表不是纯静态占位，而是由服务层读取：
+
+- `data/cache/charts/` 的分时点
+- 历史行情缓存
+- `account_snapshots`
+- 最近 `orders` / 风控拒绝动作
+
+所以首页会更像“AI 实时交易前台”，而不是只是一堆状态卡片。
+
 ## 首页与用户设置
 
 `8600` 首页现在有一张“用户设置”卡，用来确认：
@@ -286,6 +356,22 @@ decision_engine:
 
 market_session:
   allow_post_close_paper_execution: false
+```
+
+第八阶段新增的常用项包括：
+
+```yaml
+watchlist:
+  enable_auto_refresh_on_start: true
+  use_recent_candidates_as_fallback: true
+  use_default_watchlist_as_last_resort: true
+
+ui:
+  show_intraday_chart: true
+  show_kline_chart: true
+  show_equity_curve: true
+  show_action_timeline: true
+  default_symbol_selection_mode: priority_based
 ```
 
 ## 数据输出

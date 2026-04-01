@@ -1,7 +1,48 @@
 from __future__ import annotations
 
+try:
+    from ai_stock_sim.dashboard.components.action_timeline_panel import render_action_timeline_panel
+    from ai_stock_sim.dashboard.components.equity_curve_panel import render_equity_curve_panel
+    from ai_stock_sim.dashboard.components.intraday_panel import render_intraday_panel
+    from ai_stock_sim.dashboard.components.kline_panel import render_kline_panel
+except ModuleNotFoundError:  # pragma: no cover - test/runtime import compatibility
+    from dashboard.components.action_timeline_panel import render_action_timeline_panel
+    from dashboard.components.equity_curve_panel import render_equity_curve_panel
+    from dashboard.components.intraday_panel import render_intraday_panel
+    from dashboard.components.kline_panel import render_kline_panel
+
 
 def render_ai_trading_home(build_tag: str) -> str:
+    intraday_panel = render_intraday_panel()
+    kline_panel = render_kline_panel()
+    equity_curve_panel = render_equity_curve_panel()
+    action_timeline_panel = render_action_timeline_panel()
+    chart_combo_panel = """
+      <div class="card span-12">
+        <div class="chart-focus">
+          <div class="focus-meta">
+            <div class="focus-title" id="chartFocusTitle">正在选择图表观察标的…</div>
+            <div class="focus-sub" id="chartFocusSub">系统会优先展示当前持仓标的、execution_score 最高标的或最近有动作的标的。</div>
+          </div>
+          <div>
+            <div class="label" style="margin-bottom:8px">观察标的</div>
+            <select id="chartSymbolSelect"></select>
+          </div>
+        </div>
+        <div class="chart-combo-grid">
+          <div class="chart-panel-shell">
+            <h3>分时图</h3>
+            <div class="subvalue" style="margin-bottom:10px">优先展示当前最重要标的的盘中变化，并标注最近动作。</div>
+            <div id="intradayPanel" class="empty">正在加载图表数据…</div>
+          </div>
+          <div class="chart-panel-shell">
+            <h3>K 线图</h3>
+            <div class="subvalue" style="margin-bottom:10px">最近 N 日价格区间、收盘线和动作标记。</div>
+            <div id="klinePanel" class="empty">正在加载图表数据…</div>
+          </div>
+        </div>
+      </div>
+    """
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -77,12 +118,51 @@ def render_ai_trading_home(build_tag: str) -> str:
     .setting-status{margin-top:10px;padding:12px 14px;border-radius:14px;background:rgba(15,23,42,.8);border:1px solid rgba(59,130,246,.12);color:#d7e3f4;font-size:14px}
     .small-btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border-radius:12px;border:1px solid rgba(96,165,250,.2);background:rgba(59,130,246,.14);color:#d9e8ff;font-weight:700;cursor:pointer}
     .hero-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+    .watchlist-meta{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 14px;color:#9fb2cf;font-size:13px}
+    .watchlist-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .watch-item{border:1px solid rgba(59,130,246,.12);background:rgba(15,23,42,.78);border-radius:16px;padding:14px}
+    .watch-item-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+    .watch-item h4{margin:0;font-size:16px}
+    .watch-item .subvalue{margin-top:4px}
+    .watch-item .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;color:#9fb2cf;font-size:12px}
+    .watch-sections{display:grid;grid-template-columns:1.5fr 1fr;gap:16px}
+    .watch-side{display:grid;gap:12px}
+    .chart-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+    .chart-toolbar select{min-width:220px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(15,23,42,.92);color:var(--text)}
+    .chart-focus{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}
+    .chart-focus .focus-meta{display:grid;gap:6px}
+    .chart-focus .focus-title{font-size:20px;font-weight:700}
+    .chart-focus .focus-sub{color:#9fb2cf;font-size:13px;line-height:1.6}
+    .chart-focus select{min-width:240px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(15,23,42,.92);color:var(--text)}
+    .chart-combo-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+    .chart-panel-shell{background:rgba(15,23,42,.35);border:1px dashed rgba(59,130,246,.18);border-radius:18px;padding:14px}
+    .chart-box{background:rgba(7,14,26,.9);border:1px solid rgba(59,130,246,.14);border-radius:16px;padding:12px;min-height:300px}
+    .chart-svg{width:100%;height:280px;display:block}
+    .chart-note{margin-top:10px;color:#9fb2cf;font-size:12px;line-height:1.6}
+    .axis-text{fill:#8da2c0;font-size:12px}
+    .grid-line{stroke:rgba(148,163,184,.16);stroke-width:1}
+    .axis-line{stroke:rgba(148,163,184,.35);stroke-width:1.2}
+    .chart-point-buy{fill:#22c55e}
+    .chart-point-sell{fill:#ef4444}
+    .chart-point-reduce{fill:#f59e0b}
+    .chart-point-hold{fill:#94a3b8}
+    .timeline-list{display:grid;gap:10px}
+    .timeline-item{display:grid;grid-template-columns:88px 110px 90px 1fr;gap:12px;align-items:flex-start;padding:12px;border-radius:14px;border:1px solid rgba(59,130,246,.1);background:rgba(15,23,42,.78)}
+    .timeline-status-intent{color:#93c5fd}
+    .timeline-status-filled{color:#86efac}
+    .timeline-status-rejected{color:#fca5a5}
+    .legend{display:flex;gap:10px;flex-wrap:wrap;color:#9fb2cf;font-size:12px;margin:8px 0 0}
+    .legend span{display:inline-flex;align-items:center;gap:6px}
+    .dot{width:10px;height:10px;border-radius:999px;display:inline-block}
+    .dot-buy{background:#22c55e}.dot-sell{background:#ef4444}.dot-reduce{background:#f59e0b}.dot-hold{background:#94a3b8}
     @media (max-width: 980px){
       .hero{grid-template-columns:1fr}
       .span-4,.span-6,.span-8,.span-12{grid-column:span 12}
       .kv{grid-template-columns:1fr}
       .col-3,.col-6{grid-column:span 12}
       .topbar{flex-direction:column;align-items:flex-start}
+      .watchlist-grid,.watch-sections,.chart-combo-grid{grid-template-columns:1fr}
+      .timeline-item{grid-template-columns:1fr}
     }
   </style>
 </head>
@@ -180,6 +260,20 @@ def render_ai_trading_home(build_tag: str) -> str:
         <div class="kv" id="opportunityGrid"></div>
       </div>
 
+      <div class="card span-12">
+        <h3>当前监控池与持仓池</h3>
+        <div class="watchlist-meta" id="watchlistMeta"></div>
+        <div class="watch-sections">
+          <div>
+            <div class="subvalue" style="margin-bottom:10px">当前 watchlist 中的股票会参与实时决策；优先使用今日自动选股结果，找不到时才回退到最近候选池或默认观察池。</div>
+            <div id="watchlistGrid" class="watchlist-grid"></div>
+          </div>
+          <div class="watch-side">
+            <div id="holdingsPool" class="action-list"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="card span-6">
         <h3>分数拆解面板</h3>
         <div id="scoreBreakdowns" class="action-list"></div>
@@ -205,6 +299,10 @@ def render_ai_trading_home(build_tag: str) -> str:
         <div class="subvalue" style="margin-bottom:12px">这里会同时展示两类分数：`静态候选分` 来自自动选股结果，盘中不会变化；`实时综合分` 来自实时引擎，会随行情、阶段、风险模式和 AI 决策动态更新。</div>
         <div id="observeCandidates" class="action-list"></div>
       </div>
+
+      __CHART_COMBO_PANEL__
+      __EQUITY_PANEL__
+      __TIMELINE_PANEL__
     </div>
   </div>
 
@@ -224,6 +322,16 @@ def render_ai_trading_home(build_tag: str) -> str:
     const actionList = document.getElementById('actionList');
     const noBuyReasons = document.getElementById('noBuyReasons');
     const observeCandidates = document.getElementById('observeCandidates');
+    const watchlistMeta = document.getElementById('watchlistMeta');
+    const watchlistGrid = document.getElementById('watchlistGrid');
+    const holdingsPool = document.getElementById('holdingsPool');
+    const chartSymbolSelect = document.getElementById('chartSymbolSelect');
+    const intradayPanel = document.getElementById('intradayPanel');
+    const klinePanel = document.getElementById('klinePanel');
+    const equityCurvePanel = document.getElementById('equityCurvePanel');
+    const actionTimelinePanel = document.getElementById('actionTimelinePanel');
+    const chartFocusTitle = document.getElementById('chartFocusTitle');
+    const chartFocusSub = document.getElementById('chartFocusSub');
     const bindProvider = document.getElementById('bindProvider');
     const bindModel = document.getElementById('bindModel');
     const bindBaseUrl = document.getElementById('bindBaseUrl');
@@ -234,6 +342,8 @@ def render_ai_trading_home(build_tag: str) -> str:
     const homeStartAll = document.getElementById('homeStartAll');
     const homeStartStatus = document.getElementById('homeStartStatus');
     const homeTaskLog = document.getElementById('homeTaskLog');
+    let latestHomePayload = null;
+    let activeChartSymbol = '';
 
     function badgeClass(state){
       if(state === 'running') return 'status-running';
@@ -313,6 +423,269 @@ def render_ai_trading_home(build_tag: str) -> str:
         '<div class="action-reason">' + (item.reason || '暂无说明') + '</div>' +
         '</div>'
       )).join('');
+    }
+
+    function renderWatchlist(watchlist){
+      const entries = (watchlist && watchlist.entries) || [];
+      const holdings = (watchlist && watchlist.holdings) || [];
+      watchlistMeta.innerHTML = [
+        '<span class="state-tag">来源：' + (watchlist && watchlist.source || '-') + '</span>',
+        '<span class="state-tag">生成时间：' + (watchlist && watchlist.generated_at || '暂无') + '</span>',
+        '<span class="state-tag">有效期至：' + (watchlist && watchlist.valid_until || '暂无') + '</span>',
+        '<span class="state-tag">交易日：' + (watchlist && watchlist.trading_day || '暂无') + '</span>'
+      ].join('');
+      if(!entries.length){
+        watchlistGrid.innerHTML = '<div class="empty">当前监控池为空；一键启动时会优先尝试自动选股并补齐 watchlist。</div>';
+      }else{
+        watchlistGrid.innerHTML = entries.map(item => (
+          '<div class="watch-item">' +
+          '<div class="watch-item-top">' +
+          '<div><h4>' + item.symbol + ' ' + (item.name || '') + '</h4><div class="subvalue">最新价 ' + fmtNum(item.latest_price) + ' ｜ 涨跌幅 ' + fmtPct(item.pct_change) + '</div></div>' +
+          '<div class="badge ' + cardBadgeClass(item.action === 'BUY' ? 'success' : (item.action === 'SELL' || item.action === 'REDUCE' ? 'warning' : 'neutral')) + '">' + (item.action || 'HOLD') + '</div>' +
+          '</div>' +
+          '<div class="meta"><span>setup ' + Number(item.setup_score || 0).toFixed(2) + '</span><span>execution ' + Number(item.execution_score || 0).toFixed(2) + '</span>' + (item.has_position ? '<span>持仓 ' + item.position_qty + ' 股</span>' : '<span>当前未持仓</span>') + '</div>' +
+          '</div>'
+        )).join('');
+      }
+      if(!holdings.length){
+        holdingsPool.innerHTML = '<div class="empty">当前没有持仓。若实时引擎触发 BUY，持仓池会在这里显示。</div>';
+      }else{
+        holdingsPool.innerHTML = holdings.map(item => (
+          '<div class="action-card">' +
+          '<div class="action-top"><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="badge badge-warning">持仓</div></div>' +
+          '<div class="action-meta"><span>数量 ' + item.qty + '</span><span>最新价 ' + fmtNum(item.last_price) + '</span><span>市值 ' + fmtNum(item.market_value) + '</span></div>' +
+          '<div class="action-reason">浮盈亏 ' + fmtNum(item.unrealized_pnl) + ' ｜ 可卖 ' + item.can_sell_qty + ' 股</div>' +
+          '</div>'
+        )).join('');
+      }
+      const options = entries.map(item => '<option value="' + item.symbol + '">' + item.symbol + ' ' + (item.name || '') + '</option>');
+      chartSymbolSelect.innerHTML = options.join('');
+      const chartSymbol = activeChartSymbol || ((latestHomePayload || {}).charts || {}).selected_symbol || (entries[0] && entries[0].symbol) || '';
+      const focusEntry = entries.find(item => item.symbol === chartSymbol) || entries[0] || null;
+      if(focusEntry){
+        chartFocusTitle.textContent = focusEntry.symbol + ' ' + (focusEntry.name || '');
+        chartFocusSub.textContent = '最新价 ' + fmtNum(focusEntry.latest_price || 0) + ' ｜ 涨跌幅 ' + fmtPct(focusEntry.pct_change || 0) + ' ｜ AI 动作 ' + (focusEntry.action || 'HOLD') + ' ｜ setup ' + Number(focusEntry.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(focusEntry.execution_score || 0).toFixed(2);
+        activeChartSymbol = focusEntry.symbol;
+      }else{
+        chartFocusTitle.textContent = '当前暂无图表观察标的';
+        chartFocusSub.textContent = '系统会优先展示当前持仓标的、execution_score 最高标的或最近有动作的标的。';
+        activeChartSymbol = '';
+      }
+    }
+
+    function chartLayout(){
+      return {width:720, height:280, left:64, right:16, top:16, bottom:34};
+    }
+
+    function buildPolyline(points, minValue, maxValue, valueKey){
+      if(!points || !points.length){
+        return '';
+      }
+      const {width, height, left, right, top, bottom} = chartLayout();
+      const span = Math.max(1e-6, maxValue - minValue);
+      return points.map((item, index) => {
+        const x = left + ((width - left - right) * index / Math.max(1, points.length - 1));
+        const y = height - bottom - ((Number(item[valueKey] || 0) - minValue) / span) * (height - top - bottom);
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+    }
+
+    function buildAxisMarkup(minValue, maxValue, labels){
+      const {width, height, left, right, top, bottom} = chartLayout();
+      const midValue = (minValue + maxValue) / 2;
+      const yRows = [
+        {y: top, value: maxValue},
+        {y: (top + height - bottom) / 2, value: midValue},
+        {y: height - bottom, value: minValue}
+      ];
+      const xRows = labels.map((label, index) => {
+        const x = index === 0 ? left : index === labels.length - 1 ? width - right : (left + width - right) / 2;
+        const anchor = index === 0 ? 'start' : index === labels.length - 1 ? 'end' : 'middle';
+        return '<text x="' + x + '" y="' + (height - 10) + '" text-anchor="' + anchor + '" class="axis-text">' + label + '</text>';
+      }).join('');
+      const yMarkup = yRows.map(item => (
+        '<line x1="' + left + '" y1="' + item.y + '" x2="' + (width - right) + '" y2="' + item.y + '" class="grid-line"></line>' +
+        '<text x="' + (left - 10) + '" y="' + (item.y + 4) + '" text-anchor="end" class="axis-text">' + fmtNum(item.value) + '</text>'
+      )).join('');
+      return (
+        '<line x1="' + left + '" y1="' + top + '" x2="' + left + '" y2="' + (height - bottom) + '" class="axis-line"></line>' +
+        '<line x1="' + left + '" y1="' + (height - bottom) + '" x2="' + (width - right) + '" y2="' + (height - bottom) + '" class="axis-line"></line>' +
+        yMarkup +
+        xRows
+      );
+    }
+
+    function nearestPointIndex(points, targetLabel){
+      if(!targetLabel){
+        return 0;
+      }
+      const targetTs = Date.parse(targetLabel);
+      if(Number.isNaN(targetTs)){
+        return 0;
+      }
+      let bestIndex = 0;
+      let bestDiff = Number.MAX_SAFE_INTEGER;
+      points.forEach((item, index) => {
+        const raw = item.label || item.ts || item.date || '';
+        const ts = Date.parse(raw);
+        if(Number.isNaN(ts)){
+          return;
+        }
+        const diff = Math.abs(ts - targetTs);
+        if(diff < bestDiff){
+          bestDiff = diff;
+          bestIndex = index;
+        }
+      });
+      return bestIndex;
+    }
+
+    function buildActionMarkers(points, minValue, maxValue, valueKey, actions){
+      if(!actions || !actions.length){
+        return '';
+      }
+      const {width, height, left, right, top, bottom} = chartLayout();
+      const span = Math.max(1e-6, maxValue - minValue);
+      return actions.map(item => {
+        const idx = Math.max(0, Math.min(points.length - 1, Number(item.index || 0)));
+        const point = points[idx] || points[0];
+        const x = left + ((width - left - right) * idx / Math.max(1, points.length - 1));
+        const y = height - bottom - ((Number(point[valueKey] || 0) - minValue) / span) * (height - top - bottom);
+        const action = String(item.action || '').toUpperCase();
+        const klass = action === 'BUY' ? 'chart-point-buy' : action === 'SELL' ? 'chart-point-sell' : action === 'REDUCE' ? 'chart-point-reduce' : 'chart-point-hold';
+        return '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="4.5" class="' + klass + '"></circle>';
+      }).join('');
+    }
+
+    function renderIntradayChart(payload){
+      const points = (payload && payload.points) || [];
+      if(!points.length){
+        intradayPanel.innerHTML = '<div class="empty">当前还没有可用的分时数据。实时引擎启动并积累几轮行情后，这里会显示盘中走势。</div>';
+        return;
+      }
+      const prices = points.map(item => Number(item.price || 0));
+      const minValue = Math.min.apply(null, prices);
+      const maxValue = Math.max.apply(null, prices);
+      const polyline = buildPolyline(points, minValue, maxValue, 'price');
+      const labels = [
+        String((points[0] || {}).label || (points[0] || {}).ts || '').slice(11, 16) || '开盘',
+        String((points[Math.floor(points.length / 2)] || {}).label || (points[Math.floor(points.length / 2)] || {}).ts || '').slice(11, 16) || '中段',
+        String((points[points.length - 1] || {}).label || (points[points.length - 1] || {}).ts || '').slice(11, 16) || '最新'
+      ];
+      const markers = buildActionMarkers(
+        points,
+        minValue,
+        maxValue,
+        'price',
+        ((payload && payload.actions) || []).map(item => ({
+          index: nearestPointIndex(points, item.ts || item.label || ''),
+          action: item.action || ''
+        }))
+      );
+      intradayPanel.innerHTML = '<div class="chart-box">' +
+        '<svg viewBox="0 0 720 280" class="chart-svg">' +
+        buildAxisMarkup(minValue, maxValue, labels) +
+        '<polyline fill="none" stroke="#60a5fa" stroke-width="3" points="' + polyline + '"></polyline>' +
+        markers +
+        '</svg>' +
+        '<div class="legend"><span><i class="dot dot-buy"></i>最新分时价</span><span>点数 ' + points.length + '</span><span>区间 ' + fmtNum(minValue) + ' - ' + fmtNum(maxValue) + '</span></div>' +
+        '<div class="chart-note">横轴为盘中时间，纵轴为价格。动作点会按最近意图/成交时间叠加在分时图上。</div>' +
+        '</div>';
+    }
+
+    function renderKlineChart(payload){
+      const rows = (payload && payload.rows) || [];
+      if(!rows.length){
+        klinePanel.innerHTML = '<div class="empty">当前还没有可用的 K 线缓存。实时引擎加载历史日线后，这里会自动显示最近区间。</div>';
+        return;
+      }
+      const prices = rows.map(item => Number(item.close || 0));
+      const minValue = Math.min.apply(null, prices);
+      const maxValue = Math.max.apply(null, prices);
+      const polyline = buildPolyline(rows, minValue, maxValue, 'close');
+      const labels = [
+        String((rows[0] || {}).date || '').slice(5) || '起点',
+        String((rows[Math.floor(rows.length / 2)] || {}).date || '').slice(5) || '中段',
+        String((rows[rows.length - 1] || {}).date || '').slice(5) || '最近'
+      ];
+      const {width, height, left, right, top, bottom} = chartLayout();
+      const span = Math.max(1e-6, maxValue - minValue);
+      const candles = rows.map((item, index) => {
+        const x = left + ((width - left - right) * index / Math.max(1, rows.length - 1));
+        const open = Number(item.open || item.close || 0);
+        const close = Number(item.close || open);
+        const high = Number(item.high || Math.max(open, close));
+        const low = Number(item.low || Math.min(open, close));
+        const yOpen = height - bottom - ((open - minValue) / span) * (height - top - bottom);
+        const yClose = height - bottom - ((close - minValue) / span) * (height - top - bottom);
+        const yHigh = height - bottom - ((high - minValue) / span) * (height - top - bottom);
+        const yLow = height - bottom - ((low - minValue) / span) * (height - top - bottom);
+        const bodyTop = Math.min(yOpen, yClose);
+        const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
+        const fill = close >= open ? '#22c55e' : '#ef4444';
+        return '<line x1="' + x.toFixed(1) + '" y1="' + yHigh.toFixed(1) + '" x2="' + x.toFixed(1) + '" y2="' + yLow.toFixed(1) + '" stroke="' + fill + '" stroke-width="1.5"></line>' +
+          '<rect x="' + (x - 4).toFixed(1) + '" y="' + bodyTop.toFixed(1) + '" width="8" height="' + bodyHeight.toFixed(1) + '" fill="' + fill + '" rx="1"></rect>';
+      }).join('');
+      const markers = buildActionMarkers(
+        rows,
+        minValue,
+        maxValue,
+        'close',
+        ((payload && payload.actions) || []).map(item => ({
+          index: nearestPointIndex(rows, item.ts || item.date || ''),
+          action: item.action || ''
+        }))
+      );
+      klinePanel.innerHTML = '<div class="chart-box">' +
+        '<svg viewBox="0 0 720 280" class="chart-svg">' +
+        buildAxisMarkup(minValue, maxValue, labels) +
+        candles +
+        '<polyline fill="none" stroke="#93c5fd" stroke-width="2" points="' + polyline + '"></polyline>' +
+        markers +
+        '</svg>' +
+        '<div class="legend"><span><i class="dot dot-hold"></i>收盘线</span><span>K 线数量 ' + rows.length + '</span><span><i class="dot dot-buy"></i>动作点</span></div>' +
+        '<div class="chart-note">横轴为日期，纵轴为价格；最近动作会同步叠加到价格走势上，便于对照入场和持仓管理时点。</div>' +
+        '</div>';
+    }
+
+    function renderEquityCurve(payload){
+      const points = (payload && payload.points) || [];
+      if(!points.length){
+        equityCurvePanel.innerHTML = '<div class="empty">当前没有账户曲线数据。实时引擎写入 account_snapshots 后，这里会显示总资产变化。</div>';
+        return;
+      }
+      const equities = points.map(item => Number(item.equity || 0));
+      const minValue = Math.min.apply(null, equities);
+      const maxValue = Math.max.apply(null, equities);
+      const polyline = buildPolyline(points, minValue, maxValue, 'equity');
+      const labels = [
+        String((points[0] || {}).ts || '').slice(11, 16) || '开始',
+        String((points[Math.floor(points.length / 2)] || {}).ts || '').slice(11, 16) || '中段',
+        String((points[points.length - 1] || {}).ts || '').slice(11, 16) || '最新'
+      ];
+      equityCurvePanel.innerHTML = '<div class="chart-box">' +
+        '<svg viewBox="0 0 720 280" class="chart-svg">' +
+        buildAxisMarkup(minValue, maxValue, labels) +
+        '<polyline fill="none" stroke="#f59e0b" stroke-width="3" points="' + polyline + '"></polyline>' +
+        '</svg>' +
+        '<div class="legend"><span><i class="dot dot-reduce"></i>总资产</span><span>最新 ' + fmtNum(equities[equities.length - 1]) + '</span><span>区间 ' + fmtNum(minValue) + ' - ' + fmtNum(maxValue) + '</span></div>' +
+        '<div class="chart-note">横轴为账户快照时间，纵轴为总资产变化。现在已经能直接看到账户波动，不需要只盯数字卡片。</div>' +
+        '</div>';
+    }
+
+    function renderTimeline(items){
+      if(!items || !items.length){
+        actionTimelinePanel.innerHTML = '<div class="empty">当前还没有动作时间线。引擎记录意图、成交或被拦截动作后，会在这里逐条显示。</div>';
+        return;
+      }
+      actionTimelinePanel.innerHTML = '<div class="timeline-list">' + items.map(item => (
+        '<div class="timeline-item">' +
+        '<div>' + String(item.ts || '').slice(11, 16) + '</div>' +
+        '<div>' + item.symbol + '</div>' +
+        '<div class="timeline-status-' + (item.status || 'intent') + '">' + (item.action || '-') + ' ' + (item.status || '-') + '</div>' +
+        '<div>' + (item.reason || '暂无说明') + '</div>' +
+        '</div>'
+      )).join('') + '</div>';
     }
 
     function renderNoBuyReasons(items){
@@ -474,6 +847,29 @@ def render_ai_trading_home(build_tag: str) -> str:
         renderNoBuyReasons(data.no_buy_reasons || []);
         renderScoreBreakdowns(data.score_breakdowns || []);
         renderObserveCandidates(data.observe_candidates || []);
+        renderWatchlist(data.watchlist || {});
+        renderTimeline(data.timeline || []);
+        latestHomePayload = data;
+        const entries = ((data.watchlist || {}).entries) || [];
+        const availableSymbols = entries.map(item => item.symbol);
+        const selectedSymbol = activeChartSymbol && availableSymbols.includes(activeChartSymbol)
+          ? activeChartSymbol
+          : ((data.charts || {}).selected_symbol || (entries[0] && entries[0].symbol) || '');
+        if(selectedSymbol && chartSymbolSelect.value !== selectedSymbol){
+          chartSymbolSelect.value = selectedSymbol;
+        }
+        if(selectedSymbol){
+          await loadChart(selectedSymbol);
+        }else{
+          renderIntradayChart((data.charts || {}).intraday || {});
+          renderKlineChart((data.charts || {}).kline || {});
+          renderEquityCurve((data.charts || {}).equity || {});
+        }
+        const selectedEntry = entries.find(item => item.symbol === selectedSymbol) || entries[0] || null;
+        if(selectedEntry){
+          chartFocusTitle.textContent = selectedEntry.symbol + ' ' + (selectedEntry.name || '');
+          chartFocusSub.textContent = '最新价 ' + fmtNum(selectedEntry.latest_price || 0) + ' ｜ 涨跌幅 ' + fmtPct(selectedEntry.pct_change || 0) + ' ｜ AI 动作 ' + (selectedEntry.action || 'HOLD') + ' ｜ setup ' + Number(selectedEntry.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(selectedEntry.execution_score || 0).toFixed(2);
+        }
       }catch(err){
         summaryText.textContent = '首页加载失败';
         systemStatus.innerHTML = '<span class="status-pill status-error">运行异常</span>';
@@ -482,51 +878,66 @@ def render_ai_trading_home(build_tag: str) -> str:
       }
     }
 
+    async function loadChart(symbol){
+      if(!symbol){
+        return;
+      }
+      activeChartSymbol = symbol;
+      try{
+        const resp = await fetch('/api/ui/chart?symbol=' + encodeURIComponent(symbol) + '&ts=' + Date.now(), {cache:'no-store'});
+        const data = await resp.json();
+        if(!resp.ok){
+          throw new Error(data.detail || '读取图表失败');
+        }
+        renderIntradayChart(data.intraday || {});
+        renderKlineChart(data.kline || {});
+        renderEquityCurve(data.equity || {});
+      }catch(err){
+        intradayPanel.innerHTML = '<div class="empty">分时图加载失败：' + String(err) + '</div>';
+      }
+    }
+
     async function runHomeQuickStart(){
       homeStartAll.disabled = true;
       homeAutoPipeline.disabled = true;
-      homeStartStatus.textContent = '正在准备环境并启动实时 AI 决策...';
+      homeStartStatus.textContent = '正在准备监控池并启动实时 AI 决策...';
       try{
-        let result = await fetchJsonSafe('/api/ai-stock-sim/status');
-        let resp = result.resp;
-        let data = result.data;
-        if(!resp.ok){
-          throw new Error(formatErrorDetail(data.detail));
-        }
-
-        result = await fetchJsonSafe('/api/ai-stock-sim/sync-watchlist', {method:'POST'});
-        resp = result.resp;
-        data = result.data;
-        if(!resp.ok){
-          homeStartStatus.textContent = '候选池同步提示：' + formatErrorDetail(data.detail);
-        }else{
-          homeStartStatus.textContent = data.message || '已同步最新候选池';
-        }
-
-        if(!data.bootstrap_ready){
-          result = await fetchJsonSafe('/api/ai-stock-sim/bootstrap', {method:'POST'});
-          resp = result.resp;
-          data = result.data;
-          if(!resp.ok){
-            throw new Error(formatErrorDetail(data.detail));
+        const watchlist = (latestHomePayload && latestHomePayload.watchlist) || {};
+        const shouldRunSelector = !watchlist.entries || !watchlist.entries.length || watchlist.stale || watchlist.source === 'default_fallback';
+        if(shouldRunSelector){
+          homeStartStatus.textContent = '当前监控池缺失或已过期，先自动选股并刷新 watchlist...';
+          const payload = {
+            scan_limit: 300,
+            top_n: 12,
+            bar_limit: 120,
+            mode: 'quick',
+            request_timeout: 120,
+            retries: 1,
+            direction_cache_days: 3,
+            execute_sim: true,
+            skip_ai: false,
+            force_refresh_universe: false,
+            force_full_analysis: false,
+            api_key: (bindApiKey.value || '').trim(),
+            base_url: bindBaseUrl.value || ''
+          };
+          const pipeline = await fetchJsonSafe('/api/auto-pipeline', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          if(pipeline.resp.ok){
+            await pollTask(pipeline.data.task_id, '自动选股已完成，正在同步监控池并启动实时引擎...');
+          }else{
+            homeStartStatus.textContent = '自动选股失败，将回退最近候选池或默认观察池继续启动：' + formatErrorDetail(pipeline.data.detail);
           }
         }
 
-        result = await fetchJsonSafe('/api/ai-stock-sim/engine/start', {method:'POST'});
-        resp = result.resp;
-        data = result.data;
-        if(!resp.ok){
-          throw new Error(formatErrorDetail(data.detail));
+        const result = await fetchJsonSafe('/api/ai-stock-sim/start-all', {method:'POST'});
+        if(!result.resp.ok){
+          throw new Error(formatErrorDetail(result.data.detail));
         }
-
-        result = await fetchJsonSafe('/api/ai-stock-sim/dashboard/start', {method:'POST'});
-        resp = result.resp;
-        data = result.data;
-        if(!resp.ok){
-          throw new Error(formatErrorDetail(data.detail));
-        }
-
-        homeStartStatus.textContent = '实时 AI 决策中心已启动。现在可以继续看首页状态，或点“打开 8610 调试面板”。';
+        homeStartStatus.textContent = '实时 AI 决策中心已启动，监控池来源：' + (((result.data || {}).watchlist || {}).source || '未知') + '。';
         await loadHome();
       }catch(err){
         homeStartStatus.textContent = '一键启动失败：' + String(err);
@@ -614,10 +1025,21 @@ def render_ai_trading_home(build_tag: str) -> str:
     saveBinding.addEventListener('click', saveBindingConfig);
     homeAutoPipeline.addEventListener('click', runHomeAutoPipeline);
     homeStartAll.addEventListener('click', runHomeQuickStart);
+    chartSymbolSelect.addEventListener('change', (event) => {
+      const symbol = event.target.value;
+      activeChartSymbol = symbol;
+      const entries = ((((latestHomePayload || {}).watchlist) || {}).entries) || [];
+      const selectedEntry = entries.find(item => item.symbol === symbol);
+      if(selectedEntry){
+        chartFocusTitle.textContent = selectedEntry.symbol + ' ' + (selectedEntry.name || '');
+        chartFocusSub.textContent = '最新价 ' + fmtNum(selectedEntry.latest_price || 0) + ' ｜ 涨跌幅 ' + fmtPct(selectedEntry.pct_change || 0) + ' ｜ AI 动作 ' + (selectedEntry.action || 'HOLD') + ' ｜ setup ' + Number(selectedEntry.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(selectedEntry.execution_score || 0).toFixed(2);
+      }
+      loadChart(symbol);
+    });
 
     loadBindingConfig();
     loadHome();
     setInterval(loadHome, 5000);
   </script>
 </body>
-</html>""".replace("__WEB_BUILD_TAG__", build_tag)
+</html>""".replace("__WEB_BUILD_TAG__", build_tag).replace("__CHART_COMBO_PANEL__", chart_combo_panel).replace("__EQUITY_PANEL__", equity_curve_panel).replace("__TIMELINE_PANEL__", action_timeline_panel)

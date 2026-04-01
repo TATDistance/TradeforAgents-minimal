@@ -10,16 +10,26 @@ from typing import Dict, List, Tuple
 
 import requests
 
-from ai_stock_sim.app.db import connect_db, fetch_rows_by_sql
-from ai_stock_sim.app.settings import Settings, load_settings
+try:
+    from ai_stock_sim.app.db import connect_db, fetch_rows_by_sql
+    from ai_stock_sim.app.settings import Settings, load_settings
+    from ai_stock_sim.app.watchlist_service import get_active_watchlist
+    from ai_stock_sim.app.watchlist_sync_service import load_runtime_watchlist
+except ModuleNotFoundError:  # pragma: no cover - test/runtime import compatibility
+    from app.db import connect_db, fetch_rows_by_sql
+    from app.settings import Settings, load_settings
+    from app.watchlist_service import get_active_watchlist
+    from app.watchlist_sync_service import load_runtime_watchlist
 
 from .ui_action_service import build_action_cards, summarize_action_cards
+from .ui_chart_service import get_equity_curve_data, get_intraday_chart_data, get_kline_chart_data
 from .ui_summary_service import (
     build_ai_strategy_status,
     build_home_summary,
     build_no_buy_reasons,
     build_system_status,
 )
+from .ui_timeline_service import get_recent_action_timeline
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -250,11 +260,118 @@ def _build_observe_candidates(
                 "execution_score": execution_score,
                 "ai_score": ai_score,
                 "current_action": current_action,
-                "snapshot_pct_change": float((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("pct_change") or 0.0),
+                "snapshot_pct_change": _normalize_pct_change(((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("pct_change") or 0.0)),
                 "reasons": reasons[:4] or ["当前仍以观察为主，尚未转为买入。"],
             }
         )
     return rows
+
+
+def _latest_quote_payload(settings: Settings, symbol: str) -> Dict[str, object]:
+    quote_path = settings.cache_dir / "market" / f"quote_obj_{symbol}.json"
+    if not quote_path.exists():
+        return {}
+    try:
+        return json.loads(quote_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _resolve_watchlist(settings: Settings) -> Dict[str, object]:
+    runtime_watchlist = load_runtime_watchlist(settings)
+    if runtime_watchlist.get("symbols"):
+        return runtime_watchlist
+    return get_active_watchlist(settings)
+
+
+def _build_watchlist_entries(
+    settings: Settings,
+    live_state: Dict[str, object],
+    symbol_names: Dict[str, str],
+    ai_decisions: List[Dict[str, object]],
+) -> Dict[str, object]:
+    watchlist = _resolve_watchlist(settings)
+    decision_map = {str(item.get("symbol") or ""): item for item in ai_decisions}
+    positions = _query_rows(
+        "SELECT symbol, qty, avg_cost, last_price, market_value, unrealized_pnl, can_sell_qty FROM positions ORDER BY symbol"
+    )
+    position_map = {str(item.get("symbol") or ""): item for item in positions}
+    decision_contexts = live_state.get("decision_contexts") if isinstance(live_state, dict) else {}
+    entries: List[Dict[str, object]] = []
+    for symbol in watchlist.get("symbols") or []:
+        symbol = str(symbol).strip()
+        if not symbol:
+            continue
+        if symbol.isdigit() and len(symbol) != 6:
+            continue
+        decision = decision_map.get(symbol, {})
+        context = (decision_contexts or {}).get(symbol) if isinstance(decision_contexts, dict) else {}
+        snapshot = dict(context.get("snapshot") or {}) if isinstance(context, dict) else {}
+        if not snapshot:
+            snapshot = _latest_quote_payload(settings, symbol)
+        latest_price = float(snapshot.get("latest_price") or snapshot.get("close") or 0.0)
+        pct_change = _normalize_pct_change(snapshot.get("pct_change") or 0.0)
+        position = position_map.get(symbol, {})
+        entries.append(
+            {
+                "symbol": symbol,
+                "name": symbol_names.get(symbol, symbol),
+                "latest_price": latest_price,
+                "pct_change": pct_change,
+                "action": str(decision.get("action") or "HOLD"),
+                "setup_score": float(decision.get("setup_score") or 0.0),
+                "execution_score": float(decision.get("execution_score") or 0.0),
+                "has_position": bool(position),
+                "position_qty": int(position.get("qty") or 0),
+            }
+        )
+    holdings = [
+        {
+            "symbol": str(item.get("symbol") or ""),
+            "name": symbol_names.get(str(item.get("symbol") or ""), str(item.get("symbol") or "")),
+            "qty": int(item.get("qty") or 0),
+            "last_price": float(item.get("last_price") or 0.0),
+            "market_value": float(item.get("market_value") or 0.0),
+            "unrealized_pnl": float(item.get("unrealized_pnl") or 0.0),
+            "can_sell_qty": int(item.get("can_sell_qty") or 0),
+        }
+        for item in positions
+    ]
+    return {
+        "source": str(watchlist.get("source") or "default_fallback"),
+        "generated_at": str(watchlist.get("generated_at") or ""),
+        "valid_until": str(watchlist.get("valid_until") or ""),
+        "trading_day": str(watchlist.get("trading_day") or ""),
+        "stale": bool(watchlist.get("stale")),
+        "entries": entries[:16],
+        "holdings": holdings[:12],
+    }
+
+
+def _select_chart_symbol(
+    watchlist: Dict[str, object],
+    timeline: List[Dict[str, object]],
+    ai_decisions: List[Dict[str, object]],
+) -> str:
+    holdings = watchlist.get("holdings") or []
+    if holdings:
+        return str(holdings[0].get("symbol") or "")
+    ranked = sorted(
+        ai_decisions,
+        key=lambda item: float(item.get("execution_score") or 0.0),
+        reverse=True,
+    )
+    if ranked:
+        return str(ranked[0].get("symbol") or "")
+    if timeline:
+        return str(timeline[0].get("symbol") or "")
+    entries = watchlist.get("entries") or []
+    for entry in entries:
+        if float(entry.get("latest_price") or 0.0) > 0:
+            return str(entry.get("symbol") or "")
+    if entries:
+        return str(entries[0].get("symbol") or "")
+    return ""
 
 
 def _has_local_api_key(settings: Settings) -> bool:
@@ -594,6 +711,11 @@ def _parse_iso_ts(value: str | None) -> datetime | None:
         return None
 
 
+def _normalize_pct_change(value: object) -> float:
+    raw = float(value or 0.0)
+    return raw / 100.0 if abs(raw) > 1.0 else raw
+
+
 def _heartbeat_running(last_updated_at: str | None, refresh_interval_seconds: int) -> bool:
     updated_dt = _parse_iso_ts(last_updated_at)
     if not updated_dt:
@@ -695,10 +817,19 @@ def get_home_view() -> Dict[str, object]:
         and abs(float(row.get("execution_score") or 0.0)) >= SETTINGS.scoring.min_execution_score_to_reduce
         and bool(execution.get("can_reduce_position"))
     )
+    timeline = get_recent_action_timeline(settings=SETTINGS)
+    watchlist = _build_watchlist_entries(SETTINGS, live_state, names, ai_decisions)
+    chart_symbol = _select_chart_symbol(watchlist, timeline, ai_decisions)
     score_breakdowns = sorted(
         [row for row in ai_decisions if row.get("symbol")],
         key=lambda item: abs(SETTINGS.scoring.min_execution_score_to_buy - float(item.get("execution_score") or 0.0)),
     )[:3]
+    charts = {
+        "selected_symbol": chart_symbol,
+        "intraday": get_intraday_chart_data(chart_symbol, SETTINGS) if chart_symbol else {"symbol": "", "points": []},
+        "kline": get_kline_chart_data(chart_symbol, SETTINGS) if chart_symbol else {"symbol": "", "rows": []},
+        "equity": get_equity_curve_data(SETTINGS),
+    }
     return {
         "summary": summary,
         "system_status": system_status,
@@ -712,6 +843,9 @@ def get_home_view() -> Dict[str, object]:
         "no_buy_reasons": no_buy_reasons,
         "account": account,
         "stats": stats,
+        "watchlist": watchlist,
+        "timeline": timeline,
+        "charts": charts,
         "opportunities": {
             "buy_count": executable_buy_count,
             "reduce_count": executable_reduce_count,

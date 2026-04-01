@@ -195,10 +195,22 @@ class TriggerConfig:
 
 
 @dataclass
+class WatchlistConfig:
+    enable_auto_refresh_on_start: bool = True
+    use_recent_candidates_as_fallback: bool = True
+    use_default_watchlist_as_last_resort: bool = True
+
+
+@dataclass
 class UIConfig:
     default_page: str = "ai_home"
     enable_research_center: bool = True
     enable_debug_panel: bool = True
+    show_intraday_chart: bool = True
+    show_kline_chart: bool = True
+    show_equity_curve: bool = True
+    show_action_timeline: bool = True
+    default_symbol_selection_mode: str = "priority_based"
 
 
 @dataclass
@@ -244,6 +256,7 @@ class Settings:
     compare_mode: CompareModeConfig = field(default_factory=CompareModeConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
+    watchlist: WatchlistConfig = field(default_factory=WatchlistConfig)
     ui: UIConfig = field(default_factory=UIConfig)
 
     @property
@@ -300,6 +313,32 @@ class SymbolConfig:
     include_etfs: bool
 
 
+def load_symbol_yaml(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        # Use BaseLoader to preserve stock codes like 002155 as strings.
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader) or {}
+    except Exception:
+        return {}
+
+
+def _normalize_symbol_list(values: List[Any]) -> List[str]:
+    symbols: List[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        if text.isdigit():
+            if len(text) == 6:
+                symbols.append(text)
+                continue
+            # Ignore malformed numeric symbols rather than leaking broken codes to UI/runtime.
+            continue
+        symbols.append(text)
+    return list(dict.fromkeys(symbols))
+
+
 def _merge_dataclass(instance: Any, payload: Dict[str, Any]) -> Any:
     for key, value in payload.items():
         if not hasattr(instance, key):
@@ -331,12 +370,10 @@ def load_symbol_config(project_root: Path | None = None) -> SymbolConfig:
     root = project_root or Path(__file__).resolve().parents[1]
     symbols_path = os.getenv("AI_STOCK_SIM_SYMBOLS", "config/symbols.yaml")
     symbols_file = (root / symbols_path).resolve()
-    payload: Dict[str, Any] = {}
-    if symbols_file.exists():
-        payload = yaml.safe_load(symbols_file.read_text(encoding="utf-8")) or {}
+    payload: Dict[str, Any] = load_symbol_yaml(symbols_file)
     runtime_symbols_file = (root / "config" / "runtime_symbols.yaml").resolve()
     if runtime_symbols_file.exists():
-        runtime_payload = yaml.safe_load(runtime_symbols_file.read_text(encoding="utf-8")) or {}
+        runtime_payload = load_symbol_yaml(runtime_symbols_file)
         watchlist_payload = runtime_payload.get("watchlist") or {}
         if watchlist_payload:
             payload["watchlist"] = watchlist_payload
@@ -348,9 +385,9 @@ def load_symbol_config(project_root: Path | None = None) -> SymbolConfig:
     watchlist = payload.get("watchlist") or {}
     universe = payload.get("universe") or {}
     return SymbolConfig(
-        stock_watchlist=[str(item) for item in watchlist.get("stocks", [])],
-        etf_watchlist=[str(item) for item in watchlist.get("etfs", [])],
-        blacklist=[str(item) for item in payload.get("blacklist", [])],
+        stock_watchlist=_normalize_symbol_list(list(watchlist.get("stocks", []))),
+        etf_watchlist=_normalize_symbol_list(list(watchlist.get("etfs", []))),
+        blacklist=_normalize_symbol_list(list(payload.get("blacklist", []))),
         include_stocks=bool(universe.get("include_stocks", True)),
         include_etfs=bool(universe.get("include_etfs", True)),
     )

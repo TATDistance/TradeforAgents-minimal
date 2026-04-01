@@ -7,6 +7,8 @@ from typing import Any, Mapping
 from .db import fetch_recent_rows, fetch_rows_by_sql
 from .evaluation_service import EvaluationService
 from .settings import Settings, load_settings
+from .watchlist_sync_service import load_runtime_watchlist
+from .watchlist_service import get_active_watchlist
 
 
 class ReportService:
@@ -55,6 +57,9 @@ class ReportService:
         actual_orders = [row for row in orders if not bool(row.get("intent_only")) and str(row.get("status")) in {"FILLED", "PARTIAL_FILLED"}]
         intent_orders = [row for row in orders if bool(row.get("intent_only")) or str(row.get("status")) == "INTENT_ONLY"]
         tomorrow_actions = [row for row in intent_orders if str(row.get("phase") or "") == "POST_CLOSE"]
+        watchlist = load_runtime_watchlist(self.settings)
+        if not watchlist.get("symbols"):
+            watchlist = get_active_watchlist(self.settings)
         return {
             "report_scope": report_scope,
             "label": label,
@@ -68,6 +73,7 @@ class ReportService:
             "risk_logs": logs,
             "phase_logs": phase_logs,
             "tomorrow_actions": tomorrow_actions,
+            "watchlist": watchlist,
             "summary": {
                 "phase_blocked_actions": len(intent_orders),
                 "actual_fills": len(actual_orders),
@@ -117,6 +123,7 @@ class ReportService:
             f"- 今日真实成交数：{summary['actual_fills']}",
             f"- 今日阶段拦截动作数：{summary['phase_blocked_actions']}",
             f"- 盘后明日准备动作数：{summary['post_close_preparations']}",
+            f"- 当前监控池来源：{str(payload.get('watchlist', {}).get('source') or 'unknown')}",
             f"- 事件触发数：{runtime_stats.get('trigger_count', 0)}",
             f"- 有效触发率：{float(runtime_stats.get('effective_trigger_rate', 0.0)):.2%}",
             f"- 触发后真实成交率：{float(runtime_stats.get('trigger_fill_rate', 0.0)):.2%}",
