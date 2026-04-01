@@ -262,6 +262,34 @@ http://127.0.0.1:8600/
 - 更新时间
 - 是否已过期
 
+### 8600 首页展示
+
+下面这组截图展示的是当前 `8600` 首页的主要区域。现在的首页已经更接近“AI 实时交易前台”，而不是传统工程工具页。
+
+#### 首页总览
+
+![8600 首页总览](docs/screenshots/8600-home-hero.png)
+
+#### 交易状态、AI 当前策略与执行统计
+
+![8600 状态与执行统计](docs/screenshots/8600-home-status.png)
+
+#### 当前监控池与持仓池
+
+![8600 监控池与持仓池](docs/screenshots/8600-home-watchlist.png)
+
+#### 账户信息与未买入原因解释
+
+![8600 账户与原因解释](docs/screenshots/8600-home-account.png)
+
+#### 图表观察区
+
+![8600 图表观察区](docs/screenshots/8600-home-charts.png)
+
+#### 动作时间线
+
+![8600 动作时间线](docs/screenshots/8600-home-timeline.png)
+
 首页还内置一张“用户设置”卡：
 
 - 绑定大模型平台
