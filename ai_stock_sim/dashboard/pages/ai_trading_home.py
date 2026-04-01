@@ -64,6 +64,9 @@ def render_ai_trading_home(build_tag: str) -> str:
     .error-box{margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(127,29,29,.28);border:1px solid rgba(239,68,68,.22);color:#fecaca;font-size:14px}
     .empty{padding:18px;border-radius:16px;border:1px dashed rgba(148,163,184,.24);color:#9fb2cf;background:rgba(15,23,42,.45)}
     .footer-note{margin-top:18px;color:#8da2c0;font-size:13px}
+    .hint-box{margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(59,130,246,.08);border:1px solid rgba(96,165,250,.18);color:#d7e3f4;font-size:14px;line-height:1.7}
+    .hint-box a{color:#93c5fd;text-decoration:none;font-weight:700}
+    .log-box{margin-top:12px;padding:12px 14px;border-radius:14px;background:#09111f;border:1px solid rgba(59,130,246,.16);color:#d7e3f4;font-size:13px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}
     .form-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:10px}
     .col-3{grid-column:span 3}
     .col-6{grid-column:span 6}
@@ -73,6 +76,7 @@ def render_ai_trading_home(build_tag: str) -> str:
     .setting-note{margin-top:10px;color:#9fb2cf;font-size:13px;line-height:1.65}
     .setting-status{margin-top:10px;padding:12px 14px;border-radius:14px;background:rgba(15,23,42,.8);border:1px solid rgba(59,130,246,.12);color:#d7e3f4;font-size:14px}
     .small-btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border-radius:12px;border:1px solid rgba(96,165,250,.2);background:rgba(59,130,246,.14);color:#d9e8ff;font-weight:700;cursor:pointer}
+    .hero-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
     @media (max-width: 980px){
       .hero{grid-template-columns:1fr}
       .span-4,.span-6,.span-8,.span-12{grid-column:span 12}
@@ -104,6 +108,14 @@ def render_ai_trading_home(build_tag: str) -> str:
         <div class="summary">
           <strong>系统状态</strong>
           <div id="systemStatus"></div>
+          <div class="hero-actions">
+            <button id="homeAutoPipeline" type="button" class="small-btn">自动选股并生成计划</button>
+            <button id="homeStartAll" type="button" class="small-btn">一键启动 AI 实时决策</button>
+            <a href="http://127.0.0.1:8610/" target="_blank" class="small-btn" style="text-decoration:none">打开 8610 调试面板</a>
+          </div>
+          <div id="homeStartStatus" class="setting-status" style="margin-top:12px">首页不会自动启动引擎；如需开始实时模拟，请手动点击上面的按钮。</div>
+          <div id="homeTaskLog" class="log-box" style="display:none"></div>
+          <div id="systemHint" class="hint-box" style="display:none"></div>
           <div id="systemError" class="error-box" style="display:none"></div>
         </div>
       </div>
@@ -172,12 +184,24 @@ def render_ai_trading_home(build_tag: str) -> str:
         <h3>账户信息</h3>
         <div class="kv" id="accountGrid"></div>
       </div>
+
+      <div class="card span-12">
+        <h3>为什么现在没有买入</h3>
+        <div id="noBuyReasons" class="action-list"></div>
+      </div>
+
+      <div class="card span-12">
+        <h3>观察股距离买入还差什么</h3>
+        <div class="subvalue" style="margin-bottom:12px">这里会同时展示两类分数：`静态候选分` 来自自动选股结果，盘中不会变化；`实时综合分` 来自实时引擎，会随行情、阶段、风险模式和 AI 决策动态更新。</div>
+        <div id="observeCandidates" class="action-list"></div>
+      </div>
     </div>
   </div>
 
   <script>
     const summaryText = document.getElementById('summaryText');
     const systemStatus = document.getElementById('systemStatus');
+    const systemHint = document.getElementById('systemHint');
     const systemError = document.getElementById('systemError');
     const statusTags = document.getElementById('statusTags');
     const lastUpdated = document.getElementById('lastUpdated');
@@ -186,12 +210,18 @@ def render_ai_trading_home(build_tag: str) -> str:
     const accountGrid = document.getElementById('accountGrid');
     const statsGrid = document.getElementById('statsGrid');
     const actionList = document.getElementById('actionList');
+    const noBuyReasons = document.getElementById('noBuyReasons');
+    const observeCandidates = document.getElementById('observeCandidates');
     const bindProvider = document.getElementById('bindProvider');
     const bindModel = document.getElementById('bindModel');
     const bindBaseUrl = document.getElementById('bindBaseUrl');
     const bindApiKey = document.getElementById('bindApiKey');
     const saveBinding = document.getElementById('saveBinding');
+    const homeAutoPipeline = document.getElementById('homeAutoPipeline');
     const bindingStatus = document.getElementById('bindingStatus');
+    const homeStartAll = document.getElementById('homeStartAll');
+    const homeStartStatus = document.getElementById('homeStartStatus');
+    const homeTaskLog = document.getElementById('homeTaskLog');
 
     function badgeClass(state){
       if(state === 'running') return 'status-running';
@@ -215,6 +245,30 @@ def render_ai_trading_home(build_tag: str) -> str:
 
     function fmtNum(value){
       return Number(value || 0).toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2});
+    }
+
+    async function fetchJsonSafe(url, options){
+      const resp = await fetch(url, options || {});
+      const text = await resp.text();
+      try{
+        return {resp, data: text ? JSON.parse(text) : {}};
+      }catch(_err){
+        return {resp, data: {detail: text || '空响应'}};
+      }
+    }
+
+    function formatErrorDetail(detail){
+      if(typeof detail === 'string') return detail;
+      if(detail && typeof detail === 'object'){
+        if(Array.isArray(detail)) return detail.map(item => formatErrorDetail(item)).join('; ');
+        if(detail.msg) return String(detail.msg);
+        try{
+          return JSON.stringify(detail);
+        }catch(_err){
+          return String(detail);
+        }
+      }
+      return String(detail || '未知错误');
     }
 
     function renderStatGrid(target, rows){
@@ -249,6 +303,38 @@ def render_ai_trading_home(build_tag: str) -> str:
       )).join('');
     }
 
+    function renderNoBuyReasons(items){
+      if(!items || !items.length){
+        noBuyReasons.innerHTML = '<div class="empty">当前没有额外解释，默认视为：系统未发现足够强的可执行买入条件。</div>';
+        return;
+      }
+      noBuyReasons.innerHTML = items.map(item => (
+        '<div class="action-card">' +
+        '<div class="action-top">' +
+        '<div class="action-title">原因说明</div>' +
+        '<div class="badge badge-warning">观察</div>' +
+        '</div>' +
+        '<div class="action-reason">' + item + '</div>' +
+        '</div>'
+      )).join('');
+    }
+
+    function renderObserveCandidates(items){
+      if(!items || !items.length){
+        observeCandidates.innerHTML = '<div class="empty">当前没有可解释的观察股，通常表示还没有生成候选池，或本轮没有重点观察标的。</div>';
+        return;
+      }
+      observeCandidates.innerHTML = items.map(item => (
+        '<div class="action-card">' +
+        '<div class="action-top">' +
+        '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + (item.stance || '观察') + ' ｜ 静态候选分 ' + Number(item.score || 0).toFixed(2) + ' ｜ 实时综合分 ' + Number(item.final_score || 0).toFixed(2) + '</div></div>' +
+        '<div class="badge badge-neutral">' + (item.current_action || 'HOLD') + '</div>' +
+        '</div>' +
+        '<div class="action-reason">' + (item.reasons || []).map(reason => '· ' + reason).join('<br>') + '</div>' +
+        '</div>'
+      )).join('');
+    }
+
     function loadBindingConfig(){
       bindProvider.value = localStorage.getItem('ta_home_provider') || 'deepseek';
       bindModel.value = localStorage.getItem('ta_min_model') || 'deepseek-chat';
@@ -278,6 +364,16 @@ def render_ai_trading_home(build_tag: str) -> str:
         const status = data.system_status || {};
         systemStatus.innerHTML = '<span class="status-pill ' + badgeClass(status.state) + '">' + (status.label || '未知') + '</span>';
         lastUpdated.textContent = '最近更新时间：' + (status.last_updated_at || '暂无');
+        if(status.state === 'stopped'){
+          systemHint.style.display = 'block';
+          systemHint.innerHTML = '实时引擎当前未运行。你可以直接使用首页的“ 一键启动 AI 实时决策 ”重新启动；如果需要排查原因，再前往 <a href="/debug">调试总览</a> 查看 8610 调试面板入口和最近错误。';
+        }else if(status.state === 'error'){
+          systemHint.style.display = 'block';
+          systemHint.innerHTML = '实时引擎当前处于异常状态。你可以直接点击首页的“ 一键启动 AI 实时决策 ”尝试恢复；如果仍有异常，再去 <a href="/debug">调试总览</a> 查看 8610 调试面板入口和最近错误。';
+        }else{
+          systemHint.style.display = 'none';
+          systemHint.innerHTML = '';
+        }
         if(status.last_error){
           systemError.style.display = 'block';
           systemError.textContent = '最近错误：' + status.last_error;
@@ -330,6 +426,8 @@ def render_ai_trading_home(build_tag: str) -> str:
         ]);
 
         renderActions(data.actions || []);
+        renderNoBuyReasons(data.no_buy_reasons || []);
+        renderObserveCandidates(data.observe_candidates || []);
       }catch(err){
         summaryText.textContent = '首页加载失败';
         systemStatus.innerHTML = '<span class="status-pill status-error">运行异常</span>';
@@ -338,11 +436,138 @@ def render_ai_trading_home(build_tag: str) -> str:
       }
     }
 
+    async function runHomeQuickStart(){
+      homeStartAll.disabled = true;
+      homeAutoPipeline.disabled = true;
+      homeStartStatus.textContent = '正在准备环境并启动实时 AI 决策...';
+      try{
+        let result = await fetchJsonSafe('/api/ai-stock-sim/status');
+        let resp = result.resp;
+        let data = result.data;
+        if(!resp.ok){
+          throw new Error(formatErrorDetail(data.detail));
+        }
+
+        result = await fetchJsonSafe('/api/ai-stock-sim/sync-watchlist', {method:'POST'});
+        resp = result.resp;
+        data = result.data;
+        if(!resp.ok){
+          homeStartStatus.textContent = '候选池同步提示：' + formatErrorDetail(data.detail);
+        }else{
+          homeStartStatus.textContent = data.message || '已同步最新候选池';
+        }
+
+        if(!data.bootstrap_ready){
+          result = await fetchJsonSafe('/api/ai-stock-sim/bootstrap', {method:'POST'});
+          resp = result.resp;
+          data = result.data;
+          if(!resp.ok){
+            throw new Error(formatErrorDetail(data.detail));
+          }
+        }
+
+        result = await fetchJsonSafe('/api/ai-stock-sim/engine/start', {method:'POST'});
+        resp = result.resp;
+        data = result.data;
+        if(!resp.ok){
+          throw new Error(formatErrorDetail(data.detail));
+        }
+
+        result = await fetchJsonSafe('/api/ai-stock-sim/dashboard/start', {method:'POST'});
+        resp = result.resp;
+        data = result.data;
+        if(!resp.ok){
+          throw new Error(formatErrorDetail(data.detail));
+        }
+
+        homeStartStatus.textContent = '实时 AI 决策中心已启动。现在可以继续看首页状态，或点“打开 8610 调试面板”。';
+        await loadHome();
+      }catch(err){
+        homeStartStatus.textContent = '一键启动失败：' + String(err);
+      }finally{
+        homeStartAll.disabled = false;
+        homeAutoPipeline.disabled = false;
+      }
+    }
+
+    async function pollTask(taskId, successMessage){
+      let done = false;
+      homeTaskLog.style.display = 'block';
+      while(!done){
+        const resp = await fetch('/api/task/' + taskId + '?ts=' + Date.now(), {cache:'no-store'});
+        const data = await resp.json();
+        const elapsed = data.started_at
+          ? '（已运行 ' + Math.max(0, Math.floor((Date.now() - Date.parse(data.started_at)) / 1000)) + 's）'
+          : '';
+        homeStartStatus.textContent = '任务状态：' + data.status + ' ' + elapsed;
+        homeTaskLog.textContent = data.output || '后台任务已创建，等待输出...';
+        homeTaskLog.scrollTop = homeTaskLog.scrollHeight;
+        if(data.status === 'done'){
+          homeStartStatus.textContent = successMessage;
+          if(data.report_url){
+            homeStartStatus.textContent += ' 你可以去研究中心或复盘中心查看结果。';
+          }
+          await loadHome();
+          done = true;
+        }else if(data.status === 'failed'){
+          homeStartStatus.textContent = '任务失败：' + String(data.error || '请查看日志');
+          if(!data.output){
+            homeTaskLog.textContent = '任务失败，但后端没有返回详细输出。';
+          }
+          done = true;
+        }else{
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+    }
+
+    async function runHomeAutoPipeline(){
+      homeAutoPipeline.disabled = true;
+      homeStartAll.disabled = true;
+      homeStartStatus.textContent = '正在启动自动选股并生成计划...';
+      try{
+        const payload = {
+          scan_limit: 300,
+          top_n: 12,
+          bar_limit: 120,
+          mode: 'quick',
+          request_timeout: 120,
+          retries: 1,
+          direction_cache_days: 3,
+          execute_sim: true,
+          skip_ai: false,
+          force_refresh_universe: false,
+          force_full_analysis: false,
+          api_key: (bindApiKey.value || '').trim(),
+          base_url: bindBaseUrl.value || ''
+        };
+        const result = await fetchJsonSafe('/api/auto-pipeline', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const resp = result.resp;
+        const data = result.data;
+        if(!resp.ok){
+          throw new Error(formatErrorDetail(data.detail));
+        }
+        homeStartStatus.textContent = '自动选股任务已创建，正在执行...';
+        await pollTask(data.task_id, '自动选股并生成计划已完成。现在首页启动实时 AI 决策会优先沿用最新候选池。');
+      }catch(err){
+        homeStartStatus.textContent = '自动选股失败：' + String(err);
+      }finally{
+        homeAutoPipeline.disabled = false;
+        homeStartAll.disabled = false;
+      }
+    }
+
     bindProvider.addEventListener('change', saveBindingConfig);
     bindModel.addEventListener('change', saveBindingConfig);
     bindBaseUrl.addEventListener('change', saveBindingConfig);
     bindApiKey.addEventListener('change', saveBindingConfig);
     saveBinding.addEventListener('click', saveBindingConfig);
+    homeAutoPipeline.addEventListener('click', runHomeAutoPipeline);
+    homeStartAll.addEventListener('click', runHomeQuickStart);
 
     loadBindingConfig();
     loadHome();

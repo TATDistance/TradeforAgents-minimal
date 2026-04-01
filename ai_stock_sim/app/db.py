@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -201,9 +202,26 @@ def now_ts() -> str:
 def connect_db(settings: Settings | None = None) -> sqlite3.Connection:
     cfg = settings or load_settings()
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(cfg.db_path))
+    conn = sqlite3.connect(str(cfg.db_path), timeout=20.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout = 20000")
     return conn
+
+
+def _execute_with_retry(conn: sqlite3.Connection, sql: str, params: tuple[object, ...], retries: int = 3) -> sqlite3.Cursor:
+    last_error: sqlite3.Error | None = None
+    for attempt in range(retries):
+        try:
+            return conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            if "locked" not in str(exc).lower() or attempt >= retries - 1:
+                raise
+            time.sleep(0.15 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def initialize_db(settings: Settings | None = None) -> None:
@@ -505,7 +523,8 @@ def write_account_snapshot(conn: sqlite3.Connection, snapshot: AccountSnapshot) 
 
 
 def write_system_log(conn: sqlite3.Connection, level: str, module: str, message: str) -> int:
-    cursor = conn.execute(
+    cursor = _execute_with_retry(
+        conn,
         "INSERT INTO system_logs (ts, level, module, message) VALUES (?, ?, ?, ?)",
         (now_ts(), level.upper(), module, message),
     )

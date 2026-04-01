@@ -137,3 +137,52 @@ def build_home_summary(
     if str(phase.get("phase")) == "POST_CLOSE":
         return "今日建议：收盘后以复盘和次日准备动作为主。"
     return "今日建议：当前无高优先级可执行动作，继续观察市场。"
+
+
+def build_no_buy_reasons(
+    *,
+    system_status: Dict[str, object],
+    phase: Dict[str, object],
+    execution: Dict[str, object],
+    actions: List[Dict[str, object]],
+    strategy_status: Dict[str, str],
+) -> List[str]:
+    reasons: List[str] = []
+    if str(system_status.get("state") or "") == "stopped":
+        reasons.append("实时引擎当前未运行，首页只展示最近一次决策快照。")
+        return reasons
+    if str(system_status.get("state") or "") == "error":
+        reasons.append("实时引擎当前处于异常状态，新的买入动作会优先被抑制。")
+
+    if not bool(phase.get("is_trading_day")):
+        reasons.append("今天不是 A 股交易日，系统不会生成新的可成交买入单。")
+    if not bool(execution.get("can_open_position")):
+        reasons.append("当前阶段不允许新开仓，所以即使有观察信号也不会直接买入。")
+
+    blocked_buys = [
+        row for row in actions
+        if str(row.get("display_action") or "") == "BUY" and bool(row.get("blocked"))
+    ]
+    if blocked_buys:
+        top = blocked_buys[0]
+        reasons.append(
+            "已有买入意图，但被执行权限或风控拦截：{0} {1}".format(
+                top.get("symbol") or "",
+                top.get("reason") or "当前条件不足以执行",
+            ).strip()
+        )
+
+    position_actions = [
+        row for row in actions
+        if str(row.get("display_action") or "") in {"SELL", "REDUCE"}
+    ]
+    if position_actions:
+        reasons.append("本轮更偏向持仓管理，系统优先考虑减仓、卖出或继续观察。")
+
+    risk_mode = str(strategy_status.get("risk_mode") or "")
+    if risk_mode in {"DEFENSIVE", "RISK_OFF"}:
+        reasons.append("当前风险模式偏防守，新开仓信号会被显著收缩。")
+
+    if not reasons:
+        reasons.append("当前没有达到买入阈值的高优先级信号，系统选择继续观察。")
+    return reasons[:4]

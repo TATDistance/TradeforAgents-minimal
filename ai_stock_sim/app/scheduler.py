@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List
 
@@ -79,10 +80,25 @@ class TradingScheduler:
         mode_state = self.decision_mode_router.resolve()
         conn = connect_db(self.settings)
         initialize_db(self.settings)
+
+        def _safe_log(level: str, module: str, message: str) -> None:
+            try:
+                write_system_log(conn, level, module, message)
+            except sqlite3.Error as exc:
+                if self.logger:
+                    log_event(
+                        self.logger,
+                        level.lower(),
+                        module,
+                        "db_log_failed",
+                        message=message,
+                        db_error=str(exc),
+                    )
+
         try:
             phase_key = f"{trade_date}:{phase_state.phase}"
             if phase_key != self._last_phase_key:
-                write_system_log(conn, "INFO", "market_phase", f"{trade_date} 阶段切换到 {phase_state.phase}：{phase_state.reason}")
+                _safe_log("INFO", "market_phase", f"{trade_date} 阶段切换到 {phase_state.phase}：{phase_state.reason}")
                 self._last_phase_key = phase_key
 
             if phase_state.is_trading_day and self._last_t1_release_date != trade_date:
@@ -187,7 +203,7 @@ class TradingScheduler:
                             trade_date=trade_date,
                         )
                     except Exception as exc:
-                        write_system_log(conn, "ERROR", "ai_decision_engine", f"AI 决策引擎运行失败: {exc}")
+                        _safe_log("ERROR", "ai_decision_engine", f"AI 决策引擎运行失败: {exc}")
                         mode_state = self.decision_mode_router.fallback_on_failure(mode_state)
                         engine_decisions = {}
                         if mode_state.effective_mode == LEGACY_MODE and not grouped:
@@ -240,6 +256,13 @@ class TradingScheduler:
             )
             latest_prices: Dict[str, float] = {}
             quote_map = {}
+            snapshot_quote_map = {}
+            if hasattr(universe_result, "snapshot") and not universe_result.snapshot.empty:
+                for _, row in universe_result.snapshot.iterrows():
+                    symbol = str(row.get("symbol") or "")
+                    if not symbol:
+                        continue
+                    snapshot_quote_map[symbol] = self.market_data.build_quote_from_snapshot_row(row.to_dict())
             for symbol in quote_symbols:
                 if not execution_gate.can_update_market and symbol not in portfolio.current_positions:
                     continue
@@ -248,18 +271,24 @@ class TradingScheduler:
                     quote_map[symbol] = quote
                     latest_prices[symbol] = quote.latest_price
                 except Exception as exc:
-                    write_system_log(conn, "WARNING", "market_data", f"{symbol} 最新价刷新失败，已跳过: {exc}")
+                    snapshot_quote = snapshot_quote_map.get(symbol)
+                    if snapshot_quote is not None and snapshot_quote.latest_price > 0:
+                        quote_map[symbol] = snapshot_quote
+                        latest_prices[symbol] = snapshot_quote.latest_price
+                        _safe_log("WARNING", "market_data", f"{symbol} 实时行情获取失败，已回退到本轮快照价格: {exc}")
+                    else:
+                        _safe_log("WARNING", "market_data", f"{symbol} 最新价刷新失败，已跳过: {exc}")
 
             planned_actions = self.action_planner.plan(final_actions, portfolio_feedback, latest_prices, phase_state, execution_gate)
             execution_events: List[Dict[str, object]] = []
             if execution_gate.can_execute_fill or execution_gate.intent_only_mode:
                 for action in planned_actions:
                     if action.symbol == "*":
-                        write_system_log(conn, "INFO", "ai_pm", action.reason)
+                        _safe_log("INFO", "ai_pm", action.reason)
                         continue
                     quote = quote_map.get(action.symbol)
                     if quote is None:
-                        write_system_log(conn, "WARNING", "market_data", f"{action.symbol} 实时行情获取失败，跳过动作执行")
+                        _safe_log("WARNING", "market_data", f"{action.symbol} 实时行情获取失败，跳过动作执行")
                         continue
                     effective_risk_mode = str(action.metadata.get("risk_mode") or manager_decision.risk_mode)
                     risk = self.risk_engine.evaluate_action(
@@ -287,7 +316,7 @@ class TradingScheduler:
                         }
                     )
                     if action.action in {"HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"}:
-                        write_system_log(conn, "INFO", "portfolio_decision", f"{action.symbol} {action.action}: {action.reason}")
+                        _safe_log("INFO", "portfolio_decision", f"{action.symbol} {action.action}: {action.reason}")
                         continue
                     if action.intent_only or not action.executable_now:
                         intent_order = self.broker.record_action_intent(conn, action, risk, signal_id=signal_ids.get(action.symbol))
@@ -317,7 +346,7 @@ class TradingScheduler:
                         )
                     portfolio = build_portfolio_state(conn)
             elif final_signals:
-                write_system_log(conn, "INFO", "scheduler", f"当前处于 {phase_state.phase}，仅生成信号与组合动作计划，不执行模拟成交")
+                _safe_log("INFO", "scheduler", f"当前处于 {phase_state.phase}，仅生成信号与组合动作计划，不执行模拟成交")
 
             snapshot = mark_to_market(conn, latest_prices)
             from .db import write_account_snapshot  # local import to avoid cycle
@@ -335,7 +364,7 @@ class TradingScheduler:
                 self.report_service.export_monthly_report(conn, current_day.strftime("%Y-%m"))
                 self._last_report_trade_date = trade_date
             for warning in universe_result.warnings:
-                write_system_log(conn, "WARNING", "universe", warning)
+                _safe_log("WARNING", "universe", warning)
             self._write_live_state(
                 phase_name=phase_state.phase,
                 trading_calendar={
@@ -385,8 +414,19 @@ class TradingScheduler:
                 "warnings": universe_result.warnings,
             }
         except Exception as exc:
-            write_system_log(conn, "ERROR", "scheduler", str(exc))
-            conn.commit()
+            _safe_log("ERROR", "scheduler", str(exc))
+            try:
+                conn.commit()
+            except sqlite3.Error as db_exc:
+                if self.logger:
+                    log_event(
+                        self.logger,
+                        "error",
+                        "scheduler",
+                        "commit_failed_after_exception",
+                        error=str(exc),
+                        db_error=str(db_exc),
+                    )
             raise
         finally:
             conn.close()

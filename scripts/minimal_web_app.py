@@ -45,6 +45,8 @@ AI_TRADE_HOME = Path(
 AI_TRADE_REPORTS_DIR = AI_TRADE_HOME / "reports"
 AI_TRADE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 AI_TRADE_DB_PATH = AI_TRADE_HOME / "data" / "db.sqlite3"
+LEGACY_AI_TRADE_HOME = (WORKSPACE_ROOT / "tools" / "ai_trade_system").resolve()
+LEGACY_AI_TRADE_REPORTS_DIR = LEGACY_AI_TRADE_HOME / "reports"
 AI_STOCK_SIM_HOME = PROJECT_ROOT / "ai_stock_sim"
 AI_STOCK_SIM_DB_PATH = AI_STOCK_SIM_HOME / "data" / "db.sqlite3"
 AI_STOCK_SIM_LOG_DIR = AI_STOCK_SIM_HOME / "data" / "logs"
@@ -121,6 +123,8 @@ TASK_LOCK = threading.Lock()
 app = FastAPI(title="TradingAgents-CN Minimal Web")
 app.mount("/results", StaticFiles(directory=str(RESULTS_DIR)), name="results")
 app.mount("/ai_trade_reports", StaticFiles(directory=str(AI_TRADE_REPORTS_DIR)), name="ai_trade_reports")
+if LEGACY_AI_TRADE_REPORTS_DIR.exists() and LEGACY_AI_TRADE_REPORTS_DIR != AI_TRADE_REPORTS_DIR:
+    app.mount("/ai_trade_reports_legacy", StaticFiles(directory=str(LEGACY_AI_TRADE_REPORTS_DIR)), name="ai_trade_reports_legacy")
 
 
 def _python_bin() -> str:
@@ -141,39 +145,41 @@ def _workspace_python() -> str:
     return sys.executable or _python_bin()
 
 
-def _latest_daily_plan() -> Optional[Path]:
-    files = sorted(AI_TRADE_REPORTS_DIR.glob("daily_plan_*.md"))
-    if not files:
+def _candidate_report_dirs() -> List[Path]:
+    dirs: List[Path] = []
+    for path in (AI_TRADE_REPORTS_DIR, LEGACY_AI_TRADE_REPORTS_DIR):
+        if path.exists() and path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
+def _latest_report_file(pattern: str) -> Optional[Path]:
+    candidates: List[Path] = []
+    for report_dir in _candidate_report_dirs():
+        candidates.extend(report_dir.glob(pattern))
+    if not candidates:
         return None
-    return files[-1]
+    return max(candidates, key=lambda item: item.stat().st_mtime)
+
+
+def _latest_daily_plan() -> Optional[Path]:
+    return _latest_report_file("daily_plan_*.md")
 
 
 def _latest_daily_plan_json() -> Optional[Path]:
-    files = sorted(AI_TRADE_REPORTS_DIR.glob("daily_plan_*.json"))
-    if not files:
-        return None
-    return files[-1]
+    return _latest_report_file("daily_plan_*.json")
 
 
 def _latest_review() -> Optional[Path]:
-    path = AI_TRADE_REPORTS_DIR / "paper_review.md"
-    if path.exists():
-        return path
-    return None
+    return _latest_report_file("paper_review.md")
 
 
 def _latest_auto_candidates() -> Optional[Path]:
-    files = sorted(AI_TRADE_REPORTS_DIR.glob("auto_candidates_*.md"))
-    if not files:
-        return None
-    return files[-1]
+    return _latest_report_file("auto_candidates_*.md")
 
 
 def _latest_auto_candidates_json() -> Optional[Path]:
-    files = sorted(AI_TRADE_REPORTS_DIR.glob("auto_candidates_*.json"))
-    if not files:
-        return None
-    return files[-1]
+    return _latest_report_file("auto_candidates_*.json")
 
 
 def _read_text(path: Optional[Path]) -> str:
@@ -194,6 +200,8 @@ def _read_json(path: Optional[Path]) -> Dict[str, object]:
 def _report_url(path: Optional[Path]) -> Optional[str]:
     if not path or not path.exists():
         return None
+    if path.parent == LEGACY_AI_TRADE_REPORTS_DIR and LEGACY_AI_TRADE_REPORTS_DIR != AI_TRADE_REPORTS_DIR:
+        return "/ai_trade_reports_legacy/{0}".format(path.name)
     return "/ai_trade_reports/{0}".format(path.name)
 
 
@@ -245,9 +253,25 @@ def _url_healthy(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
+def _parse_iso_ts(value: object) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _heartbeat_running(last_updated_at: object, refresh_interval_seconds: int = 10) -> bool:
+    updated_dt = _parse_iso_ts(last_updated_at)
+    if not updated_dt:
+        return False
+    stale_seconds = max(30, int(refresh_interval_seconds) * 3)
+    return (datetime.now() - updated_dt).total_seconds() <= stale_seconds
+
+
 def _latest_auto_watchlist() -> Optional[Path]:
-    files = sorted(AI_TRADE_REPORTS_DIR.glob("auto_watchlist_*.txt"))
-    return files[-1] if files else None
+    return _latest_report_file("auto_watchlist_*.txt")
 
 
 def _classify_asset_type(symbol: str) -> str:
@@ -451,6 +475,13 @@ def _ai_stock_sim_status_payload() -> Dict[str, object]:
     dashboard_healthy = _url_healthy(AI_STOCK_SIM_DASHBOARD_HEALTH_URL)
     if dashboard_running and not dashboard_healthy:
         dashboard_running = False
+    live_state_path = AI_STOCK_SIM_HOME / "data" / "cache" / "live_decision_state.json"
+    live_state: Dict[str, object] = {}
+    if live_state_path.exists():
+        live_state = _read_json(live_state_path)
+    if not engine_running and _heartbeat_running(live_state.get("ts"), refresh_interval_seconds=10):
+        engine_running = True
+        engine_pid = None
     symbol_names = _symbol_name_map()
     account_rows = _query_sqlite_rows(
         AI_STOCK_SIM_DB_PATH,
@@ -742,6 +773,9 @@ def _run_workspace_command(
     if existing:
         pythonpath_parts.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(part for part in pythonpath_parts if part)
+    env.setdefault("AI_TRADE_SYSTEM_HOME", str(AI_TRADE_HOME))
+    env.setdefault("AI_TRADE_DB_PATH", str(AI_TRADE_DB_PATH))
+    env.setdefault("TRADEFORAGENTS_RESULTS_DIR", str(RESULTS_DIR))
     if extra_env:
         for key, value in extra_env.items():
             if value is None:
@@ -750,7 +784,7 @@ def _run_workspace_command(
                 env[key] = value
     completed = subprocess.run(
         args,
-        cwd=str(WORKSPACE_ROOT),
+        cwd=str(PROJECT_ROOT),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -773,6 +807,9 @@ def _stream_workspace_command(
         pythonpath_parts.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(part for part in pythonpath_parts if part)
     env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("AI_TRADE_SYSTEM_HOME", str(AI_TRADE_HOME))
+    env.setdefault("AI_TRADE_DB_PATH", str(AI_TRADE_DB_PATH))
+    env.setdefault("TRADEFORAGENTS_RESULTS_DIR", str(RESULTS_DIR))
     if extra_env:
         for key, value in extra_env.items():
             if value is None:
@@ -783,7 +820,7 @@ def _stream_workspace_command(
     start_ts = time.time()
     proc = subprocess.Popen(
         args,
-        cwd=str(WORKSPACE_ROOT),
+        cwd=str(PROJECT_ROOT),
         env=env,
         stdout=subprocess.PIPE,  # type: ignore[arg-type]
         stderr=subprocess.STDOUT,

@@ -51,7 +51,8 @@ class AIDecisionEngine:
         final_score = float(feature_score_payload.get("final_score") or feature_score)
         direction = str(feature_score_payload.get("dominant_direction") or "NEUTRAL")
         warnings = []
-        if float(snapshot.get("pct_change") or 0.0) >= self.settings.limit_up_filter_pct:
+        snapshot_pct_change = self._normalize_pct_change(snapshot.get("pct_change"))
+        if snapshot_pct_change >= self.settings.limit_up_filter_pct:
             warnings.append("已接近涨停，不宜追高")
         if float(snapshot.get("amount") or 0.0) < self.settings.min_turnover:
             warnings.append("成交额偏低")
@@ -202,6 +203,16 @@ class AIDecisionEngine:
             },
             symbol,
         )
+
+    @staticmethod
+    def _normalize_pct_change(value: object) -> float:
+        try:
+            raw = float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        if abs(raw) >= 1.0:
+            return raw / 100.0
+        return raw
 
     def _build_non_executable_decision(
         self,

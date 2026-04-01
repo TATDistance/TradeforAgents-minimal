@@ -86,3 +86,30 @@ def test_get_json_retries_before_success(monkeypatch):
     payload = service._get_json("https://push2.eastmoney.com/api/test", {"x": 1})
     assert payload == {"ok": True}
     assert calls["count"] == 2
+
+
+def test_build_quote_from_snapshot_row_uses_snapshot_values():
+    service = MarketDataService(load_settings())
+    quote = service.build_quote_from_snapshot_row(
+        {
+            "symbol": "601872",
+            "name": "招商轮船",
+            "market": "SH",
+            "asset_type": "stock",
+            "latest_price": 7.82,
+            "pct_change": 1.36,
+            "open_price": 7.7,
+            "high_price": 7.9,
+            "low_price": 7.68,
+            "prev_close": 7.71,
+            "volume": 1000,
+            "amount": 7820000,
+            "turnover_rate": 1.2,
+            "is_st": False,
+        }
+    )
+    assert quote.symbol == "601872"
+    assert quote.name == "招商轮船"
+    assert quote.latest_price == 7.82
+    assert round(quote.pct_change, 4) == 0.0136
+    assert quote.data_source == "snapshot_fallback"

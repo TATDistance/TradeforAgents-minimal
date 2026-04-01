@@ -14,7 +14,12 @@ from ai_stock_sim.app.db import connect_db, fetch_rows_by_sql
 from ai_stock_sim.app.settings import Settings, load_settings
 
 from .ui_action_service import build_action_cards, summarize_action_cards
-from .ui_summary_service import build_ai_strategy_status, build_home_summary, build_system_status
+from .ui_summary_service import (
+    build_ai_strategy_status,
+    build_home_summary,
+    build_no_buy_reasons,
+    build_system_status,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -162,6 +167,88 @@ def _query_rows(sql: str, params: Tuple[object, ...] = ()) -> List[Dict[str, obj
         return []
     finally:
         conn.close()
+
+
+def _candidate_report_dirs(settings: Settings) -> List[Path]:
+    dirs: List[Path] = []
+    embedded = settings.project_root.parent / "ai_trade_system" / "reports"
+    legacy = settings.project_root.parent.parent / "ai_trade_system" / "reports"
+    for path in (embedded, legacy):
+        if path.exists() and path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
+def _latest_report_json(settings: Settings, pattern: str) -> Dict[str, object]:
+    candidates: List[Path] = []
+    for report_dir in _candidate_report_dirs(settings):
+        candidates.extend(report_dir.glob(pattern))
+    if not candidates:
+        return {}
+    latest = max(candidates, key=lambda item: item.stat().st_mtime)
+    try:
+        return json.loads(latest.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _build_observe_candidates(
+    settings: Settings,
+    live_state: Dict[str, object],
+    phase: Dict[str, object],
+    execution: Dict[str, object],
+    strategy_status: Dict[str, str],
+) -> List[Dict[str, object]]:
+    auto_payload = _latest_report_json(settings, "auto_candidates_*.json")
+    selected = auto_payload.get("selected") or []
+    if not isinstance(selected, list):
+        return []
+
+    feature_fusions = live_state.get("feature_fusions") or {}
+    ai_engine = live_state.get("ai_decision_engine") or {}
+    risk_mode = str(strategy_status.get("risk_mode") or "")
+    buy_threshold = float(settings.fusion.min_final_score_to_buy)
+    rows: List[Dict[str, object]] = []
+    for item in selected[:6]:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        fusion = feature_fusions.get(symbol) if isinstance(feature_fusions, dict) else {}
+        decision = ai_engine.get(symbol) if isinstance(ai_engine, dict) else {}
+        final_score = float((decision or {}).get("final_score") or (fusion or {}).get("final_score") or 0.0)
+        current_action = str((decision or {}).get("action") or (fusion or {}).get("final_action") or "HOLD")
+        reasons: List[str] = []
+        if not bool(phase.get("is_trading_day")):
+            reasons.append("今天不是交易日")
+        elif not bool(execution.get("can_open_position")):
+            reasons.append("当前阶段不允许新开仓")
+        if risk_mode in {"DEFENSIVE", "RISK_OFF"}:
+            reasons.append("当前风险模式偏防守")
+        if final_score < buy_threshold:
+            reasons.append("综合分 {0:.2f} 未达到买入阈值 {1:.2f}".format(final_score, buy_threshold))
+        warnings = (decision or {}).get("warnings") or []
+        if isinstance(warnings, list):
+            for warning in warnings[:2]:
+                text = str(warning).strip()
+                if text:
+                    reasons.append(text)
+        if current_action not in {"BUY", "PREPARE_BUY"}:
+            reasons.append("AI 当前动作仍是 {0}".format(current_action))
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": str(item.get("name") or symbol),
+                "stance": str(item.get("stance") or "观察"),
+                "score": float(item.get("score") or 0.0),
+                "final_score": final_score,
+                "current_action": current_action,
+                "snapshot_pct_change": float((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("pct_change") or 0.0),
+                "reasons": reasons[:4] or ["当前仍以观察为主，尚未转为买入。"],
+            }
+        )
+    return rows
 
 
 def _has_local_api_key(settings: Settings) -> bool:
@@ -459,13 +546,21 @@ def _parse_iso_ts(value: str | None) -> datetime | None:
         return None
 
 
+def _heartbeat_running(last_updated_at: str | None, refresh_interval_seconds: int) -> bool:
+    updated_dt = _parse_iso_ts(last_updated_at)
+    if not updated_dt:
+        return False
+    stale_seconds = max(30, int(refresh_interval_seconds) * 3)
+    return (datetime.now() - updated_dt).total_seconds() <= stale_seconds
+
+
 def _system_status() -> Dict[str, object]:
     engine_pid = _read_pid(ENGINE_PID_PATH)
-    engine_running = _pid_alive(engine_pid)
     live_state = _load_live_state()
     account = get_account_snapshot()
     last_error, last_error_ts = _latest_error()
     last_updated = str(live_state.get("ts") or account.get("ts") or "")
+    engine_running = _pid_alive(engine_pid) or _heartbeat_running(last_updated or None, SETTINGS.refresh_interval_seconds)
     status = build_system_status(
         engine_running=engine_running,
         last_updated_at=last_updated or None,
@@ -524,6 +619,20 @@ def get_home_view() -> Dict[str, object]:
         actions=actions,
         strategy_status=strategy_status,
     )
+    observe_candidates = _build_observe_candidates(
+        SETTINGS,
+        live_state,
+        phase,
+        execution,
+        strategy_status,
+    )
+    no_buy_reasons = build_no_buy_reasons(
+        system_status=system_status,
+        phase=phase,
+        execution=execution,
+        actions=actions,
+        strategy_status=strategy_status,
+    )
     return {
         "summary": summary,
         "system_status": system_status,
@@ -532,6 +641,8 @@ def get_home_view() -> Dict[str, object]:
         "strategy_status": strategy_status,
         "ai_runtime": ai_runtime,
         "actions": actions,
+        "observe_candidates": observe_candidates,
+        "no_buy_reasons": no_buy_reasons,
         "account": account,
         "stats": stats,
     }

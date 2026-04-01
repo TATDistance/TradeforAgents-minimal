@@ -224,6 +224,27 @@ class MarketDataService:
                 return local
             raise
 
+    def build_quote_from_snapshot_row(self, row: Dict[str, object]) -> MarketQuote:
+        symbol = str(row.get("symbol") or "")
+        return MarketQuote(
+            ts=datetime.now(),
+            symbol=symbol,
+            name=str(row.get("name") or symbol),
+            market=str(row.get("market") or infer_market(symbol)),
+            asset_type=str(row.get("asset_type") or ("etf" if symbol.startswith(("1", "5")) else "stock")),
+            latest_price=float(row.get("latest_price") or 0.0),
+            pct_change=float(row.get("pct_change") or 0.0) / 100.0,
+            open_price=float(row.get("open_price") or 0.0),
+            high_price=float(row.get("high_price") or 0.0),
+            low_price=float(row.get("low_price") or 0.0),
+            prev_close=float(row.get("prev_close") or 0.0),
+            volume=float(row.get("volume") or 0.0),
+            amount=float(row.get("amount") or 0.0),
+            turnover_rate=float(row.get("turnover_rate") or 0.0),
+            is_st=bool(row.get("is_st") or False),
+            data_source="snapshot_fallback",
+        )
+
     def fetch_history_daily(
         self,
         symbol: str,

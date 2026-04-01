@@ -48,3 +48,25 @@ def test_ai_decision_engine_can_reduce_or_sell_position() -> None:
     )
     assert decision.action in {"REDUCE", "SELL", "HOLD"}
     assert decision.risk_mode in {"DEFENSIVE", "RISK_OFF"}
+
+
+def test_ai_decision_engine_does_not_treat_percent_value_as_limit_up() -> None:
+    engine = AIDecisionEngine(load_settings())
+    context = {
+        "symbol": "300750",
+        "snapshot": {"latest_price": 406.0, "pct_change": 1.07, "amount": 3_500_000_000},
+        "technical_features": {"rsi_14": 56, "trend_slope_20d": 0.05, "ma20_bias": 0.02, "macd_hist": 0.01},
+        "portfolio_state": {"cash_pct": 0.85, "drawdown": 0.01, "risk_mode": "NORMAL"},
+        "position_state": {"has_position": False, "can_sell_qty": 0},
+        "risk_constraints": {"allow_new_buy": True},
+        "market_regime": {"regime": "RANGE_BOUND"},
+        "market_phase": {"phase": "CONTINUOUS_AUCTION_AM"},
+        "execution_gate": {"can_execute_fill": True},
+    }
+    decision = engine.decide_symbol(
+        symbol="300750",
+        context=context,
+        feature_score_payload={"feature_score": 0.45, "final_score": 0.42, "dominant_direction": "LONG"},
+        trade_date="2026-04-01",
+    )
+    assert "已接近涨停，不宜追高" not in decision.warnings

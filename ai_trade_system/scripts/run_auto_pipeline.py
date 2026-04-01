@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List
 
 from ai_trade_system.engine.config import load_config
+from ai_trade_system.engine.pre_filter_engine import CandidateMetrics
 from ai_trade_system.engine.pre_filter_engine import evaluate_candidate
 from ai_trade_system.engine.ranking_engine import rank_candidates
 from ai_trade_system.engine.scheduler import run_end_of_day_pipeline
@@ -50,6 +51,65 @@ def _build_execution_summary(plan_payload: dict) -> str:
     return "本次找到 {0} 只强势候选，但今日无新开仓机会，主要以观察为主。".format(
         hold_count or len(plan_payload.get("items") or []),
     )
+
+
+def _build_relaxed_fallback_candidates(
+    fetch_result,
+    rejected: List[dict],
+    top_n: int,
+) -> List[CandidateMetrics]:
+    rejected_metrics = [row.get("metrics") for row in rejected if isinstance(row.get("metrics"), CandidateMetrics)]
+    fallback_metrics: List[CandidateMetrics] = []
+    seen = set()
+
+    for metrics in rejected_metrics:
+        if metrics.symbol in seen:
+            continue
+        if metrics.last_price <= 0 or metrics.avg_amount_20d <= 0:
+            continue
+        fallback_metrics.append(metrics)
+        seen.add(metrics.symbol)
+        if len(fallback_metrics) >= max(top_n * 2, 12):
+            break
+
+    if fallback_metrics:
+        return fallback_metrics
+
+    sorted_quotes = sorted(
+        [quote for quote in fetch_result.quotes if quote.last_price > 0 and quote.amount > 0],
+        key=lambda item: item.amount,
+        reverse=True,
+    )
+    for quote in sorted_quotes:
+        if quote.symbol in seen:
+            continue
+        if "ST" in quote.name.upper() or "退" in quote.name:
+            continue
+        if abs(quote.pct_change) >= 9.5:
+            continue
+        fallback_metrics.append(
+            CandidateMetrics(
+                symbol=quote.symbol,
+                market=quote.market,
+                name=quote.name,
+                last_price=quote.last_price,
+                pct_change=quote.pct_change,
+                amount=quote.amount,
+                volume=quote.volume,
+                ma20=quote.last_price,
+                ma60=quote.last_price,
+                ret_5d=0.0,
+                ret_20d=0.0,
+                drawdown_20d=0.05,
+                volatility_20d=0.02,
+                avg_amount_20d=quote.amount,
+                data_source="{0}_fallback".format(quote.data_source),
+            )
+        )
+        seen.add(quote.symbol)
+        if len(fallback_metrics) >= max(top_n * 2, 12):
+            break
+    return fallback_metrics
 
 
 def main() -> None:
@@ -93,9 +153,26 @@ def main() -> None:
         if result.passed and result.metrics is not None:
             passed_metrics.append(result.metrics)
         else:
-            rejected.append({"symbol": quote.symbol, "name": quote.name, "reason": result.reason})
+            rejected.append(
+                {
+                    "symbol": quote.symbol,
+                    "name": quote.name,
+                    "reason": result.reason,
+                    "metrics": result.metrics,
+                }
+            )
 
     base_ranked = rank_candidates(passed_metrics)
+    fallback_used = False
+    if not base_ranked:
+        fallback_metrics = _build_relaxed_fallback_candidates(fetch_result, rejected, args.top_n)
+        if fallback_metrics:
+            passed_metrics = fallback_metrics
+            base_ranked = rank_candidates(fallback_metrics)
+            fallback_used = True
+            warning = "严格预筛选无候选，已回退到高流动性降级候选池。"
+            fetch_result.warnings.append(warning)
+            print("提示: {0}".format(warning))
     enhancement_symbols = [item.symbol for item in base_ranked[: max(args.top_n * 3, 24)]]
     enhancement_result = service.fetch_candidate_enhancements(
         enhancement_symbols,
@@ -152,6 +229,13 @@ def main() -> None:
         "数据源状态：{0}".format(data_source_status),
         "",
     ]
+    if fallback_used:
+        markdown_lines.extend(
+            [
+                "提示：本轮严格预筛选无候选，已自动回退到高流动性降级候选池，结果可用于继续分析，但质量低于标准候选。",
+                "",
+            ]
+        )
     if all_warnings:
         markdown_lines.extend(["诊断明细（可选查看）："])
         markdown_lines.extend(["- {0}".format(warning) for warning in all_warnings])
@@ -220,8 +304,16 @@ def main() -> None:
                     "enhanced_count": len(enhanced_metrics),
                     "selected_count": len(selected),
                 },
+                "fallback_used": fallback_used,
                 "selected": [asdict(item) for item in selected],
-                "rejected": rejected,
+                "rejected": [
+                    {
+                        "symbol": row["symbol"],
+                        "name": row["name"],
+                        "reason": row["reason"],
+                    }
+                    for row in rejected
+                ],
             },
             ensure_ascii=False,
             indent=2,

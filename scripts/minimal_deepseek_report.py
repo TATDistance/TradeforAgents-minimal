@@ -142,6 +142,41 @@ def write_json_cache(cache_file: Path, payload: Any) -> None:
     cache_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_latest_market_cache_snapshot(cache_dir: Path, yf_symbol: str) -> Dict[str, Any] | None:
+    pattern = f"market__{re.sub(r'[^A-Za-z0-9._-]+', '_', yf_symbol)}__*.json"
+    candidates = sorted(cache_dir.glob(pattern), key=lambda item: item.stat().st_mtime, reverse=True)
+    for path in candidates:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return None
+
+
+def load_recent_result_market_snapshot(results_dir: Path, user_symbol: str, analysis_date: str) -> Dict[str, Any] | None:
+    symbol_root = results_dir / user_symbol
+    if not symbol_root.exists():
+        return None
+
+    def _sort_key(path: Path) -> str:
+        return path.parent.parent.name
+
+    candidates = sorted(
+        symbol_root.glob("*/reports/market_snapshot.json"),
+        key=_sort_key,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            snap_date = path.parent.parent.name
+            if snap_date > analysis_date:
+                continue
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return None
+
+
 def pct_change(series: pd.Series, periods: int) -> float | None:
     if len(series) <= periods:
         return None
@@ -278,8 +313,8 @@ def fetch_market_data(yf_symbol: str, as_of_date: str) -> Dict[str, Any]:
     if is_a_share_symbol(yf_symbol):
         try:
             return fetch_market_data_eastmoney(yf_symbol, as_of_date)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("无法从东财获取 A 股行情: {0}".format(exc)) from exc
 
     end_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
     start_dt = end_dt - timedelta(days=220)
@@ -390,6 +425,8 @@ def fetch_market_data_cached(
     yf_symbol: str,
     as_of_date: str,
     cache_dir: Path,
+    results_dir: Path,
+    user_symbol: str,
     module_logs: List[str],
     cache_ttl_seconds: int,
     disable_cache: bool,
@@ -402,7 +439,28 @@ def fetch_market_data_cached(
             module_logs.append(f"[{datetime.now().isoformat()}] market_cache hit file={cache_file.name}")
             return cached
 
-    snapshot = fetch_market_data(yf_symbol, as_of_date)
+    try:
+        snapshot = fetch_market_data(yf_symbol, as_of_date)
+    except Exception as exc:
+        if cache_file.exists():
+            module_logs.append(
+                f"[{datetime.now().isoformat()}] market_cache stale_fallback file={cache_file.name} err={exc}"
+            )
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        latest_cached = load_latest_market_cache_snapshot(cache_dir, yf_symbol)
+        if latest_cached is not None:
+            module_logs.append(
+                f"[{datetime.now().isoformat()}] market_cache recent_symbol_fallback symbol={yf_symbol} err={exc}"
+            )
+            return latest_cached
+        if is_a_share_symbol(yf_symbol):
+            recent_snapshot = load_recent_result_market_snapshot(results_dir, user_symbol, as_of_date)
+            if recent_snapshot is not None:
+                module_logs.append(
+                    f"[{datetime.now().isoformat()}] market_result_fallback symbol={user_symbol} err={exc}"
+                )
+                return recent_snapshot
+        raise
     if not disable_cache:
         write_json_cache(cache_file, snapshot)
         module_logs.append(f"[{datetime.now().isoformat()}] market_cache write file={cache_file.name}")
@@ -1798,6 +1856,8 @@ def main() -> int:
                     yf_symbol=sym,
                     as_of_date=args.analysis_date,
                     cache_dir=cache_dir,
+                    results_dir=results_dir,
+                    user_symbol=user_symbol,
                     module_logs=module_logs,
                     cache_ttl_seconds=cache_ttl_seconds,
                     disable_cache=args.disable_cache,
@@ -1816,9 +1876,14 @@ def main() -> int:
             break
 
     if market_snapshot is None:
+        failure_hint = (
+            "这通常不是股票本身异常，而是东财实时接口临时不可用，且本地缓存/历史结果也不足以兜底。"
+            if any(is_a_share_symbol(sym) for sym in symbols_to_try)
+            else "这通常不是股票本身异常，而是 yfinance/Yahoo 对当前代码覆盖不稳定或被限流。"
+        )
         raise SystemExit(
-            "所有候选代码都获取失败: {0}; 最后错误: {1}; 这通常不是股票本身异常，而是 yfinance/Yahoo 对 A 股覆盖不稳定。"
-            .format(symbols_to_try, last_error)
+            "所有候选代码都获取失败: {0}; 最后错误: {1}; {2}"
+            .format(symbols_to_try, last_error, failure_hint)
         )
 
     market_type = infer_market_type(symbol_used)

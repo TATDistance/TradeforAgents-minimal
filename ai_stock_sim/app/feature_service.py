@@ -107,8 +107,14 @@ class FeatureService:
         slow_ma = close.rolling(slow_window).mean()
         latest_fast = float(fast_ma.iloc[-1] or latest_close)
         latest_slow = float(slow_ma.iloc[-1] or latest_close)
-        prev_fast = float(fast_ma.iloc[-2] or latest_fast)
-        prev_slow = float(slow_ma.iloc[-2] or latest_slow)
+        if len(fast_ma) >= 2:
+            prev_fast = float(fast_ma.iloc[-2] or latest_fast)
+        else:
+            prev_fast = latest_fast
+        if len(slow_ma) >= 2:
+            prev_slow = float(slow_ma.iloc[-2] or latest_slow)
+        else:
+            prev_slow = latest_slow
         spread = 0.0 if latest_slow <= 0 else (latest_fast - latest_slow) / latest_slow
         cross_bonus = 0.25 if prev_fast <= prev_slow and latest_fast > latest_slow else -0.25 if prev_fast >= prev_slow and latest_fast < latest_slow else 0.0
         score = _clamp(spread * 10.0 + cross_bonus)
