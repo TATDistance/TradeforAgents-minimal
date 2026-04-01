@@ -355,17 +355,19 @@ def render_dashboard() -> None:
         comparisons_df = load_table("mode_comparisons", limit=20)
 
     current_mode = str((live_state or {}).get("decision_mode") or settings.decision_engine.mode)
+    current_engine_mode = str((live_state or {}).get("engine_mode") or settings.runtime.engine_mode)
     mode_label = MODE_LABELS.get(current_mode, current_mode)
     trading_calendar = live_state.get("trading_calendar") if isinstance(live_state, dict) else {}
     execution_gate = live_state.get("execution_gate") if isinstance(live_state, dict) else {}
     with st.container(border=True):
         st.markdown("**当前运行模式**")
-        summary_cols = st.columns(5)
+        summary_cols = st.columns(6)
         summary_cols[0].metric("决策模式", mode_label)
-        summary_cols[1].metric("当前阶段", str((live_state or {}).get("phase", "-")))
-        summary_cols[2].metric("AI 决策标的数", len((live_state or {}).get("ai_decision_engine") or {}))
-        summary_cols[3].metric("计划动作数", len((live_state or {}).get("final_actions") or []))
-        summary_cols[4].metric("可成交", "是" if bool((execution_gate or {}).get("can_execute_fill")) else "否")
+        summary_cols[1].metric("引擎模式", current_engine_mode)
+        summary_cols[2].metric("当前阶段", str((live_state or {}).get("phase", "-")))
+        summary_cols[3].metric("AI 决策标的数", len((live_state or {}).get("ai_decision_engine") or {}))
+        summary_cols[4].metric("计划动作数", len((live_state or {}).get("final_actions") or []))
+        summary_cols[5].metric("可成交", "是" if bool((execution_gate or {}).get("can_execute_fill")) else "否")
         if isinstance(trading_calendar, dict) and trading_calendar:
             st.caption(
                 f"交易日：{'是' if bool(trading_calendar.get('is_trading_day')) else '否'} | "
@@ -412,8 +414,12 @@ def render_dashboard() -> None:
         if isinstance(live_engine, dict) and live_engine:
             quick_df = attach_symbol_name(pd.DataFrame([{"symbol": key, **value} for key, value in live_engine.items()]))
             st.markdown("**AI 决策引擎本轮摘要**")
-            cols = [col for col in ["symbol", "name", "action", "confidence", "risk_mode", "final_score", "reason"] if col in quick_df.columns]
+            cols = [col for col in ["symbol", "name", "action", "confidence", "setup_score", "execution_score", "ai_score", "risk_mode", "reason"] if col in quick_df.columns]
             st.dataframe(quick_df[cols], use_container_width=True, hide_index=True)
+        trigger_rows = pd.DataFrame(live_state.get("trigger_decisions") or []) if isinstance(live_state, dict) else pd.DataFrame()
+        if not trigger_rows.empty:
+            st.markdown("**事件触发摘要**")
+            st.dataframe(trigger_rows, use_container_width=True, hide_index=True)
 
     with top_tabs[1]:
         st.subheader("交易日历状态")

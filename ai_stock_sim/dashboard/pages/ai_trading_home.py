@@ -175,6 +175,16 @@ def render_ai_trading_home(build_tag: str) -> str:
         <div class="kv" id="statsGrid"></div>
       </div>
 
+      <div class="card span-6">
+        <h3>可执行机会摘要</h3>
+        <div class="kv" id="opportunityGrid"></div>
+      </div>
+
+      <div class="card span-6">
+        <h3>分数拆解面板</h3>
+        <div id="scoreBreakdowns" class="action-list"></div>
+      </div>
+
       <div class="card span-8">
         <h3>实时动作</h3>
         <div id="actionList" class="action-list"></div>
@@ -209,6 +219,8 @@ def render_ai_trading_home(build_tag: str) -> str:
     const strategyGrid = document.getElementById('strategyGrid');
     const accountGrid = document.getElementById('accountGrid');
     const statsGrid = document.getElementById('statsGrid');
+    const opportunityGrid = document.getElementById('opportunityGrid');
+    const scoreBreakdowns = document.getElementById('scoreBreakdowns');
     const actionList = document.getElementById('actionList');
     const noBuyReasons = document.getElementById('noBuyReasons');
     const observeCandidates = document.getElementById('observeCandidates');
@@ -327,10 +339,37 @@ def render_ai_trading_home(build_tag: str) -> str:
       observeCandidates.innerHTML = items.map(item => (
         '<div class="action-card">' +
         '<div class="action-top">' +
-        '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + (item.stance || '观察') + ' ｜ 静态候选分 ' + Number(item.score || 0).toFixed(2) + ' ｜ 实时综合分 ' + Number(item.final_score || 0).toFixed(2) + '</div></div>' +
+        '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + (item.stance || '观察') + ' ｜ 静态候选分 ' + Number(item.score || 0).toFixed(2) + ' ｜ setup ' + Number(item.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(item.execution_score || 0).toFixed(2) + '</div></div>' +
         '<div class="badge badge-neutral">' + (item.current_action || 'HOLD') + '</div>' +
         '</div>' +
+        '<div class="action-meta">' +
+        '<span>AI 加分 ' + Number(item.ai_score || 0).toFixed(2) + '</span>' +
+        '</div>' +
         '<div class="action-reason">' + (item.reasons || []).map(reason => '· ' + reason).join('<br>') + '</div>' +
+        '</div>'
+      )).join('');
+    }
+
+    function renderScoreBreakdowns(items){
+      if(!items || !items.length){
+        scoreBreakdowns.innerHTML = '<div class="empty">当前没有可展示的实时分数拆解，通常表示实时引擎尚未完成本轮决策。</div>';
+        return;
+      }
+      scoreBreakdowns.innerHTML = items.map(item => (
+        '<div class="action-card">' +
+        '<div class="action-top">' +
+        '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">AI 动作 ' + (item.action || 'HOLD') + '</div></div>' +
+        '<div class="badge badge-neutral">execution ' + Number(item.execution_score || 0).toFixed(2) + '</div>' +
+        '</div>' +
+        '<div class="action-meta">' +
+        '<span>setup ' + Number(item.setup_score || 0).toFixed(2) + '</span>' +
+        '<span>feature ' + Number(item.feature_score || 0).toFixed(2) + '</span>' +
+        '<span>AI ' + Number(item.ai_score || 0).toFixed(2) + '</span>' +
+        '<span>市场惩罚 ' + Number(item.market_risk_penalty || 0).toFixed(2) + '</span>' +
+        '<span>组合惩罚 ' + Number(item.portfolio_risk_penalty || 0).toFixed(2) + '</span>' +
+        '<span>阶段惩罚 ' + Number(item.phase_penalty || 0).toFixed(2) + '</span>' +
+        '</div>' +
+        '<div class="action-reason">' + (item.reason || '暂无说明') + '</div>' +
         '</div>'
       )).join('');
     }
@@ -385,6 +424,7 @@ def render_ai_trading_home(build_tag: str) -> str:
         const phase = data.phase || {};
         const execution = data.execution || {};
         statusTags.innerHTML = [
+          '<span class="state-tag">引擎模式：' + (data.engine_mode || '-') + '</span>',
           '<span class="state-tag">交易日：' + ((phase.is_trading_day ? '是' : '否')) + '</span>',
           '<span class="state-tag">阶段：' + (phase.phase_label || phase.phase || '-') + '</span>',
           '<span class="state-tag">允许成交：' + (execution.can_execute_fill ? 'YES' : 'NO') + '</span>',
@@ -424,9 +464,15 @@ def render_ai_trading_home(build_tag: str) -> str:
           {label:'成交数', value: String(stats.executed_count || 0)},
           {label:'被拦截数', value: String(stats.blocked_count || 0)}
         ]);
+        const opportunities = data.opportunities || {};
+        renderStatGrid(opportunityGrid, [
+          {label:'可建仓机会', value: String(opportunities.buy_count || 0), subvalue: (opportunities.top_limitations || [])[0] || '当前暂无高优先级建仓机会'},
+          {label:'可减仓机会', value: String(opportunities.reduce_count || 0), subvalue: (opportunities.top_limitations || [])[1] || '当前暂无高优先级减仓机会'}
+        ]);
 
         renderActions(data.actions || []);
         renderNoBuyReasons(data.no_buy_reasons || []);
+        renderScoreBreakdowns(data.score_breakdowns || []);
         renderObserveCandidates(data.observe_candidates || []);
       }catch(err){
         summaryText.textContent = '首页加载失败';

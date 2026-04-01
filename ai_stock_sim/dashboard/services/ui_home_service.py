@@ -207,7 +207,7 @@ def _build_observe_candidates(
     feature_fusions = live_state.get("feature_fusions") or {}
     ai_engine = live_state.get("ai_decision_engine") or {}
     risk_mode = str(strategy_status.get("risk_mode") or "")
-    buy_threshold = float(settings.fusion.min_final_score_to_buy)
+    buy_threshold = float(settings.scoring.min_execution_score_to_buy)
     rows: List[Dict[str, object]] = []
     for item in selected[:6]:
         if not isinstance(item, dict):
@@ -217,7 +217,9 @@ def _build_observe_candidates(
             continue
         fusion = feature_fusions.get(symbol) if isinstance(feature_fusions, dict) else {}
         decision = ai_engine.get(symbol) if isinstance(ai_engine, dict) else {}
-        final_score = float((decision or {}).get("final_score") or (fusion or {}).get("final_score") or 0.0)
+        setup_score = float((decision or {}).get("setup_score") or (fusion or {}).get("setup_score") or (fusion or {}).get("final_score") or 0.0)
+        execution_score = float((decision or {}).get("execution_score") or (decision or {}).get("final_score") or (fusion or {}).get("execution_score") or (fusion or {}).get("final_score") or 0.0)
+        ai_score = float((decision or {}).get("ai_score") or 0.0)
         current_action = str((decision or {}).get("action") or (fusion or {}).get("final_action") or "HOLD")
         reasons: List[str] = []
         if not bool(phase.get("is_trading_day")):
@@ -226,8 +228,10 @@ def _build_observe_candidates(
             reasons.append("当前阶段不允许新开仓")
         if risk_mode in {"DEFENSIVE", "RISK_OFF"}:
             reasons.append("当前风险模式偏防守")
-        if final_score < buy_threshold:
-            reasons.append("综合分 {0:.2f} 未达到买入阈值 {1:.2f}".format(final_score, buy_threshold))
+        if setup_score < settings.scoring.min_setup_score_to_watch:
+            reasons.append("setup_score {0:.2f} 仍低于观察阈值 {1:.2f}".format(setup_score, settings.scoring.min_setup_score_to_watch))
+        if execution_score < buy_threshold:
+            reasons.append("execution_score {0:.2f} 未达到买入阈值 {1:.2f}".format(execution_score, buy_threshold))
         warnings = (decision or {}).get("warnings") or []
         if isinstance(warnings, list):
             for warning in warnings[:2]:
@@ -242,7 +246,9 @@ def _build_observe_candidates(
                 "name": str(item.get("name") or symbol),
                 "stance": str(item.get("stance") or "观察"),
                 "score": float(item.get("score") or 0.0),
-                "final_score": final_score,
+                "setup_score": setup_score,
+                "execution_score": execution_score,
+                "ai_score": ai_score,
                 "current_action": current_action,
                 "snapshot_pct_change": float((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("pct_change") or 0.0),
                 "reasons": reasons[:4] or ["当前仍以观察为主，尚未转为买入。"],
@@ -470,11 +476,46 @@ def get_latest_ai_decisions() -> List[Dict[str, object]]:
                     "position_pct": float(item.get("position_pct") or 0.0),
                     "reduce_pct": float(item.get("reduce_pct") or 0.0),
                     "reason": str(item.get("reason") or ""),
-                    "warnings": list(item.get("warnings") or []),
-                    "final_score": float(item.get("final_score") or 0.0),
+                "warnings": list(item.get("warnings") or []),
+                "final_score": float(item.get("final_score") or 0.0),
+                "ai_score": float(item.get("ai_score") or 0.0),
+                "setup_score": float(item.get("setup_score") or item.get("final_score") or 0.0),
+                "execution_score": float(item.get("execution_score") or item.get("final_score") or 0.0),
+                "market_risk_penalty": float(item.get("market_risk_penalty") or 0.0),
+                "portfolio_risk_penalty": float(item.get("portfolio_risk_penalty") or 0.0),
+                "phase_penalty": float(item.get("phase_penalty") or 0.0),
+                "gate_penalty": float(item.get("gate_penalty") or 0.0),
+            }
+        )
+        rows.sort(key=lambda row: (-row["confidence"], -row["final_score"], row["symbol"]))
+        return rows
+    runtime_states = live_state.get("runtime_states") if isinstance(live_state, dict) else {}
+    if isinstance(runtime_states, dict) and runtime_states:
+        rows = []
+        for symbol, payload in runtime_states.items():
+            item = dict(payload or {})
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "name": names.get(symbol, symbol),
+                    "action": str(item.get("last_ai_action") or "HOLD"),
+                    "confidence": 0.0,
+                    "risk_mode": "NORMAL",
+                    "position_pct": 0.0,
+                    "reduce_pct": 0.0,
+                    "reason": "来自最近一次运行时状态缓存",
+                    "warnings": [],
+                    "final_score": float(item.get("last_execution_score") or 0.0),
+                    "ai_score": float(item.get("last_ai_score") or 0.0),
+                    "setup_score": float(item.get("last_setup_score") or 0.0),
+                    "execution_score": float(item.get("last_execution_score") or 0.0),
+                    "market_risk_penalty": 0.0,
+                    "portfolio_risk_penalty": 0.0,
+                    "phase_penalty": 0.0,
+                    "gate_penalty": 0.0,
                 }
             )
-        rows.sort(key=lambda row: (-row["confidence"], -row["final_score"], row["symbol"]))
+        rows.sort(key=lambda row: (-abs(float(row["execution_score"])), row["symbol"]))
         return rows
     reviewer = live_state.get("ai_reviewer") if isinstance(live_state, dict) else []
     rows = []
@@ -492,6 +533,13 @@ def get_latest_ai_decisions() -> List[Dict[str, object]]:
                 "reason": str(item.get("reason") or ""),
                 "warnings": [],
                 "final_score": 0.0,
+                "ai_score": 0.0,
+                "setup_score": 0.0,
+                "execution_score": 0.0,
+                "market_risk_penalty": 0.0,
+                "portfolio_risk_penalty": 0.0,
+                "phase_penalty": 0.0,
+                "gate_penalty": 0.0,
             }
         )
     rows.sort(key=lambda row: (-row["confidence"], row["symbol"]))
@@ -633,9 +681,28 @@ def get_home_view() -> Dict[str, object]:
         actions=actions,
         strategy_status=strategy_status,
     )
+    executable_buy_count = sum(
+        1
+        for row in ai_decisions
+        if str(row.get("action") or "") == "BUY"
+        and float(row.get("execution_score") or 0.0) >= SETTINGS.scoring.min_execution_score_to_buy
+        and bool(execution.get("can_open_position"))
+    )
+    executable_reduce_count = sum(
+        1
+        for row in ai_decisions
+        if str(row.get("action") or "") in {"SELL", "REDUCE"}
+        and abs(float(row.get("execution_score") or 0.0)) >= SETTINGS.scoring.min_execution_score_to_reduce
+        and bool(execution.get("can_reduce_position"))
+    )
+    score_breakdowns = sorted(
+        [row for row in ai_decisions if row.get("symbol")],
+        key=lambda item: abs(SETTINGS.scoring.min_execution_score_to_buy - float(item.get("execution_score") or 0.0)),
+    )[:3]
     return {
         "summary": summary,
         "system_status": system_status,
+        "engine_mode": str(live_state.get("engine_mode") or SETTINGS.runtime.engine_mode),
         "phase": phase,
         "execution": execution,
         "strategy_status": strategy_status,
@@ -645,6 +712,12 @@ def get_home_view() -> Dict[str, object]:
         "no_buy_reasons": no_buy_reasons,
         "account": account,
         "stats": stats,
+        "opportunities": {
+            "buy_count": executable_buy_count,
+            "reduce_count": executable_reduce_count,
+            "top_limitations": no_buy_reasons[:3],
+        },
+        "score_breakdowns": score_breakdowns,
     }
 
 

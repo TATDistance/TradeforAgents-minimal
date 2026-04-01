@@ -128,6 +128,23 @@ bash start.sh web
 -> 模拟执行
 ```
 
+### 事件驱动模式
+
+第七阶段之后，实时引擎支持：
+
+- `event_driven_mode`
+- `polling_mode`
+
+默认建议使用：
+
+- `event_driven_mode`
+
+它的特点是：
+
+- 不再每轮对所有 symbol 全量重算
+- 只有当价格、特征、市场状态、持仓状态、账户状态发生明显变化时，才触发该 symbol 的实时决策链
+- 出错时仍可回退到旧的轮询模式
+
 ### 对照模式
 
 ```text
@@ -151,6 +168,59 @@ bash start.sh web
 -> 账户更新
 -> 实时展示
 ```
+
+在 `event_driven_mode` 下，更准确的主链是：
+
+```text
+行情变化事件
+-> 触发器判断是否值得重算
+-> 仅对受影响 symbol 重新构建特征
+-> AI 决策引擎
+-> 风控
+-> 动作计划
+-> 模拟执行
+```
+
+## 双分体系
+
+当前不再只靠一个 `final_score` 判断“观察”和“执行”。
+
+系统现在同时维护：
+
+- `setup_score`
+  - 这只股票是否值得继续观察
+- `execution_score`
+  - 这只股票当前是否值得立刻执行
+
+可以这样理解：
+
+- `setup_score` 高但 `execution_score` 低
+  - 说明票不差，但当前阶段/风险/账户状态不支持动手
+- `execution_score` 过阈值
+  - 说明当前具备真正执行的条件
+
+默认阈值：
+
+```yaml
+scoring:
+  min_setup_score_to_watch: 0.35
+  min_execution_score_to_buy: 0.55
+  min_execution_score_to_reduce: 0.45
+```
+
+首页和 8610 都会展示：
+
+- `setup_score`
+- `execution_score`
+- `ai_score`
+- 市场风险惩罚
+- 账户/阶段惩罚
+
+这样用户可以直接看懂：
+
+- 为什么现在没有动作
+- 为什么现在只能观察
+- 为什么这只票接近可以买/减仓
 
 ## 交易阶段约束
 

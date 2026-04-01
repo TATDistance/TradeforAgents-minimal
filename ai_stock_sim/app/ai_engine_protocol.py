@@ -24,6 +24,13 @@ class AIDecisionEngineOutput(BaseModel):
     position_pct: float = 0.0
     reduce_pct: Optional[float] = None
     confidence: float = 0.5
+    ai_score: float = 0.0
+    setup_score: float = 0.0
+    execution_score: float = 0.0
+    market_risk_penalty: float = 0.0
+    portfolio_risk_penalty: float = 0.0
+    phase_penalty: float = 0.0
+    gate_penalty: float = 0.0
     risk_mode: Literal["NORMAL", "DEFENSIVE", "RISK_OFF"] = "NORMAL"
     holding_bias: str = "SHORT_TERM"
     reason: str = ""
@@ -50,6 +57,13 @@ def normalize_engine_output(payload: Dict[str, Any], symbol: str, fallback_reaso
         position_pct=max(0.0, min(1.0, float(payload.get("position_pct") or 0.0))),
         reduce_pct=max(0.0, min(1.0, float(payload.get("reduce_pct") or 0.0))) if payload.get("reduce_pct") is not None else None,
         confidence=max(0.0, min(1.0, float(payload.get("confidence") or 0.5))),
+        ai_score=float(payload.get("ai_score") or 0.0),
+        setup_score=float(payload.get("setup_score") or payload.get("final_score") or 0.0),
+        execution_score=float(payload.get("execution_score") or payload.get("final_score") or 0.0),
+        market_risk_penalty=float(payload.get("market_risk_penalty") or 0.0),
+        portfolio_risk_penalty=float(payload.get("portfolio_risk_penalty") or 0.0),
+        phase_penalty=float(payload.get("phase_penalty") or 0.0),
+        gate_penalty=float(payload.get("gate_penalty") or 0.0),
         risk_mode=risk_mode,  # type: ignore[arg-type]
         holding_bias=str(payload.get("holding_bias") or "SHORT_TERM"),
         reason=str(payload.get("reason") or fallback_reason or "已按结构化默认规则解析"),

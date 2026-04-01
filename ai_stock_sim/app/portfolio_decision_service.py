@@ -93,13 +93,13 @@ class PortfolioDecisionService:
             if mapped_action == "HOLD":
                 priority = 0.25
             elif mapped_action == "BUY":
-                priority = 0.55 + decision.confidence * 0.35
+                priority = 0.45 + max(decision.execution_score, decision.setup_score) * 0.35 + decision.confidence * 0.18
             elif mapped_action == "REDUCE":
-                priority = 0.72 + decision.confidence * 0.18
+                priority = 0.62 + abs(decision.execution_score) * 0.2 + decision.confidence * 0.12
             elif mapped_action == "SELL":
-                priority = 0.85 + decision.confidence * 0.12
+                priority = 0.78 + abs(decision.execution_score) * 0.16 + decision.confidence * 0.1
             else:
-                priority = 0.8
+                priority = 0.74 + abs(decision.execution_score) * 0.08
             actions.append(
                 PortfolioManagerAction(
                     symbol=symbol,
@@ -112,8 +112,15 @@ class PortfolioDecisionService:
                     mode_name=decision.source_mode,
                     metadata={
                         "confidence": decision.confidence,
+                        "ai_score": decision.ai_score,
+                        "setup_score": decision.setup_score,
+                        "execution_score": decision.execution_score,
                         "final_score": decision.final_score,
                         "feature_score": decision.feature_score,
+                        "market_risk_penalty": decision.market_risk_penalty,
+                        "portfolio_risk_penalty": decision.portfolio_risk_penalty,
+                        "phase_penalty": decision.phase_penalty,
+                        "gate_penalty": decision.gate_penalty,
                         "risk_mode": decision.risk_mode,
                         "warnings": decision.warnings,
                         "engine_action": decision.action,

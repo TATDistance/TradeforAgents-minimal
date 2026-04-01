@@ -15,7 +15,7 @@ def test_ai_decision_engine_can_open_buy() -> None:
         "risk_constraints": {"allow_new_buy": True},
         "market_regime": {"regime": "TRENDING_UP"},
         "market_phase": {"phase": "CONTINUOUS_AUCTION_AM"},
-        "execution_gate": {"can_execute_fill": True},
+        "execution_gate": {"can_execute_fill": True, "can_open_position": True},
     }
     decision = engine.decide_symbol(
         symbol="600036",
@@ -25,6 +25,8 @@ def test_ai_decision_engine_can_open_buy() -> None:
     )
     assert decision.action == "BUY"
     assert decision.position_pct > 0
+    assert decision.ai_score > 0
+    assert decision.execution_score >= decision.setup_score - 0.2
 
 
 def test_ai_decision_engine_can_reduce_or_sell_position() -> None:
@@ -38,7 +40,7 @@ def test_ai_decision_engine_can_reduce_or_sell_position() -> None:
         "risk_constraints": {"allow_new_buy": False},
         "market_regime": {"regime": "HIGH_VOLATILITY"},
         "market_phase": {"phase": "CONTINUOUS_AUCTION_PM"},
-        "execution_gate": {"can_execute_fill": True},
+        "execution_gate": {"can_execute_fill": True, "can_reduce_position": True},
     }
     decision = engine.decide_symbol(
         symbol="600036",
@@ -48,6 +50,7 @@ def test_ai_decision_engine_can_reduce_or_sell_position() -> None:
     )
     assert decision.action in {"REDUCE", "SELL", "HOLD"}
     assert decision.risk_mode in {"DEFENSIVE", "RISK_OFF"}
+    assert decision.ai_score <= 0
 
 
 def test_ai_decision_engine_does_not_treat_percent_value_as_limit_up() -> None:

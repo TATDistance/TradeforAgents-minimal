@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict, List, Mapping
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -25,6 +25,7 @@ from .market_data_service import MarketDataService
 from .mock_broker import MockBroker
 from .portfolio_service import build_portfolio_feedback, build_portfolio_state, mark_to_market
 from .report_service import ReportService
+from .realtime_engine import RealtimeEngine
 from .review_service import ReviewService
 from .risk_engine import RiskEngine
 from .settings import Settings, load_settings
@@ -60,6 +61,7 @@ class TradingScheduler:
         self.review_service = ReviewService()
         self.evaluation_service = EvaluationService(self.settings)
         self.report_service = ReportService(self.settings, evaluation_service=self.evaluation_service)
+        self.realtime_engine = RealtimeEngine(self.settings)
         self.scheduler = BackgroundScheduler()
         self._last_t1_release_date: str | None = None
         self._last_evaluation_trade_date: str | None = None
@@ -116,6 +118,9 @@ class TradingScheduler:
             decision_contexts = {}
             engine_decisions = {}
             compare_result = {}
+            runtime_events = []
+            trigger_decisions = []
+            runtime_states = self.realtime_engine.state_store.export()
             final_signals: List[FinalSignal] = []
             ai_decisions = []
             portfolio = build_portfolio_state(conn)
@@ -129,9 +134,44 @@ class TradingScheduler:
             risk_results: List[Dict[str, object]] = []
             if execution_gate.can_generate_signal:
                 frame_map = {}
+                snapshot_rows = {
+                    str(row["symbol"]): {
+                        "symbol": str(row["symbol"]),
+                        "name": str(row.get("name") or row["symbol"]),
+                        "latest_price": float(row.get("latest_price") or 0.0),
+                        "pct_change": float(row.get("pct_change") or 0.0),
+                        "amount": float(row.get("amount") or 0.0),
+                        "turnover_rate": float(row.get("turnover_rate") or 0.0),
+                        "market": str(row.get("market") or ""),
+                        "asset_type": str(row.get("asset_type") or "stock"),
+                    }
+                    for _, row in universe_result.snapshot.iterrows()
+                } if hasattr(universe_result, "snapshot") and not universe_result.snapshot.empty else {}
+                engine_symbols = list(universe_result.selected_symbols)
 
                 if mode_state.run_legacy:
-                    grouped = self.strategy_engine.run_batch(universe_result.selected_symbols, asset_type_map=asset_type_map)
+                    legacy_symbols = list(universe_result.selected_symbols)
+                    if self.settings.runtime.engine_mode == "event_driven_mode":
+                        event_preview = self.realtime_engine.select_symbols_for_cycle(
+                            symbols=universe_result.selected_symbols,
+                            snapshot_rows=snapshot_rows,
+                            feature_scores={},
+                            market_regime=market_regime.regime,
+                            portfolio_feedback=portfolio_feedback,
+                            phase_name=phase_state.phase,
+                        )
+                        runtime_events = event_preview.get("events") or []
+                        trigger_decisions = event_preview.get("trigger_decisions") or []
+                        runtime_states = event_preview.get("runtime_states") or runtime_states
+                        self._log_trigger_decisions(_safe_log, trigger_decisions, phase_state.phase, market_regime.regime)
+                        changed = list(event_preview.get("changed_symbols") or [])
+                        if changed:
+                            legacy_symbols = changed
+                            engine_symbols = changed
+                        else:
+                            legacy_symbols = []
+                            engine_symbols = []
+                    grouped = self.strategy_engine.run_batch(legacy_symbols, asset_type_map=asset_type_map) if legacy_symbols else {}
                     for signal_list in grouped.values():
                         for signal in signal_list:
                             write_signal(conn, signal)
@@ -163,31 +203,44 @@ class TradingScheduler:
                 if mode_state.run_engine:
                     frame_map = {
                         symbol: self.strategy_engine.load_bars(symbol, asset_type=asset_type_map.get(symbol, "stock"))
-                        for symbol in universe_result.selected_symbols
+                        for symbol in engine_symbols
                     }
                     feature_map = {
                         symbol: self.strategy_engine.run_features_for_symbol_on_frame(symbol, frame)
                         for symbol, frame in frame_map.items()
                     }
-                    snapshot_rows = {
-                        str(row["symbol"]): {
-                            "symbol": str(row["symbol"]),
-                            "name": str(row.get("name") or row["symbol"]),
-                            "latest_price": float(row.get("latest_price") or 0.0),
-                            "pct_change": float(row.get("pct_change") or 0.0),
-                            "amount": float(row.get("amount") or 0.0),
-                            "turnover_rate": float(row.get("turnover_rate") or 0.0),
-                        }
-                        for _, row in universe_result.snapshot.iterrows()
-                    } if hasattr(universe_result, "snapshot") and not universe_result.snapshot.empty else {}
                     feature_fusions = self.signal_fusion.fuse_features(
                         feature_map,
                         strategy_weights=strategy_weights,
                         market_regime=market_regime,
                         portfolio_feedback=portfolio_feedback,
                     )
+                    if self.settings.runtime.engine_mode == "event_driven_mode" and not trigger_decisions:
+                        event_result = self.realtime_engine.select_symbols_for_cycle(
+                            symbols=engine_symbols,
+                            snapshot_rows=snapshot_rows,
+                            feature_scores={symbol: item.model_dump() for symbol, item in feature_fusions.items()},
+                            market_regime=market_regime.regime,
+                            portfolio_feedback=portfolio_feedback,
+                            phase_name=phase_state.phase,
+                        )
+                        runtime_events = event_result.get("events") or []
+                        trigger_decisions = event_result.get("trigger_decisions") or []
+                        runtime_states = event_result.get("runtime_states") or runtime_states
+                        self._log_trigger_decisions(_safe_log, trigger_decisions, phase_state.phase, market_regime.regime)
+                        changed = list(event_result.get("changed_symbols") or [])
+                        if changed:
+                            engine_symbols = changed
+                            frame_map = {symbol: frame_map[symbol] for symbol in changed if symbol in frame_map}
+                            feature_map = {symbol: feature_map[symbol] for symbol in changed if symbol in feature_map}
+                            feature_fusions = {symbol: feature_fusions[symbol] for symbol in changed if symbol in feature_fusions}
+                        else:
+                            engine_symbols = []
+                            frame_map = {}
+                            feature_map = {}
+                            feature_fusions = {}
                     decision_contexts = self.decision_context_builder.build_batch(
-                        universe_result.selected_symbols,
+                        engine_symbols,
                         snapshot_rows,
                         feature_map,
                         frame_map,
@@ -232,6 +285,26 @@ class TradingScheduler:
                             )
                             legacy_actions = self.portfolio_decision_service.merge(final_signals, manager_decision, market_regime)
                     engine_actions = self.portfolio_decision_service.merge_engine(engine_decisions, market_regime) if engine_decisions else []
+                    self._log_engine_decisions(_safe_log, engine_decisions, phase_state.phase)
+                    for symbol, decision in engine_decisions.items():
+                        position_detail = next(
+                            (
+                                item for item in (portfolio_feedback.get("positions_detail") or [])
+                                if isinstance(item, Mapping) and str(item.get("symbol")) == symbol
+                            ),
+                            {},
+                        )
+                        self.realtime_engine.state_store.update_scores(
+                            symbol,
+                            feature_score=decision.feature_score,
+                            setup_score=decision.setup_score,
+                            execution_score=decision.execution_score,
+                            ai_score=decision.ai_score,
+                            ai_action=decision.action,
+                            position_qty=int(position_detail.get("qty", 0) or 0) if isinstance(position_detail, Mapping) else 0,
+                            cash_pct=float(portfolio_feedback.get("cash_pct", 0.0) or 0.0),
+                        )
+                    runtime_states = self.realtime_engine.state_store.export()
                 else:
                     engine_actions = []
 
@@ -383,6 +456,9 @@ class TradingScheduler:
                 decision_contexts=decision_contexts,
                 engine_decisions=engine_decisions,
                 compare_result=compare_result,
+                runtime_events=runtime_events,
+                trigger_decisions=trigger_decisions,
+                runtime_states=runtime_states,
                 planned_actions=planned_actions,
                 risk_results=risk_results,
                 portfolio_feedback=portfolio_feedback,
@@ -398,7 +474,9 @@ class TradingScheduler:
                     phase=phase_state.phase,
                     trading_day=phase_state.is_trading_day,
                     decision_mode=mode_state.effective_mode,
+                    engine_mode=self.settings.runtime.engine_mode,
                     candidates=len(universe_result.selected_symbols),
+                    changed_symbols=len(engine_symbols) if execution_gate.can_generate_signal else 0,
                     final_signals=len(final_signals),
                     orders=len(execution_events),
                 )
@@ -407,7 +485,9 @@ class TradingScheduler:
                 "phase": phase_state.phase,
                 "is_trading_day": phase_state.is_trading_day,
                 "decision_mode": mode_state.effective_mode,
+                "engine_mode": self.settings.runtime.engine_mode,
                 "candidate_count": len(universe_result.selected_symbols),
+                "changed_symbol_count": len(engine_symbols) if execution_gate.can_generate_signal else 0,
                 "final_signal_count": len(final_signals),
                 "planned_action_count": len(planned_actions),
                 "execution_events": execution_events,
@@ -472,6 +552,35 @@ class TradingScheduler:
             }
         return context_map
 
+    @staticmethod
+    def _log_trigger_decisions(_safe_log, trigger_decisions: List[Dict[str, object]], phase_name: str, regime_name: str) -> None:
+        for item in trigger_decisions:
+            if not bool(item.get("triggered")):
+                continue
+            payload = {
+                "symbol": str(item.get("symbol") or ""),
+                "phase": phase_name,
+                "regime": regime_name,
+                "reasons": list(item.get("reasons") or []),
+                "cooldown_blocked": bool(item.get("cooldown_blocked")),
+            }
+            _safe_log("INFO", "trigger", json.dumps(payload, ensure_ascii=False))
+
+    @staticmethod
+    def _log_engine_decisions(_safe_log, engine_decisions: Mapping[str, object], phase_name: str) -> None:
+        for symbol, decision in (engine_decisions or {}).items():
+            payload = {
+                "symbol": symbol,
+                "phase": phase_name,
+                "action": getattr(decision, "action", "HOLD"),
+                "setup_score": round(float(getattr(decision, "setup_score", 0.0) or 0.0), 6),
+                "execution_score": round(float(getattr(decision, "execution_score", 0.0) or 0.0), 6),
+                "ai_score": round(float(getattr(decision, "ai_score", 0.0) or 0.0), 6),
+                "confidence": round(float(getattr(decision, "confidence", 0.0) or 0.0), 6),
+                "risk_mode": str(getattr(decision, "risk_mode", "NORMAL")),
+            }
+            _safe_log("INFO", "decision_engine", json.dumps(payload, ensure_ascii=False))
+
     def _write_live_state(
         self,
         phase_name: str,
@@ -486,6 +595,9 @@ class TradingScheduler:
         decision_contexts,
         engine_decisions,
         compare_result,
+        runtime_events,
+        trigger_decisions,
+        runtime_states,
         planned_actions,
         risk_results,
         portfolio_feedback,
@@ -505,6 +617,10 @@ class TradingScheduler:
             "decision_contexts": decision_contexts,
             "ai_decision_engine": {symbol: item.model_dump() for symbol, item in engine_decisions.items()} if isinstance(engine_decisions, dict) else {},
             "decision_compare": compare_result,
+            "engine_mode": self.settings.runtime.engine_mode,
+            "runtime_events": runtime_events,
+            "trigger_decisions": trigger_decisions,
+            "runtime_states": runtime_states,
             "final_actions": [action.model_dump() for action in planned_actions],
             "risk_results": risk_results,
             "portfolio_feedback": portfolio_feedback,

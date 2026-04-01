@@ -107,6 +107,9 @@ class ScoringConfig:
     weight_risk: float = 0.30
     weight_stability: float = 0.20
     weight_execution: float = 0.20
+    min_setup_score_to_watch: float = 0.35
+    min_execution_score_to_buy: float = 0.55
+    min_execution_score_to_reduce: float = 0.45
 
 
 @dataclass
@@ -176,6 +179,22 @@ class CompareModeConfig:
 
 
 @dataclass
+class RuntimeConfig:
+    engine_mode: str = "event_driven_mode"
+
+
+@dataclass
+class TriggerConfig:
+    price_change_threshold_pct: float = 0.003
+    pct_change_delta_threshold: float = 0.003
+    amount_delta_threshold: float = 0.20
+    feature_score_delta_threshold: float = 0.08
+    portfolio_state_delta_threshold: float = 0.05
+    cooldown_seconds: int = 20
+    stale_refresh_seconds: int = 120
+
+
+@dataclass
 class UIConfig:
     default_page: str = "ai_home"
     enable_research_center: bool = True
@@ -223,6 +242,8 @@ class Settings:
     decision_engine: DecisionEngineConfig = field(default_factory=DecisionEngineConfig)
     feature_layer: FeatureLayerConfig = field(default_factory=FeatureLayerConfig)
     compare_mode: CompareModeConfig = field(default_factory=CompareModeConfig)
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    trigger: TriggerConfig = field(default_factory=TriggerConfig)
     ui: UIConfig = field(default_factory=UIConfig)
 
     @property

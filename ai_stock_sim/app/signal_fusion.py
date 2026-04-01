@@ -128,20 +128,22 @@ class SignalFusion:
                 total_weight += abs(weight)
                 breakdown[item.strategy_name] = round(value, 4)
             feature_score = 0.0 if total_weight <= 0 else weighted_total / total_weight
-            risk_penalty = 0.0
+            market_risk_penalty = 0.0
             if market_regime:
                 if market_regime.regime == "HIGH_VOLATILITY":
-                    risk_penalty += 0.08
+                    market_risk_penalty += 0.08
                 elif market_regime.regime == "RISK_OFF":
-                    risk_penalty += 0.14
+                    market_risk_penalty += 0.14
                 elif market_regime.regime == "TRENDING_DOWN":
-                    risk_penalty += 0.05
+                    market_risk_penalty += 0.05
+            portfolio_risk_penalty = 0.0
             if portfolio_feedback:
                 drawdown = float(portfolio_feedback.get("drawdown", 0.0) or 0.0)
                 total_position_pct = float(portfolio_feedback.get("total_position_pct", 0.0) or 0.0)
-                risk_penalty += min(0.18, drawdown * 1.6)
+                portfolio_risk_penalty += min(0.18, drawdown * 1.6)
                 if total_position_pct >= self.settings.portfolio_feedback.high_position_threshold:
-                    risk_penalty += 0.05
+                    portfolio_risk_penalty += 0.05
+            risk_penalty = market_risk_penalty + portfolio_risk_penalty
             final_score = max(-1.0, min(1.0, feature_score - risk_penalty))
             dominant_direction = "NEUTRAL"
             if final_score >= 0.12:
@@ -161,6 +163,11 @@ class SignalFusion:
                 feature_score=round(feature_score, 4),
                 dominant_direction=dominant_direction,  # type: ignore[arg-type]
                 ai_decision_score=0.0,
+                setup_score=round(final_score, 4),
+                execution_score=round(final_score, 4),
+                market_risk_penalty=round(market_risk_penalty, 4),
+                portfolio_risk_penalty=round(portfolio_risk_penalty, 4),
+                phase_penalty=0.0,
                 risk_penalty=round(risk_penalty, 4),
                 final_score=round(final_score, 4),
                 final_action=final_action,  # type: ignore[arg-type]

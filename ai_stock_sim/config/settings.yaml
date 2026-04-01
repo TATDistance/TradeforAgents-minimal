@@ -31,6 +31,9 @@ scoring:
   weight_risk: 0.3
   weight_stability: 0.2
   weight_execution: 0.2
+  min_setup_score_to_watch: 0.35
+  min_execution_score_to_buy: 0.55
+  min_execution_score_to_reduce: 0.45
 dashboard:
   auto_refresh_seconds: 10
   enable_log_filter: true
@@ -70,6 +73,16 @@ feature_layer:
 compare_mode:
   enabled: true
   record_mode_differences: true
+runtime:
+  engine_mode: event_driven_mode
+trigger:
+  price_change_threshold_pct: 0.003
+  pct_change_delta_threshold: 0.003
+  amount_delta_threshold: 0.2
+  feature_score_delta_threshold: 0.08
+  portfolio_state_delta_threshold: 0.05
+  cooldown_seconds: 20
+  stale_refresh_seconds: 120
 ui:
   default_page: ai_home
   enable_research_center: true

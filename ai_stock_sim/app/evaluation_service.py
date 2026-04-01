@@ -59,6 +59,7 @@ class EvaluationService:
             attribution=attribution,
         )
         return self._build_evaluation(
+            conn=conn,
             strategy_name=strategy_name,
             period_type="daily",
             period_start=target_date.isoformat(),
@@ -86,6 +87,7 @@ class EvaluationService:
             attribution=attribution,
         )
         return self._build_evaluation(
+            conn=conn,
             strategy_name=strategy_name,
             period_type="weekly",
             period_start=start.isoformat(),
@@ -113,6 +115,7 @@ class EvaluationService:
             attribution=attribution,
         )
         return self._build_evaluation(
+            conn=conn,
             strategy_name=strategy_name,
             period_type="monthly",
             period_start=period_start.isoformat(),
@@ -137,6 +140,7 @@ class EvaluationService:
         else:
             snapshots = []
         return self._build_evaluation(
+            conn=conn,
             strategy_name=strategy_name,
             period_type=f"rolling_trade_{last_n_trades}",
             period_start=selected[0].closed_ts.date().isoformat() if selected else None,
@@ -169,6 +173,7 @@ class EvaluationService:
             attribution=attribution,
         )
         return self._build_evaluation(
+            conn=conn,
             strategy_name=strategy_name,
             period_type=f"rolling_day_{last_n_days}",
             period_start=start.isoformat() if start else None,
@@ -279,6 +284,7 @@ class EvaluationService:
 
     def _build_evaluation(
         self,
+        conn,
         strategy_name: str,
         period_type: str,
         period_start: Optional[str],
@@ -299,6 +305,7 @@ class EvaluationService:
             total_return_result = calc_total_return(1.0, 1.0 + sum(trade_returns))
         monthly_returns = self._monthly_returns_from_snapshots(snapshots)
         recent_window = trade_pnls[-20:]
+        runtime_metrics = self._runtime_event_metrics(conn, period_start, period_end)
         metrics = {
             "total_return": total_return_result.value,
             "monthly_return": total_return_result.value,
@@ -320,7 +327,7 @@ class EvaluationService:
             "avg_win": sum(wins) / len(wins) if wins else 0.0,
             "avg_loss": sum(losses) / len(losses) if losses else 0.0,
             "signal_hit_rate": calc_win_rate(trade_returns).value,
-            "risk_events": 0,
+            "risk_events": runtime_metrics["blocked_trigger_count"],
             "return_volatility": self._return_volatility(trade_returns),
         }
         score = self.scoring.score_strategy(strategy_name, metrics)
@@ -334,6 +341,7 @@ class EvaluationService:
             "max_single_loss": metrics["max_single_loss"],
             "avg_win": metrics["avg_win"],
             "avg_loss": metrics["avg_loss"],
+            "runtime_event_metrics": runtime_metrics,
         }
         return StrategyEvaluation(
             strategy_name=strategy_name,
@@ -576,3 +584,93 @@ class EvaluationService:
         from .strategy_engine import STRATEGY_REGISTRY
 
         return sorted(STRATEGY_REGISTRY.keys())
+
+    def _runtime_event_metrics(self, conn, period_start: Optional[str], period_end: Optional[str]) -> dict[str, float | int]:
+        trigger_logs = self._load_runtime_logs(conn, "trigger", period_start, period_end)
+        decision_logs = self._load_runtime_logs(conn, "decision_engine", period_start, period_end)
+        actual_orders = [
+            dict(row)
+            for row in fetch_rows_by_sql(
+                conn,
+                """
+                SELECT symbol, status, intent_only, phase
+                FROM orders
+                WHERE (? IS NULL OR date(ts) >= ?)
+                  AND (? IS NULL OR date(ts) <= ?)
+                """,
+                (period_start, period_start, period_end, period_end),
+            )
+        ]
+
+        trigger_count = len(trigger_logs)
+        actionable_decisions = [
+            row
+            for row in decision_logs
+            if str(row.get("action") or "") in {"BUY", "SELL", "REDUCE", "PREPARE_BUY", "PREPARE_REDUCE"}
+        ]
+        actual_fills = [
+            row
+            for row in actual_orders
+            if not bool(row.get("intent_only")) and str(row.get("status") or "") in {"FILLED", "PARTIAL_FILLED"}
+        ]
+        intent_orders = [row for row in actual_orders if bool(row.get("intent_only"))]
+        avg_setup_score = (
+            sum(float(row.get("setup_score") or 0.0) for row in decision_logs) / len(decision_logs)
+            if decision_logs
+            else 0.0
+        )
+        avg_execution_score = (
+            sum(float(row.get("execution_score") or 0.0) for row in decision_logs) / len(decision_logs)
+            if decision_logs
+            else 0.0
+        )
+        filled_symbols = {str(row.get("symbol") or "") for row in actual_fills if str(row.get("symbol") or "")}
+        filled_decisions = [row for row in decision_logs if str(row.get("symbol") or "") in filled_symbols]
+        avg_filled_execution_score = (
+            sum(float(row.get("execution_score") or 0.0) for row in filled_decisions) / len(filled_decisions)
+            if filled_decisions
+            else 0.0
+        )
+
+        effective_trigger_rate = len(actionable_decisions) / trigger_count if trigger_count else 0.0
+        fill_rate = len(actual_fills) / trigger_count if trigger_count else 0.0
+        return {
+            "trigger_count": trigger_count,
+            "decision_count": len(decision_logs),
+            "actionable_decision_count": len(actionable_decisions),
+            "actual_fill_count": len(actual_fills),
+            "intent_order_count": len(intent_orders),
+            "blocked_trigger_count": max(trigger_count - len(actionable_decisions), 0),
+            "effective_trigger_rate": round(effective_trigger_rate, 6),
+            "trigger_fill_rate": round(fill_rate, 6),
+            "avg_setup_score": round(avg_setup_score, 6),
+            "avg_execution_score": round(avg_execution_score, 6),
+            "avg_filled_execution_score": round(avg_filled_execution_score, 6),
+        }
+
+    @staticmethod
+    def _load_runtime_logs(conn, module: str, period_start: Optional[str], period_end: Optional[str]) -> List[Mapping[str, object]]:
+        rows = fetch_rows_by_sql(
+            conn,
+            """
+            SELECT ts, message
+            FROM system_logs
+            WHERE lower(module) = lower(?)
+              AND (? IS NULL OR date(ts) >= ?)
+              AND (? IS NULL OR date(ts) <= ?)
+            ORDER BY ts ASC, id ASC
+            """,
+            (module, period_start, period_start, period_end, period_end),
+        )
+        parsed: List[Mapping[str, object]] = []
+        for row in rows:
+            message = str(row["message"] or "").strip()
+            if not message:
+                continue
+            try:
+                payload = json.loads(message)
+            except Exception:
+                continue
+            if isinstance(payload, Mapping):
+                parsed.append(payload)
+        return parsed

@@ -34,6 +34,7 @@ def main() -> int:
         "engine_starting",
         refresh_interval=settings.refresh_interval_seconds,
         decision_mode=settings.decision_engine.mode,
+        engine_mode=settings.runtime.engine_mode,
     )
     scheduler.start()
     scheduler.run_cycle()

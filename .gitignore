@@ -25,4 +25,5 @@ ai_stock_sim/data/*
 !ai_stock_sim/data/calendars/cn_a_2026.json
 ai_stock_sim/external/vnpy_workspace/exports/*.json
 ai_stock_sim/external/vnpy_workspace/generated_strategies/
+ai_stock_sim/config/runtime_symbols.yaml
 .DS_Store

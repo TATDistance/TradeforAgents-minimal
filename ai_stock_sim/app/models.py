@@ -68,6 +68,11 @@ class FeatureFusionScore(BaseModel):
     feature_score: float = 0.0
     dominant_direction: StrategyDirection = "NEUTRAL"
     ai_decision_score: float = 0.0
+    setup_score: float = 0.0
+    execution_score: float = 0.0
+    market_risk_penalty: float = 0.0
+    portfolio_risk_penalty: float = 0.0
+    phase_penalty: float = 0.0
     risk_penalty: float = 0.0
     final_score: float = 0.0
     final_action: PortfolioActionType = "HOLD"

@@ -96,6 +96,13 @@ class ReportService:
         phase_logs = payload["phase_logs"]
         tomorrow_actions = payload["tomorrow_actions"]
         summary = payload["summary"]
+        runtime_metrics = evaluation.get("metadata_json")
+        runtime_stats = {}
+        if runtime_metrics:
+            try:
+                runtime_stats = json.loads(runtime_metrics).get("runtime_event_metrics") or {}
+            except Exception:
+                runtime_stats = {}
         lines = [
             f"# {payload['report_scope']} 报告",
             "",
@@ -110,6 +117,11 @@ class ReportService:
             f"- 今日真实成交数：{summary['actual_fills']}",
             f"- 今日阶段拦截动作数：{summary['phase_blocked_actions']}",
             f"- 盘后明日准备动作数：{summary['post_close_preparations']}",
+            f"- 事件触发数：{runtime_stats.get('trigger_count', 0)}",
+            f"- 有效触发率：{float(runtime_stats.get('effective_trigger_rate', 0.0)):.2%}",
+            f"- 触发后真实成交率：{float(runtime_stats.get('trigger_fill_rate', 0.0)):.2%}",
+            f"- 平均 setup_score：{float(runtime_stats.get('avg_setup_score', 0.0)):.2f}",
+            f"- 平均 execution_score：{float(runtime_stats.get('avg_execution_score', 0.0)):.2f}",
             "",
             "## 今日交易阶段流转",
         ]
