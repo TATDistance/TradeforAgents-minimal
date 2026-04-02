@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import time as time_module
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -181,6 +182,8 @@ def _load_snapshot_symbol_names(settings: Settings) -> Dict[str, str]:
 
 
 def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
+    if getattr(sys, "frozen", False) and os.name == "nt":
+        return {}
     mapping: Dict[str, str] = {}
     session = requests.Session()
     proxy_override = os.environ.get("TRADEFORAGENTS_BYPASS_REMOTE_PROXY", "").strip().lower()

@@ -334,6 +334,8 @@ def _eastmoney_secid(symbol: str) -> str:
 
 
 def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
+    if _packaged_windows_runtime():
+        return {}
     result: Dict[str, str] = {}
     pending = [str(symbol).strip() for symbol in symbols if re.fullmatch(r"\d{6}", str(symbol).strip())]
     if not pending:
