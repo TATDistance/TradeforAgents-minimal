@@ -49,6 +49,12 @@ def load_runtime_watchlist(settings: Settings | None = None) -> WatchlistPayload
         "valid_until": str(payload.get("valid_until") or ""),
         "trading_day": str(payload.get("trading_day") or ""),
     }
+    if payload.get("watchlist_evolution") is not None:
+        result["watchlist_evolution"] = payload.get("watchlist_evolution")
+    if payload.get("watchlist_events") is not None:
+        result["watchlist_events"] = payload.get("watchlist_events")
+    if payload.get("last_scan_at") is not None:
+        result["last_scan_at"] = str(payload.get("last_scan_at") or "")
     result["stale"] = is_watchlist_stale(result, settings=resolved_settings)
     return result
 
@@ -76,6 +82,12 @@ def sync_watchlist_to_runtime(
             "include_etfs": True,
         },
     }
+    if watchlist.get("watchlist_evolution") is not None:
+        payload["watchlist_evolution"] = watchlist.get("watchlist_evolution")
+    if watchlist.get("watchlist_events") is not None:
+        payload["watchlist_events"] = watchlist.get("watchlist_events")
+    if watchlist.get("last_scan_at") is not None:
+        payload["last_scan_at"] = str(watchlist.get("last_scan_at") or "")
     runtime_path = _runtime_symbols_path(resolved_settings)
     runtime_path.parent.mkdir(parents=True, exist_ok=True)
     runtime_path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")

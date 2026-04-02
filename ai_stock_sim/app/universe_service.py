@@ -24,6 +24,7 @@ class UniverseService:
         self.market_data = MarketDataService(self.settings)
 
     def build_universe(self) -> UniverseResult:
+        self.symbols = load_symbol_config(self.settings.project_root)
         warnings: List[str] = []
         snapshot = self.market_data.fetch_realtime_snapshot(
             limit=self.settings.scan_limit,
@@ -39,26 +40,29 @@ class UniverseService:
         filtered = filtered[~filtered["is_st"]]
 
         candidates: List[str] = []
+        priority_symbols: List[str] = []
+        for symbol in self.symbols.stock_watchlist + self.symbols.etf_watchlist:
+            clean_symbol = str(symbol).strip()
+            if clean_symbol and clean_symbol not in self.symbols.blacklist and clean_symbol not in priority_symbols:
+                priority_symbols.append(clean_symbol)
+        candidates.extend(priority_symbols)
         for _, row in filtered.iterrows():
             symbol = str(row["symbol"])
             asset_type = str(row.get("asset_type") or "stock")
             history = self.market_data.fetch_history_daily(symbol, asset_type=asset_type, limit=max(self.settings.min_listing_days + 10, 150))
             if len(history) < self.settings.min_listing_days:
                 continue
-            candidates.append(symbol)
-            if len(candidates) >= self.settings.strategy_candidate_limit:
-                break
-
-        for symbol in self.symbols.stock_watchlist + self.symbols.etf_watchlist:
-            if symbol not in candidates and symbol not in self.symbols.blacklist:
+            if symbol not in candidates:
                 candidates.append(symbol)
+            if len(candidates) >= max(self.settings.strategy_candidate_limit, len(priority_symbols)):
+                break
 
         data_source = "eastmoney_live"
         if not candidates:
             warnings.append("过滤后无候选标的")
         return UniverseResult(
             snapshot=snapshot,
-            selected_symbols=candidates[: self.settings.strategy_candidate_limit],
+            selected_symbols=candidates[: max(self.settings.strategy_candidate_limit, len(priority_symbols))],
             warnings=warnings,
             data_source=data_source,
         )

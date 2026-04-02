@@ -104,11 +104,15 @@ class ReportService:
         summary = payload["summary"]
         runtime_metrics = evaluation.get("metadata_json")
         runtime_stats = {}
+        watchlist_stats = {}
         if runtime_metrics:
             try:
-                runtime_stats = json.loads(runtime_metrics).get("runtime_event_metrics") or {}
+                metadata = json.loads(runtime_metrics)
+                runtime_stats = metadata.get("runtime_event_metrics") or {}
+                watchlist_stats = metadata.get("watchlist_runtime_metrics") or {}
             except Exception:
                 runtime_stats = {}
+                watchlist_stats = {}
         lines = [
             f"# {payload['report_scope']} 报告",
             "",
@@ -129,6 +133,11 @@ class ReportService:
             f"- 触发后真实成交率：{float(runtime_stats.get('trigger_fill_rate', 0.0)):.2%}",
             f"- 平均 setup_score：{float(runtime_stats.get('avg_setup_score', 0.0)):.2f}",
             f"- 平均 execution_score：{float(runtime_stats.get('avg_execution_score', 0.0)):.2f}",
+            f"- 动态扫描次数：{int(watchlist_stats.get('scan_count', 0))}",
+            f"- 新机会发现数：{int(watchlist_stats.get('new_candidate_count', 0))}",
+            f"- 新加入监控池数：{int(watchlist_stats.get('added_symbol_count', 0))}",
+            f"- 被移出监控池数：{int(watchlist_stats.get('removed_symbol_count', 0))}",
+            f"- 监控池平均规模：{float(watchlist_stats.get('avg_watchlist_size', 0.0)):.2f}",
             "",
             "## 今日交易阶段流转",
         ]

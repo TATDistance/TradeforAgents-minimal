@@ -202,6 +202,18 @@ class WatchlistConfig:
 
 
 @dataclass
+class WatchlistEvolutionConfig:
+    enabled: bool = True
+    scan_interval_minutes: int = 30
+    max_watchlist_size: int = 30
+    max_new_symbols_per_scan: int = 10
+    max_remove_symbols_per_scan: int = 5
+    min_score_to_add: float = 0.55
+    min_score_to_keep: float = 0.30
+    grace_period_minutes: int = 60
+
+
+@dataclass
 class UIConfig:
     default_page: str = "ai_home"
     enable_research_center: bool = True
@@ -257,6 +269,7 @@ class Settings:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
     watchlist: WatchlistConfig = field(default_factory=WatchlistConfig)
+    watchlist_evolution: WatchlistEvolutionConfig = field(default_factory=WatchlistEvolutionConfig)
     ui: UIConfig = field(default_factory=UIConfig)
 
     @property

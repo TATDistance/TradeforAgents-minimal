@@ -313,6 +313,52 @@ scoring:
 
 所以首页会更像“AI 实时交易前台”，而不是只是一堆状态卡片。
 
+## 第十阶段：盘中动态选股 + watchlist 自进化
+
+第十阶段继续往“盘中主动发现机会”推进，目标不是推翻已有实时引擎，而是在它上面补一层中频扫描与监控池演化。
+
+### 盘中动态扫描
+
+系统现在在连续竞价阶段会按配置的分钟级间隔执行轻量扫描：
+
+- 上午 / 下午连续竞价允许扫描
+- 午休、收盘后、非交易日不执行盘中扫描
+- 扫描频率低于实时决策频率，不会每几秒全市场重算
+
+### 新机会池
+
+盘中发现的新机会会先进入 `opportunity_pool`，而不是直接写进 runtime watchlist。
+
+这样做的目的是：
+
+- 避免 watchlist 因为一瞬间异动频繁抖动
+- 给演化规则一个缓冲层
+- 让首页和报表能解释“这只票是怎么进池的”
+
+### watchlist 自进化
+
+watchlist 现在不再只是静态列表，而是按规则增量演化：
+
+- 当前持仓永远保留
+- execution_score / setup_score 高的股票优先保留
+- 新强票按阈值加入
+- 长期低分且无持仓的旧票逐步移出
+- 监控池总容量受配置限制
+
+### 首页与报表
+
+首页和日报现在会额外看到：
+
+- 最近一次盘中扫描时间
+- 当前监控池来源
+- 新增 / 移除股票数量
+- 动态选股事件摘要
+
+这样你可以区分：
+
+- 当前是“启动时初始选股”
+- 还是“盘中动态扫描并入的新机会”
+
 ## 首页与用户设置
 
 `8600` 首页现在有一个“模型与 API 设置”折叠区，用来确认：
@@ -373,6 +419,16 @@ ui:
   show_equity_curve: true
   show_action_timeline: true
   default_symbol_selection_mode: priority_based
+
+watchlist_evolution:
+  enabled: true
+  scan_interval_minutes: 30
+  max_watchlist_size: 30
+  max_new_symbols_per_scan: 10
+  max_remove_symbols_per_scan: 5
+  min_score_to_add: 0.55
+  min_score_to_keep: 0.30
+  grace_period_minutes: 60
 ```
 
 ## 数据输出

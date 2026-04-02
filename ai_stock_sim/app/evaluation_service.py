@@ -306,6 +306,7 @@ class EvaluationService:
         monthly_returns = self._monthly_returns_from_snapshots(snapshots)
         recent_window = trade_pnls[-20:]
         runtime_metrics = self._runtime_event_metrics(conn, period_start, period_end)
+        watchlist_metrics = self._watchlist_runtime_metrics(conn, period_start, period_end)
         metrics = {
             "total_return": total_return_result.value,
             "monthly_return": total_return_result.value,
@@ -342,6 +343,7 @@ class EvaluationService:
             "avg_win": metrics["avg_win"],
             "avg_loss": metrics["avg_loss"],
             "runtime_event_metrics": runtime_metrics,
+            "watchlist_runtime_metrics": watchlist_metrics,
         }
         return StrategyEvaluation(
             strategy_name=strategy_name,
@@ -646,6 +648,26 @@ class EvaluationService:
             "avg_setup_score": round(avg_setup_score, 6),
             "avg_execution_score": round(avg_execution_score, 6),
             "avg_filled_execution_score": round(avg_filled_execution_score, 6),
+        }
+
+    def _watchlist_runtime_metrics(self, conn, period_start: Optional[str], period_end: Optional[str]) -> dict[str, float | int]:
+        scan_logs = self._load_runtime_logs(conn, "watchlist_scan", period_start, period_end)
+        scan_count = len(scan_logs)
+        new_candidates = sum(int(row.get("candidates") or 0) for row in scan_logs)
+        added = sum(len(list(row.get("added_symbols") or [])) if isinstance(row.get("added_symbols"), list) else int(row.get("added") or 0) for row in scan_logs)
+        removed = sum(len(list(row.get("removed_symbols") or [])) if isinstance(row.get("removed_symbols"), list) else int(row.get("removed") or 0) for row in scan_logs)
+        average_watchlist_size = (
+            sum(int(row.get("watchlist_size") or 0) for row in scan_logs) / scan_count
+            if scan_count
+            else 0.0
+        )
+        return {
+            "scan_count": scan_count,
+            "new_candidate_count": new_candidates,
+            "added_symbol_count": added,
+            "removed_symbol_count": removed,
+            "avg_watchlist_size": round(average_watchlist_size, 2),
+            "promotion_rate": round(added / new_candidates, 6) if new_candidates else 0.0,
         }
 
     @staticmethod

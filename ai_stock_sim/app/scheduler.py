@@ -23,7 +23,9 @@ from .portfolio_decision_service import PortfolioDecisionService
 from .evaluation_service import EvaluationService
 from .market_data_service import MarketDataService
 from .mock_broker import MockBroker
+from .opportunity_pool_service import OpportunityPoolService
 from .portfolio_service import build_portfolio_feedback, build_portfolio_state, mark_to_market
+from .intraday_selector_service import IntradaySelectorService
 from .report_service import ReportService
 from .realtime_engine import RealtimeEngine
 from .review_service import ReviewService
@@ -34,6 +36,8 @@ from .strategy_weight_service import StrategyWeightService
 from .strategy_engine import StrategyEngine
 from .trading_calendar_service import TradingCalendarService
 from .universe_service import UniverseService
+from .watchlist_evolution_service import WatchlistEvolutionService
+from .watchlist_sync_service import load_runtime_watchlist, sync_watchlist_to_runtime
 
 
 class TradingScheduler:
@@ -62,11 +66,15 @@ class TradingScheduler:
         self.evaluation_service = EvaluationService(self.settings)
         self.report_service = ReportService(self.settings, evaluation_service=self.evaluation_service)
         self.realtime_engine = RealtimeEngine(self.settings)
+        self.intraday_selector_service = IntradaySelectorService(self.settings, market_data=self.market_data, strategy_engine=self.strategy_engine)
+        self.opportunity_pool_service = OpportunityPoolService(self.settings)
+        self.watchlist_evolution_service = WatchlistEvolutionService(self.settings)
         self.scheduler = BackgroundScheduler()
         self._last_t1_release_date: str | None = None
         self._last_evaluation_trade_date: str | None = None
         self._last_report_trade_date: str | None = None
         self._last_phase_key: str | None = None
+        self._last_intraday_scan_at: datetime | None = None
 
     def start(self) -> None:
         self.scheduler.add_job(self.run_cycle, "interval", seconds=self.settings.refresh_interval_seconds, max_instances=1)
@@ -128,6 +136,68 @@ class TradingScheduler:
             market_regime = self.market_regime_service.evaluate(universe_result.snapshot, portfolio_feedback)
             self.market_regime_service.save_state(market_regime)
             strategy_weights = self.strategy_weight_service.resolve_weights(market_regime, portfolio_feedback)
+            runtime_watchlist = load_runtime_watchlist(self.settings)
+            watchlist_scan_result: Dict[str, object] = {"scan_time": "", "candidates": [], "reason": ""}
+            watchlist_evolution_result: Dict[str, object] = dict(runtime_watchlist.get("watchlist_evolution") or {})
+            watchlist_events: List[Dict[str, object]] = list(runtime_watchlist.get("watchlist_events") or [])
+            if self._should_run_intraday_scan(phase_state.phase):
+                watchlist_symbols = list(runtime_watchlist.get("symbols") or universe_result.selected_symbols)
+                watchlist_scan_result = self.intraday_selector_service.scan(
+                    universe_result.snapshot,
+                    current_watchlist=watchlist_symbols,
+                    current_positions=list(portfolio.current_positions.keys()),
+                    market_regime=market_regime.model_dump(),
+                )
+                scan_candidates = list(watchlist_scan_result.get("candidates") or [])
+                pool_result = self.opportunity_pool_service.update(scan_candidates)
+                watchlist_scan_result["pool_size"] = len(pool_result.get("items") or [])
+                watchlist_scan_result["source"] = "intraday_scan"
+                evolution_watchlist = self.watchlist_evolution_service.evolve(
+                    runtime_watchlist or {
+                        "symbols": universe_result.selected_symbols,
+                        "source": universe_result.data_source,
+                        "generated_at": datetime.now().isoformat(timespec="seconds"),
+                        "valid_until": "",
+                        "trading_day": trade_date,
+                    },
+                    opportunity_pool=pool_result.get("items") or [],
+                    runtime_states=runtime_states,
+                    ai_decisions={},
+                    holdings=list(portfolio.current_positions.keys()),
+                )
+                watchlist_evolution_result = dict(evolution_watchlist.get("evolution") or {})
+                watchlist_events = self._build_watchlist_events(
+                    watchlist_evolution_result,
+                    watchlist_scan_result,
+                    runtime_states,
+                    trade_date,
+                )
+                evolution_watchlist["watchlist_events"] = watchlist_events
+                evolution_watchlist["last_scan_at"] = str(watchlist_scan_result.get("scan_time") or "")
+                runtime_watchlist = sync_watchlist_to_runtime(evolution_watchlist, self.settings)
+                universe_result.selected_symbols = [
+                    symbol
+                    for symbol in list(runtime_watchlist.get("symbols") or [])
+                    if symbol in set(universe_result.snapshot["symbol"].astype(str).tolist())
+                ] or universe_result.selected_symbols
+                self._last_intraday_scan_at = datetime.now()
+                _safe_log(
+                    "INFO",
+                    "watchlist_scan",
+                    json.dumps(
+                        {
+                            "trade_date": trade_date,
+                            "phase": phase_state.phase,
+                            "candidates": len(scan_candidates),
+                            "added": len(watchlist_evolution_result.get("added") or []),
+                            "removed": len(watchlist_evolution_result.get("removed") or []),
+                            "added_symbols": list(watchlist_evolution_result.get("added") or []),
+                            "removed_symbols": list(watchlist_evolution_result.get("removed") or []),
+                            "watchlist_size": len(runtime_watchlist.get("symbols") or []),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
             manager_decision = PortfolioManagerDecision(portfolio_view="暂无主动组合建议", risk_mode=portfolio_feedback.get("risk_mode", "NORMAL"), actions=[])
             final_actions = []
             planned_actions = []
@@ -465,6 +535,10 @@ class TradingScheduler:
                 risk_results=risk_results,
                 portfolio_feedback=portfolio_feedback,
                 final_signals=final_signals,
+                runtime_watchlist=runtime_watchlist,
+                watchlist_scan_result=watchlist_scan_result,
+                watchlist_evolution_result=watchlist_evolution_result,
+                watchlist_events=watchlist_events,
             )
             conn.commit()
             if self.logger:
@@ -604,6 +678,10 @@ class TradingScheduler:
         risk_results,
         portfolio_feedback,
         final_signals: List[FinalSignal],
+        runtime_watchlist: Dict[str, object],
+        watchlist_scan_result: Dict[str, object],
+        watchlist_evolution_result: Dict[str, object],
+        watchlist_events: List[Dict[str, object]],
     ) -> None:
         payload = {
             "ts": datetime.now().isoformat(timespec="seconds"),
@@ -627,6 +705,10 @@ class TradingScheduler:
             "risk_results": risk_results,
             "portfolio_feedback": portfolio_feedback,
             "final_signals": [signal.model_dump() for signal in final_signals],
+            "runtime_watchlist": runtime_watchlist,
+            "watchlist_scan": watchlist_scan_result,
+            "watchlist_evolution": watchlist_evolution_result,
+            "watchlist_events": watchlist_events,
         }
         self.settings.live_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings.live_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -663,6 +745,52 @@ class TradingScheduler:
                 points.append(point)
             existing["points"] = points[-300:]
             path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _should_run_intraday_scan(self, phase_name: str) -> bool:
+        if not self.settings.watchlist_evolution.enabled:
+            return False
+        if phase_name not in {"CONTINUOUS_AUCTION_AM", "CONTINUOUS_AUCTION_PM"}:
+            return False
+        if self._last_intraday_scan_at is None:
+            return True
+        interval = timedelta(minutes=int(self.settings.watchlist_evolution.scan_interval_minutes or 30))
+        return datetime.now() - self._last_intraday_scan_at >= interval
+
+    @staticmethod
+    def _build_watchlist_events(
+        evolution: Mapping[str, object],
+        scan_result: Mapping[str, object],
+        runtime_states: Mapping[str, Mapping[str, object]],
+        trade_date: str,
+    ) -> List[Dict[str, object]]:
+        updated_at = str(evolution.get("updated_at") or scan_result.get("scan_time") or datetime.now().isoformat(timespec="seconds"))
+        reason_summary = evolution.get("reason_summary") or {}
+        events: List[Dict[str, object]] = []
+        for symbol in evolution.get("added") or []:
+            events.append(
+                {
+                    "ts": updated_at,
+                    "symbol": symbol,
+                    "action": "ADD",
+                    "reason": str(reason_summary.get(symbol) or "盘中动态扫描发现强势新机会，加入监控池"),
+                    "trade_date": trade_date,
+                }
+            )
+        for symbol in evolution.get("removed") or []:
+            state = dict(runtime_states.get(symbol) or {})
+            fallback_reason = "长期低分且无持仓，移出监控池"
+            if state.get("last_setup_score") or state.get("last_execution_score"):
+                fallback_reason = "长期低分且近期无动作，暂时移出监控池"
+            events.append(
+                {
+                    "ts": updated_at,
+                    "symbol": symbol,
+                    "action": "REMOVE",
+                    "reason": str(reason_summary.get(symbol) or fallback_reason),
+                    "trade_date": trade_date,
+                }
+            )
+        return events[:20]
 
     def _should_persist_evaluation(self, trade_date: str, phase_name: str, execution_events: List[Dict[str, object]]) -> bool:
         if self._last_evaluation_trade_date != trade_date:

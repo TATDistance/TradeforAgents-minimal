@@ -422,9 +422,23 @@ def render_dashboard() -> None:
             watch_cols[1].metric("交易日", str(watchlist_payload.get("trading_day") or "-"))
             watch_cols[2].metric("生成时间", str(watchlist_payload.get("generated_at") or "-"))
             watch_cols[3].metric("过期状态", "是" if bool(watchlist_payload.get("stale")) else "否")
+            evolution = dict(watchlist_payload.get("watchlist_evolution") or watchlist_payload.get("evolution") or {})
+            scan_result = dict((live_state or {}).get("watchlist_scan") or {})
+            if scan_result or evolution:
+                event_cols = st.columns(4)
+                event_cols[0].metric("最近扫描", str(scan_result.get("scan_time") or evolution.get("updated_at") or "-"))
+                event_cols[1].metric("新增股票", len(evolution.get("added") or []))
+                event_cols[2].metric("移除股票", len(evolution.get("removed") or []))
+                event_cols[3].metric("监控池规模", len(watchlist_payload.get("symbols") or []))
             symbols = [str(item) for item in watchlist_payload.get("symbols") or []]
             if symbols:
                 st.caption("当前监控池：" + "、".join(symbols[:16]))
+            watch_events = (live_state or {}).get("watchlist_events") or []
+            if watch_events:
+                st.markdown("**监控池最近变化**")
+                event_rows = attach_symbol_name(pd.DataFrame(watch_events))
+                cols = [col for col in ["ts", "symbol", "name", "action", "reason", "trade_date"] if col in event_rows.columns]
+                st.dataframe(event_rows[cols], use_container_width=True, hide_index=True)
         overview_cols = [col for col in ["ts", "symbol", "name", "strategy_name", "action", "score", "signal_price"] if col in signals_df.columns]
         st.dataframe(signals_df[overview_cols] if not signals_df.empty else signals_df, use_container_width=True, hide_index=True)
         if not final_signals_df.empty:

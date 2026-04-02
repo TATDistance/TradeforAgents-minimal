@@ -242,6 +242,7 @@ def render_ai_trading_home(build_tag: str) -> str:
       <div class="card span-12">
         <h3>当前监控池</h3>
         <div class="watchlist-meta" id="watchlistMeta"></div>
+        <div id="watchlistEvents" class="hint-box" style="display:none"></div>
         <div class="monitoring-grid">
           <div id="watchlistSections" class="watch-section"></div>
           <div class="holding-pool-card">
@@ -365,6 +366,7 @@ def render_ai_trading_home(build_tag: str) -> str:
     const actionList = document.getElementById('actionList');
     const noBuyReasons = document.getElementById('noBuyReasons');
     const watchlistMeta = document.getElementById('watchlistMeta');
+    const watchlistEvents = document.getElementById('watchlistEvents');
     const watchlistSections = document.getElementById('watchlistSections');
     const holdingsPool = document.getElementById('holdingsPool');
     const buyExplainList = document.getElementById('buyExplainList');
@@ -527,6 +529,8 @@ def render_ai_trading_home(build_tag: str) -> str:
     function renderWatchlist(watchlist, sections){
       const entries = (watchlist && watchlist.entries) || [];
       const holdings = (watchlist && watchlist.holdings) || [];
+      const evolution = (watchlist && watchlist.evolution) || {};
+      const events = (watchlist && watchlist.events) || [];
       const chartEntriesMap = new Map();
       entries.forEach(item => {
         if(item && item.symbol){
@@ -553,8 +557,24 @@ def render_ai_trading_home(build_tag: str) -> str:
         '<span class="state-tag">来源：' + (watchlist && watchlist.source || '-') + '</span>',
         '<span class="state-tag">生成时间：' + (watchlist && watchlist.generated_at || '暂无') + '</span>',
         '<span class="state-tag">有效期至：' + (watchlist && watchlist.valid_until || '暂无') + '</span>',
-        '<span class="state-tag">交易日：' + (watchlist && watchlist.trading_day || '暂无') + '</span>'
+        '<span class="state-tag">交易日：' + (watchlist && watchlist.trading_day || '暂无') + '</span>',
+        '<span class="state-tag">最近扫描：' + (watchlist && watchlist.last_scan_at || '暂无') + '</span>',
+        '<span class="state-tag">本次新增：' + (((evolution.added || []).length) || 0) + '</span>',
+        '<span class="state-tag">本次移除：' + (((evolution.removed || []).length) || 0) + '</span>'
       ].join('');
+      if(events.length){
+        watchlistEvents.style.display = 'block';
+        watchlistEvents.innerHTML = '<strong style="display:block;margin-bottom:8px">监控池刚刚发生了什么</strong>' + events.map(item => (
+          '<div style="margin-top:6px">' +
+          String(item.ts || '').slice(11,16) + ' ' +
+          ((item.action || '') === 'ADD' ? '新增 ' : '移除 ') +
+          item.symbol + '：' + (item.reason || '监控池已更新') +
+          '</div>'
+        )).join('');
+      }else{
+        watchlistEvents.style.display = 'none';
+        watchlistEvents.innerHTML = '';
+      }
       if(!entries.length){
         watchlistSections.innerHTML = '<div class="empty">当前监控池为空；一键启动时会优先尝试自动选股并补齐监控池。</div>';
       }else{

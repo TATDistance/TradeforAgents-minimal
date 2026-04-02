@@ -87,6 +87,15 @@ watchlist:
   enable_auto_refresh_on_start: true
   use_recent_candidates_as_fallback: true
   use_default_watchlist_as_last_resort: true
+watchlist_evolution:
+  enabled: true
+  scan_interval_minutes: 30
+  max_watchlist_size: 30
+  max_new_symbols_per_scan: 10
+  max_remove_symbols_per_scan: 5
+  min_score_to_add: 0.55
+  min_score_to_keep: 0.30
+  grace_period_minutes: 60
 ui:
   default_page: ai_home
   enable_research_center: true

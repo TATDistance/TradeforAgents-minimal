@@ -337,6 +337,10 @@ def _build_watchlist_entries(
     ai_decisions: List[Dict[str, object]],
 ) -> Dict[str, object]:
     watchlist = _resolve_watchlist(settings)
+    live_watchlist = live_state.get("runtime_watchlist") if isinstance(live_state, dict) else {}
+    evolution = dict((live_watchlist or {}).get("watchlist_evolution") or watchlist.get("watchlist_evolution") or {})
+    events = list((live_watchlist or {}).get("watchlist_events") or watchlist.get("watchlist_events") or live_state.get("watchlist_events") or [])
+    last_scan_at = str((live_watchlist or {}).get("last_scan_at") or live_state.get("watchlist_scan", {}).get("scan_time") or watchlist.get("last_scan_at") or "")
     decision_map = {str(item.get("symbol") or ""): item for item in ai_decisions}
     positions = _query_rows(
         "SELECT symbol, qty, avg_cost, last_price, market_value, unrealized_pnl, can_sell_qty FROM positions ORDER BY symbol"
@@ -389,6 +393,9 @@ def _build_watchlist_entries(
         "valid_until": str(watchlist.get("valid_until") or ""),
         "trading_day": str(watchlist.get("trading_day") or ""),
         "stale": bool(watchlist.get("stale")),
+        "last_scan_at": last_scan_at,
+        "evolution": evolution,
+        "events": events[:10],
         "entries": entries[:16],
         "holdings": holdings[:12],
     }
