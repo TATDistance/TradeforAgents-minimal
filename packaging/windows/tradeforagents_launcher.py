@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import runpy
 import shutil
 import socket
 import subprocess
@@ -34,6 +35,18 @@ def _launch_command(role: str) -> list[str]:
     if getattr(sys, "frozen", False):
         return [str(Path(sys.executable).resolve()), role]
     return [str(Path(sys.executable).resolve()), str(Path(__file__).resolve()), role]
+
+
+def _resolve_embedded_script(path_arg: str, resource_root: Path, runtime_root: Path) -> Path:
+    candidate = Path(path_arg)
+    search_roots = [runtime_root, resource_root]
+    if candidate.is_absolute():
+        return candidate
+    for root in search_roots:
+        resolved = (root / candidate).resolve()
+        if resolved.exists():
+            return resolved
+    return candidate.resolve()
 
 
 def _prepare_sys_path(resource_root: Path) -> None:
@@ -378,6 +391,32 @@ def _run_dashboard() -> int:
     return 0
 
 
+def _run_embedded_python(argv: list[str]) -> int:
+    resource_root = _resource_root()
+    runtime_root = _runtime_root()
+    _prepare_sys_path(resource_root)
+    os.environ.update(_configure_env(resource_root, runtime_root))
+    if not argv:
+        print("[launcher] no embedded python arguments provided")
+        return 1
+    original_argv = sys.argv[:]
+    try:
+        if argv[0] == "-m":
+            if len(argv) < 2:
+                print("[launcher] missing module name after -m")
+                return 1
+            module_name = argv[1]
+            sys.argv = [module_name, *argv[2:]]
+            runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+            return 0
+        script_path = _resolve_embedded_script(argv[0], resource_root, runtime_root)
+        sys.argv = [str(script_path), *argv[1:]]
+        runpy.run_path(str(script_path), run_name="__main__")
+        return 0
+    finally:
+        sys.argv = original_argv
+
+
 def _check_status(ports: Iterable[tuple[str, int]]) -> int:
     for name, port in ports:
         status = "running" if _port_open("127.0.0.1", port) else "stopped"
@@ -404,8 +443,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(argv or sys.argv[1:])
+    if raw_argv and (raw_argv[0] == "-m" or raw_argv[0].endswith(".py")):
+        return _run_embedded_python(raw_argv)
+
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     command = args.command or "launch"
 
     if command == "launch":

@@ -31,6 +31,7 @@ RUNTIME_ROOT = Path(os.environ.get("TRADEFORAGENTS_RUNTIME_ROOT", str(PROJECT_RO
 WORKSPACE_ROOT = Path(os.environ.get("TRADEFORAGENTS_WORKSPACE_ROOT", str(PROJECT_ROOT.parent.parent))).resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+from ai_stock_sim.app.db import initialize_simulation_account_dbs, seed_simulation_accounts
 from ai_stock_sim.app.settings import load_settings, load_symbol_yaml
 from ai_stock_sim.app.watchlist_service import get_active_watchlist
 from ai_stock_sim.app.watchlist_sync_service import load_runtime_watchlist, refresh_watchlist_if_needed, sync_watchlist_to_runtime
@@ -139,6 +140,8 @@ if LEGACY_AI_TRADE_REPORTS_DIR.exists() and LEGACY_AI_TRADE_REPORTS_DIR != AI_TR
 
 
 def _python_bin() -> str:
+    if getattr(sys, "frozen", False):
+        return sys.executable or "python"
     venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
     if venv_python.exists():
         return str(venv_python)
@@ -146,6 +149,8 @@ def _python_bin() -> str:
 
 
 def _workspace_python() -> str:
+    if getattr(sys, "frozen", False):
+        return sys.executable or _python_bin()
     candidates = [
         AI_TRADE_HOME / ".venv310" / "bin" / "python",
         AI_TRADE_HOME / ".venv" / "bin" / "python",
@@ -154,6 +159,23 @@ def _workspace_python() -> str:
         if candidate.exists():
             return str(candidate)
     return sys.executable or _python_bin()
+
+
+def _packaged_windows_runtime() -> bool:
+    return bool(getattr(sys, "frozen", False) and os.name == "nt")
+
+
+def _launcher_role_args(role: str) -> List[str]:
+    return [sys.executable, role]
+
+
+def _bootstrap_ai_stock_sim_runtime() -> Tuple[int, str]:
+    try:
+        initialize_simulation_account_dbs(AI_STOCK_SIM_SETTINGS)
+        seed_simulation_accounts(AI_STOCK_SIM_SETTINGS)
+        return 0, "ai_stock_sim Windows 运行环境已初始化"
+    except Exception as exc:
+        return 1, str(exc)
 
 
 def _candidate_report_dirs() -> List[Path]:
@@ -518,7 +540,7 @@ def _ai_stock_sim_status_payload() -> Dict[str, object]:
         symbol = str(row.get("symbol") or "")
         row["name"] = symbol_names.get(symbol, symbol)
     return {
-        "bootstrap_ready": (AI_STOCK_SIM_HOME / ".venv310" / "bin" / "python").exists(),
+        "bootstrap_ready": True if _packaged_windows_runtime() else (AI_STOCK_SIM_HOME / ".venv310" / "bin" / "python").exists(),
         "db_exists": AI_STOCK_SIM_DB_PATH.exists(),
         "engine_running": engine_running,
         "engine_pid": engine_pid,
@@ -926,7 +948,8 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
     analysis_date = datetime.now().strftime("%Y-%m-%d")
     cmd = [
         _python_bin(),
-        str(SCRIPT_PATH),
+        "-m",
+        "scripts.minimal_deepseek_report",
         req.symbol.strip(),
         "--date",
         analysis_date,
@@ -2728,11 +2751,14 @@ def get_ai_stock_sim_status() -> Dict[str, object]:
 
 @app.post("/api/ai-stock-sim/bootstrap")
 def bootstrap_ai_stock_sim() -> Dict[str, object]:
-    args = ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "bootstrap.sh")]
-    try:
-        code, output = _run_workspace_command(args, timeout=1800)
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="ai_stock_sim 初始化超时")
+    if _packaged_windows_runtime():
+        code, output = _bootstrap_ai_stock_sim_runtime()
+    else:
+        args = ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "bootstrap.sh")]
+        try:
+            code, output = _run_workspace_command(args, timeout=1800)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="ai_stock_sim 初始化超时")
     if code != 0:
         raise HTTPException(status_code=500, detail=output or "ai_stock_sim 初始化失败")
     return {
@@ -2753,7 +2779,7 @@ def sync_ai_stock_sim_watchlist() -> Dict[str, object]:
 @app.post("/api/ai-stock-sim/start-all")
 def start_ai_stock_sim_all() -> Dict[str, object]:
     watchlist = _prepare_watchlist_for_runtime()
-    bootstrap_ready = (AI_STOCK_SIM_HOME / ".venv310" / "bin" / "python").exists()
+    bootstrap_ready = True if _packaged_windows_runtime() else (AI_STOCK_SIM_HOME / ".venv310" / "bin" / "python").exists()
     if not bootstrap_ready:
         try:
             code, output = _run_workspace_command(["bash", str(AI_STOCK_SIM_HOME / "scripts" / "bootstrap.sh")], timeout=1800)
@@ -2763,7 +2789,7 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
             raise HTTPException(status_code=500, detail=output or "ai_stock_sim 初始化失败")
     _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
     ok, engine_message = _start_background_service(
-        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
+        _launcher_role_args("engine") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
         AI_STOCK_SIM_ENGINE_PID,
         AI_STOCK_SIM_ENGINE_LOG,
     )
@@ -2771,7 +2797,7 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
         raise HTTPException(status_code=500, detail=engine_message)
     _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
     ok, dashboard_message = _start_background_service(
-        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
+        _launcher_role_args("dashboard") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
         AI_STOCK_SIM_DASHBOARD_PID,
         AI_STOCK_SIM_DASHBOARD_LOG,
         health_url=AI_STOCK_SIM_DASHBOARD_HEALTH_URL,
@@ -2791,7 +2817,7 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
 def start_ai_stock_sim_engine() -> Dict[str, object]:
     _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
     ok, message = _start_background_service(
-        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
+        _launcher_role_args("engine") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
         AI_STOCK_SIM_ENGINE_PID,
         AI_STOCK_SIM_ENGINE_LOG,
     )
@@ -2811,7 +2837,7 @@ def stop_ai_stock_sim_engine() -> Dict[str, object]:
 def start_ai_stock_sim_dashboard() -> Dict[str, object]:
     _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
     ok, message = _start_background_service(
-        ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
+        _launcher_role_args("dashboard") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
         AI_STOCK_SIM_DASHBOARD_PID,
         AI_STOCK_SIM_DASHBOARD_LOG,
         health_url=AI_STOCK_SIM_DASHBOARD_HEALTH_URL,
