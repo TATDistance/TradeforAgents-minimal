@@ -43,4 +43,4 @@ Name: "{group}\TradeforAgents-minimal Debug Console"; Filename: "{app}\debug_con
 Name: "{group}\卸载 TradeforAgents-minimal"; Filename: "{uninstallexe}"
 
 [Run]
-Filename: "{app}\TradeforAgentsLauncher.exe"; Parameters: "launch"; Description: "安装后立即启动 8600 首页"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\TradeforAgentsLauncher.exe"; Parameters: "launch"; Description: "安装后立即启动桌面版首页"; Flags: nowait postinstall skipifsilent

@@ -198,6 +198,33 @@ def _open_browser(url: str) -> None:
         pass
 
 
+def _should_open_desktop_shell(console: bool, no_browser: bool) -> bool:
+    return os.name == "nt" and getattr(sys, "frozen", False) and not console and not no_browser
+
+
+def _open_desktop_shell(url: str) -> bool:
+    try:
+        import webview  # noqa: WPS433
+    except Exception as exc:
+        print(f"[launcher] desktop shell unavailable, fallback to browser: {exc}")
+        return False
+
+    try:
+        webview.create_window(
+            "TradeforAgents",
+            url,
+            width=1480,
+            height=960,
+            min_size=(1200, 760),
+            text_select=True,
+        )
+        webview.start(debug=False)
+        return True
+    except Exception as exc:
+        print(f"[launcher] desktop shell failed, fallback to browser: {exc}")
+        return False
+
+
 def _read_tail(path: Path, limit: int = 4000) -> str:
     if not path.exists():
         return ""
@@ -273,7 +300,12 @@ def _launch_main(engine: bool, dashboard: bool, no_browser: bool, console: bool,
         print("[launcher] DEEPSEEK_API_KEY not found. Open 8600 and fill the homepage settings panel or edit .env.")
 
     if not no_browser:
-        _open_browser(f"http://{WEB_HOST}:{WEB_PORT}/")
+        app_url = f"http://{WEB_HOST}:{WEB_PORT}/"
+        if _should_open_desktop_shell(console, no_browser):
+            if _open_desktop_shell(app_url):
+                print("[launcher] desktop shell closed")
+                return 0
+        _open_browser(app_url)
 
     print("[launcher] launch finished")
     return 0

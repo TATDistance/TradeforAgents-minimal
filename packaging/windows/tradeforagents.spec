@@ -20,6 +20,8 @@ def collect_tree(root: Path, prefix: str):
 
 datas = []
 datas += collect_data_files("streamlit", include_py_files=False)
+datas += collect_data_files("certifi", include_py_files=False)
+datas += collect_data_files("webview", include_py_files=False)
 datas += collect_tree(PROJECT_ROOT / "ai_stock_sim" / "config", "ai_stock_sim/config")
 datas += collect_tree(PROJECT_ROOT / "ai_stock_sim" / "data" / "calendars", "ai_stock_sim/data/calendars")
 datas += collect_tree(PROJECT_ROOT / "docs", "docs")
@@ -44,6 +46,7 @@ for package_name in (
     "uvicorn",
     "apscheduler",
     "akshare",
+    "webview",
 ):
     hiddenimports += collect_submodules(package_name)
 
@@ -72,11 +75,26 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
+    console=False,
+)
+
+debug_exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name="TradeforAgentsLauncherDebug",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
     console=True,
 )
 
 coll = COLLECT(
     exe,
+    debug_exe,
     a.binaries,
     a.datas,
     strip=False,

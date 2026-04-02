@@ -8,3 +8,4 @@ yfinance>=0.2.50
 multitasking<0.0.12
 python-docx>=1.1.0
 markdown>=3.6
+pywebview>=5.4

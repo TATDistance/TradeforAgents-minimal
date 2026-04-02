@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo TradeforAgents Windows launcher
 echo.
-echo This launcher will always start the 8600 homepage.
+echo This launcher will open the TradeforAgents desktop window.
 echo.
 
 set "ENGINE_ARG="

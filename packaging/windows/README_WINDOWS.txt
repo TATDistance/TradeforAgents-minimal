@@ -4,7 +4,7 @@ TradeforAgents-minimal Windows bundle
 Quick start
 -----------
 1. Double-click start.bat
-2. The launcher will always start the 8600 homepage
+2. The launcher will open the TradeforAgents desktop window
 3. If DEEPSEEK_API_KEY is missing, open the homepage settings panel and fill it in, or edit .env
 4. Use debug_console.bat when you need engine + 8610 + console diagnostics
 

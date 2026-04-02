@@ -9,3 +9,4 @@ requests
 sqlalchemy
 streamlit
 pytest
+pywebview>=5.4
