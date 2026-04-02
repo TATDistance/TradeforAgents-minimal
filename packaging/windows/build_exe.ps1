@@ -89,7 +89,8 @@ function Find-Iscc {
 
 Invoke-Step "Installing Python build dependencies" {
     & $PythonExe -m pip install --upgrade pip
-    & $PythonExe -m pip install -r (Join-Path $ProjectRoot "requirements.txt") -r (Join-Path $ProjectRoot "ai_stock_sim\requirements.txt") pyinstaller
+    & $PythonExe -m pip install --upgrade --force-reinstall --no-cache-dir numpy==1.26.4 pandas==2.0.3
+    & $PythonExe -m pip install --upgrade --force-reinstall --no-cache-dir -r (Join-Path $ProjectRoot "requirements.txt") -r (Join-Path $ProjectRoot "ai_stock_sim\requirements.txt") pyinstaller
 }
 
 Invoke-Step "Cleaning old Windows build output" {
