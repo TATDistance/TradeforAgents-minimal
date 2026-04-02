@@ -434,6 +434,14 @@ def _check_status(ports: Iterable[tuple[str, int]]) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="TradeforAgents Windows launcher")
+    parser.set_defaults(
+        command=None,
+        engine=False,
+        dashboard=False,
+        no_browser=False,
+        console=False,
+        timeout=60,
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     launch = subparsers.add_parser("launch", help="Start 8600 and optional services")
