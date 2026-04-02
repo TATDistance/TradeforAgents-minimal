@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import time
+import time as time_module
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -11,7 +11,12 @@ from typing import Dict, List, Tuple
 import requests
 
 try:
-    from ai_stock_sim.app.db import connect_db, fetch_rows_by_sql
+    from ai_stock_sim.app.db import (
+        connect_db,
+        fetch_rows_by_sql,
+        initialize_simulation_account_dbs,
+        seed_simulation_accounts,
+    )
     from ai_stock_sim.app.settings import (
         Settings,
         get_primary_simulation_account,
@@ -22,7 +27,7 @@ try:
     from ai_stock_sim.app.watchlist_service import get_active_watchlist
     from ai_stock_sim.app.watchlist_sync_service import load_runtime_watchlist
 except ModuleNotFoundError:  # pragma: no cover - test/runtime import compatibility
-    from app.db import connect_db, fetch_rows_by_sql
+    from app.db import connect_db, fetch_rows_by_sql, initialize_simulation_account_dbs, seed_simulation_accounts
     from app.settings import Settings, get_primary_simulation_account, load_settings, resolve_simulation_accounts
     from app.strategy_evaluation_service import StrategyEvaluationService
     from app.watchlist_service import get_active_watchlist
@@ -50,6 +55,14 @@ EASTMONEY_NAME_RETRY_ATTEMPTS = 3
 EASTMONEY_NAME_RETRY_BACKOFF_SECONDS = 0.25
 SIMULATION_ACCOUNTS = resolve_simulation_accounts(SETTINGS)
 PRIMARY_ACCOUNT = get_primary_simulation_account(SETTINGS)
+
+
+def _ensure_home_runtime_ready() -> None:
+    try:
+        initialize_simulation_account_dbs(SETTINGS)
+        seed_simulation_accounts(SETTINGS)
+    except Exception:
+        pass
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -200,9 +213,15 @@ def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
                     SYMBOL_NAME_CACHE[code] = name
                     mapping[code] = name
                 break
+            except OSError:
+                # Frozen Windows builds may not have a usable certifi bundle path.
+                break
+            except requests.RequestException:
+                if attempt < EASTMONEY_NAME_RETRY_ATTEMPTS:
+                    time_module.sleep(EASTMONEY_NAME_RETRY_BACKOFF_SECONDS * attempt)
             except Exception:
                 if attempt < EASTMONEY_NAME_RETRY_ATTEMPTS:
-                    time.sleep(EASTMONEY_NAME_RETRY_BACKOFF_SECONDS * attempt)
+                    time_module.sleep(EASTMONEY_NAME_RETRY_BACKOFF_SECONDS * attempt)
     return mapping
 
 
@@ -1239,6 +1258,7 @@ def _system_status(account_id: str | None = None) -> Dict[str, object]:
 
 
 def get_home_view(account_id: str | None = None) -> Dict[str, object]:
+    _ensure_home_runtime_ready()
     resolved_account_id = _resolve_account_id(account_id)
     live_state = _load_live_state(resolved_account_id)
     phase = get_current_phase(account_id=resolved_account_id)
@@ -1356,6 +1376,7 @@ def get_home_view(account_id: str | None = None) -> Dict[str, object]:
 
 
 def get_debug_view(account_id: str | None = None) -> Dict[str, object]:
+    _ensure_home_runtime_ready()
     resolved_account_id = _resolve_account_id(account_id)
     status = _system_status(account_id=resolved_account_id)
     logs = _query_rows(

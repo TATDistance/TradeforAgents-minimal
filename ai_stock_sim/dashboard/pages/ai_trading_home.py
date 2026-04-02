@@ -1109,8 +1109,7 @@ def render_ai_trading_home(build_tag: str) -> str:
         if(!activeAccountId){
           activeAccountId = loadPreferredAccountId();
         }
-        const resp = await fetch('/api/ui/home?ts=' + Date.now() + buildAccountQuery(), {cache:'no-store'});
-        const data = await resp.json();
+        const {resp, data} = await fetchJsonSafe('/api/ui/home?ts=' + Date.now() + buildAccountQuery(), {cache:'no-store'});
         if(!resp.ok){
           throw new Error(data.detail || '读取首页失败');
         }
