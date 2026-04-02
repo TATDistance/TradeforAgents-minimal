@@ -407,12 +407,20 @@ def _run_embedded_python(argv: list[str]) -> int:
                 return 1
             module_name = argv[1]
             sys.argv = [module_name, *argv[2:]]
-            runpy.run_module(module_name, run_name="__main__", alter_sys=True)
-            return 0
+            try:
+                runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+                return 0
+            except SystemExit as exc:
+                code = exc.code
+                return int(code) if isinstance(code, int) else 0
         script_path = _resolve_embedded_script(argv[0], resource_root, runtime_root)
         sys.argv = [str(script_path), *argv[1:]]
-        runpy.run_path(str(script_path), run_name="__main__")
-        return 0
+        try:
+            runpy.run_path(str(script_path), run_name="__main__")
+            return 0
+        except SystemExit as exc:
+            code = exc.code
+            return int(code) if isinstance(code, int) else 0
     finally:
         sys.argv = original_argv
 

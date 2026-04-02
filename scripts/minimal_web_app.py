@@ -145,7 +145,7 @@ def _python_bin() -> str:
     venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
     if venv_python.exists():
         return str(venv_python)
-    return "python3"
+    return "python" if os.name == "nt" else "python3"
 
 
 def _workspace_python() -> str:
@@ -422,18 +422,24 @@ def _start_background_service(
         except Exception:
             pass
     env = os.environ.copy()
-    pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT), env.get("PYTHONPATH", "")]
+    pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT), str(AI_TRADE_HOME), env.get("PYTHONPATH", "")]
     env["PYTHONPATH"] = os.pathsep.join(part for part in pythonpath_parts if part)
-    with log_file.open("a", encoding="utf-8") as handle:
-        proc = subprocess.Popen(
-            args,
-            cwd=str(PROJECT_ROOT),
-            env=env,
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
+    popen_kwargs: Dict[str, object] = {
+        "cwd": str(PROJECT_ROOT),
+        "env": env,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
+    else:
+        popen_kwargs["start_new_session"] = True
+    with log_file.open("a", encoding="utf-8") as handle:
+        popen_kwargs["stdout"] = handle
+        proc = subprocess.Popen(args, **popen_kwargs)
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(str(proc.pid), encoding="utf-8")
     if health_url:
@@ -461,8 +467,18 @@ def _stop_background_service(pid_file: Path) -> str:
     if not pid:
         return "服务未运行"
     try:
-        os.kill(pid, signal.SIGTERM)
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
     except OSError:
+        pass
+    except Exception:
         pass
     try:
         pid_file.unlink()
@@ -472,6 +488,8 @@ def _stop_background_service(pid_file: Path) -> str:
 
 
 def _cleanup_processes(pattern: str) -> None:
+    if os.name == "nt":
+        return
     try:
         subprocess.run(
             ["pkill", "-f", pattern],
@@ -802,7 +820,7 @@ def _run_workspace_command(
     extra_env: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, str]:
     env = os.environ.copy()
-    pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT)]
+    pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT), str(AI_TRADE_HOME)]
     existing = env.get("PYTHONPATH", "")
     if existing:
         pythonpath_parts.append(existing)
@@ -835,7 +853,7 @@ def _stream_workspace_command(
     extra_env: Optional[Dict[str, str]] = None,
 ) -> int:
     env = os.environ.copy()
-    pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT)]
+    pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT), str(AI_TRADE_HOME)]
     existing = env.get("PYTHONPATH", "")
     if existing:
         pythonpath_parts.append(existing)
@@ -1867,8 +1885,9 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
     async function poll(taskId, kind){
       let done = false;
       while(!done){
-        const r = await fetch('/api/task/' + taskId);
-        const data = await r.json();
+        const result = await fetchJsonSafe('/api/task/' + taskId, {cache:'no-store'});
+        const r = result.resp;
+        const data = result.data || {};
         const currentStatusEl = kind === 'watchlist' ? watchlistStatus : (kind === 'auto' ? autoStatus : statusEl);
         const currentLogEl = kind === 'watchlist' ? watchlistLog : (kind === 'auto' ? autoLog : logEl);
         const currentLinkEl = kind === 'watchlist' ? watchlistLink : (kind === 'auto' ? autoLink : linkEl);
@@ -2009,7 +2028,7 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
       }catch(err){
         if(pageErrorBanner){
           pageErrorBanner.style.display = 'block';
-          pageErrorBanner.textContent = '当前页面可能是浏览器缓存页，或 8600 服务未正常运行。请回到终端重新执行 bash start.sh web，然后按 Ctrl+Shift+R 强制刷新。错误：' + String(err);
+          pageErrorBanner.textContent = '当前页面可能是缓存页，或 8600 服务未正常运行。请重新启动 TradeforAgents 并强制刷新页面。错误：' + String(err);
         }
       }
     }
@@ -2075,8 +2094,7 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
       };
       simStatus.textContent = '处理中...';
       try{
-        const resp = await fetch(actionMap[kind], {method:'POST'});
-        const data = await resp.json();
+        const {resp, data} = await fetchJsonSafe(actionMap[kind], {method:'POST'});
         if(!resp.ok){
           simStatus.textContent = '执行失败：' + formatErrorDetail(data.detail);
           return;
@@ -2159,7 +2177,7 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
       linkEl.textContent = '';
       logEl.textContent = '';
 
-      const resp = await fetch('/api/analyze', {
+      const {resp, data} = await fetchJsonSafe('/api/analyze', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
@@ -2172,7 +2190,6 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
           base_url: baseUrl.value
         })
       });
-      const data = await resp.json();
       if(!resp.ok){
         statusEl.className = 'err';
         statusEl.textContent = '提交失败';
@@ -2196,7 +2213,7 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
       watchlistLink.textContent = '';
       watchlistLog.textContent = '';
 
-      const resp = await fetch('/api/watchlist', {
+      const {resp, data} = await fetchJsonSafe('/api/watchlist', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
@@ -2208,7 +2225,6 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
           base_url: baseUrl.value
         })
       });
-      const data = await resp.json();
       if(!resp.ok){
         watchlistStatus.className = 'err';
         watchlistStatus.textContent = '提交失败';
@@ -2234,7 +2250,7 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
       autoLink.textContent = '';
       autoLog.textContent = '';
 
-      const resp = await fetch('/api/auto-pipeline', {
+      const {resp, data} = await fetchJsonSafe('/api/auto-pipeline', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
@@ -2251,7 +2267,6 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
           base_url: baseUrl.value
         })
       });
-      const data = await resp.json();
       if(!resp.ok){
         autoStatus.className = 'err';
         autoStatus.textContent = '提交失败';
@@ -2274,8 +2289,7 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
     }
 
     async function loadReports(){
-      const resp = await fetch('/api/ai-trade/reports');
-      const data = await resp.json();
+      const {resp, data} = await fetchJsonSafe('/api/ai-trade/reports', {cache:'no-store'});
       if(!resp.ok){
         opsStatus.textContent = '读取报告失败：' + formatErrorDetail(data.detail);
         return;
@@ -2350,10 +2364,11 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
       opsLog.textContent = '';
       try{
         let resp;
+        let data;
         if(kind === 'review'){
-          resp = await fetch('/api/ai-trade/review', {method:'POST'});
+          ({resp, data} = await fetchJsonSafe('/api/ai-trade/review', {method:'POST'}));
         }else{
-          resp = await fetch('/api/ai-trade/plan', {
+          ({resp, data} = await fetchJsonSafe('/api/ai-trade/plan', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body: JSON.stringify({
@@ -2361,9 +2376,8 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
               trade_date: tradeDate.value || '',
               execute_sim: executeSim
             })
-          });
+          }));
         }
-        const data = await resp.json();
         if(!resp.ok){
           opsStatus.textContent = '执行失败';
           opsLog.textContent = formatErrorDetail(data.detail);
@@ -2586,9 +2600,35 @@ def debug_overview() -> HTMLResponse:
     </div>
   </div>
   <script>
+    async function fetchJsonSafe(url, options){
+      const resp = await fetch(url, options || {});
+      const raw = await resp.text();
+      let data = {};
+      if(raw){
+        try{
+          data = JSON.parse(raw);
+        }catch(_err){
+          data = {detail: raw};
+        }
+      }
+      return {resp, data};
+    }
+    function formatErrorDetail(detail){
+      if(typeof detail === 'string') return detail;
+      if(detail && typeof detail === 'object'){
+        try{
+          return JSON.stringify(detail);
+        }catch(_err){
+          return String(detail);
+        }
+      }
+      return String(detail || '未知错误');
+    }
     async function loadDebug(){
-      const resp = await fetch('/api/ui/debug?ts=' + Date.now(), {cache:'no-store'});
-      const data = await resp.json();
+      const {resp, data} = await fetchJsonSafe('/api/ui/debug?ts=' + Date.now(), {cache:'no-store'});
+      if(!resp.ok){
+        throw new Error(formatErrorDetail(data.detail));
+      }
       const status = data.system_status || {};
       document.getElementById('debugState').textContent = status.label || '-';
       document.getElementById('debugUpdated').textContent = status.last_updated_at || '-';

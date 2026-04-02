@@ -1240,8 +1240,7 @@ def render_ai_trading_home(build_tag: str) -> str:
       }
       activeChartSymbol = symbol;
       try{
-        const resp = await fetch('/api/ui/chart?symbol=' + encodeURIComponent(symbol) + '&ts=' + Date.now() + buildAccountQuery(), {cache:'no-store'});
-        const data = await resp.json();
+        const {resp, data} = await fetchJsonSafe('/api/ui/chart?symbol=' + encodeURIComponent(symbol) + '&ts=' + Date.now() + buildAccountQuery(), {cache:'no-store'});
         if(!resp.ok){
           throw new Error(data.detail || '读取图表失败');
         }
