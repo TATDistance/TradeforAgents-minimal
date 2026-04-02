@@ -5,12 +5,12 @@ from datetime import datetime
 
 import pandas as pd
 
-from app.db import initialize_db, seed_account, write_account_snapshot, write_order
+from app.db import connect_db, initialize_db, initialize_simulation_account_dbs, seed_account, seed_simulation_accounts, write_account_snapshot, write_order
 from app.evaluation_service import EvaluationService
 from app.backtest_service import BacktestService
 from app.models import AIDecision, AccountSnapshot, ExecutionGateState, FinalSignal, MarketPhaseState, MarketQuote, OrderRecord, StrategySignal
 from app.scheduler import TradingScheduler
-from app.settings import load_settings
+from app.settings import SimulationAccountConfig, get_primary_simulation_account, load_settings, resolve_simulation_accounts
 
 
 def test_smoke_bootstrap(tmp_path):
@@ -27,6 +27,42 @@ def test_smoke_bootstrap(tmp_path):
     assert "strategy_evaluations" in tables
     assert "mode_comparisons" in tables
     assert "manual_execution_logs" in tables
+
+
+def test_simulation_accounts_keep_primary_db_and_seed_extra_account(tmp_path):
+    settings = load_settings()
+    settings.project_root = tmp_path
+    settings.simulation_accounts = [
+        SimulationAccountConfig(account_id="paper_main", name="主账户", initial_cash=100000, enabled=True, is_primary=True),
+        SimulationAccountConfig(account_id="paper_small_1w", name="小资金", initial_cash=10000, enabled=True, is_primary=False),
+    ]
+
+    initialize_simulation_account_dbs(settings)
+    seed_simulation_accounts(settings)
+
+    primary = get_primary_simulation_account(settings)
+    accounts = resolve_simulation_accounts(settings)
+    assert primary.account_id == "paper_main"
+    assert settings.db_path.exists()
+    assert settings.resolved_account_db_path("paper_main") == settings.db_path
+    assert settings.resolved_account_db_path("paper_small_1w").exists()
+    assert len(accounts) == 2
+
+    primary_conn = connect_db(settings, account_id="paper_main")
+    try:
+        primary_rows = primary_conn.execute("SELECT COUNT(1) FROM account_snapshots").fetchone()[0]
+    finally:
+        primary_conn.close()
+    assert int(primary_rows) >= 1
+
+    small_conn = connect_db(settings, account_id="paper_small_1w")
+    try:
+        row = small_conn.execute("SELECT cash, equity FROM account_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+    finally:
+        small_conn.close()
+    assert row is not None
+    assert float(row[0]) == 10000.0
+    assert float(row[1]) == 10000.0
 
 
 def test_scheduler_skips_orders_after_close(tmp_path, monkeypatch):

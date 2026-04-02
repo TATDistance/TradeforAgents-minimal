@@ -29,8 +29,15 @@ class StrategyEvaluationService:
                 end_date=end_date,
                 attribution="entry",
             )
-            returns = [float(item.return_pct) for item in closed]
-            pnls = [float(item.pnl) for item in closed]
+            if closed:
+                returns = [float(item.return_pct) for item in closed]
+                pnls = [float(item.pnl) for item in closed]
+                trades = len(closed)
+            else:
+                derived = self._derive_snapshot_trades(conn, strategy_name, start_date, end_date)
+                returns = [float(item["return_pct"]) for item in derived]
+                pnls = [float(item["pnl"]) for item in derived]
+                trades = len(derived)
             wins = [value for value in returns if value > 0]
             avg_return = sum(returns) / len(returns) if returns else 0.0
             win_rate = len(wins) / len(returns) if returns else 0.0
@@ -40,7 +47,7 @@ class StrategyEvaluationService:
             summary[strategy_name] = {
                 "strategy_name": strategy_name,
                 "window_days": window_days,
-                "trades": len(closed),
+                "trades": trades,
                 "win_rate": round(win_rate, 6),
                 "avg_return": round(avg_return, 6),
                 "max_drawdown": round(drawdown, 6),
@@ -52,6 +59,7 @@ class StrategyEvaluationService:
 
     @staticmethod
     def _strategy_names(conn, start_date: date, end_date: date) -> list[str]:
+        names: list[str] = []
         rows = fetch_rows_by_sql(
             conn,
             """
@@ -66,7 +74,12 @@ class StrategyEvaluationService:
             """,
             (start_date.isoformat(), end_date.isoformat()),
         )
-        return [str(row["strategy_name"]) for row in rows]
+        names.extend(str(row["strategy_name"]) for row in rows)
+        if not names:
+            from .strategy_engine import STRATEGY_REGISTRY
+
+            names.extend(sorted(STRATEGY_REGISTRY.keys()))
+        return sorted(dict.fromkeys(name for name in names if name))
 
     @staticmethod
     def _load_daily_evaluations(conn, strategy_name: str, start_date: date, end_date: date) -> list[Mapping[str, object]]:
@@ -117,3 +130,145 @@ class StrategyEvaluationService:
                 "avg_score": round(float(item["avg_score"]) / days, 4),
             }
         return normalized
+
+    @staticmethod
+    def _dominant_long_strategy(feature_payload: object) -> str:
+        try:
+            feature_map = dict(feature_payload or {})
+        except Exception:
+            return ""
+        best_name = ""
+        best_score = 0.0
+        for strategy_name, raw in feature_map.items():
+            if not isinstance(raw, Mapping):
+                continue
+            score = float(raw.get("score") or 0.0)
+            direction = str(raw.get("direction") or "NEUTRAL").upper()
+            if direction != "LONG" or score <= best_score:
+                continue
+            best_name = str(strategy_name)
+            best_score = score
+        return best_name
+
+    def _derive_snapshot_trades(
+        self,
+        conn,
+        strategy_name: str,
+        start_date: date,
+        end_date: date,
+    ) -> list[Dict[str, float]]:
+        buy_orders = [
+            dict(row)
+            for row in fetch_rows_by_sql(
+                conn,
+                """
+                SELECT id, ts, symbol, price, qty, fee, tax, slippage
+                FROM orders
+                WHERE side = 'BUY'
+                  AND intent_only = 0
+                  AND status IN ('FILLED', 'PARTIAL_FILLED')
+                  AND date(ts) >= ?
+                  AND date(ts) <= ?
+                ORDER BY ts ASC, id ASC
+                """,
+                (start_date.isoformat(), end_date.isoformat()),
+            )
+        ]
+        derived: list[Dict[str, float]] = []
+        for entry_order in buy_orders:
+            symbol = str(entry_order.get("symbol") or "")
+            if not symbol:
+                continue
+            ts = str(entry_order.get("ts") or "")
+            snapshot_rows = [
+                dict(row)
+                for row in fetch_rows_by_sql(
+                    conn,
+                    """
+                    SELECT feature_json
+                    FROM decision_snapshots
+                    WHERE symbol = ?
+                      AND action IN ('BUY', 'PREPARE_BUY')
+                      AND datetime(ts) >= datetime(?)
+                      AND datetime(ts) <= datetime(?)
+                    ORDER BY ABS(strftime('%s', ts) - strftime('%s', ?)) ASC, id DESC
+                    LIMIT 1
+                    """,
+                    (
+                        symbol,
+                        (datetime.fromisoformat(ts) - timedelta(minutes=30)).isoformat(timespec="seconds"),
+                        (datetime.fromisoformat(ts) + timedelta(minutes=10)).isoformat(timespec="seconds"),
+                        ts,
+                    ),
+                )
+            ]
+            if not snapshot_rows:
+                continue
+            try:
+                feature_payload = json.loads(str(snapshot_rows[0].get("feature_json") or "{}"))
+            except Exception:
+                feature_payload = {}
+            if self._dominant_long_strategy(feature_payload) != strategy_name:
+                continue
+            entry_price = float(entry_order.get("price") or 0.0)
+            qty = int(entry_order.get("qty") or 0)
+            if entry_price <= 0 or qty <= 0:
+                continue
+            exit_rows = [
+                dict(row)
+                for row in fetch_rows_by_sql(
+                    conn,
+                    """
+                    SELECT price, qty, fee, tax, slippage
+                    FROM orders
+                    WHERE symbol = ?
+                      AND side = 'SELL'
+                      AND intent_only = 0
+                      AND status IN ('FILLED', 'PARTIAL_FILLED')
+                      AND datetime(ts) >= datetime(?)
+                    ORDER BY ts ASC, id ASC
+                    LIMIT 1
+                    """,
+                    (symbol, str(entry_order.get("ts") or ts)),
+                )
+            ]
+            if exit_rows:
+                exit_row = exit_rows[0]
+                exit_qty = max(1, min(qty, int(exit_row.get("qty") or qty)))
+                exit_price = float(exit_row.get("price") or 0.0)
+                pnl = (
+                    (exit_price - entry_price) * exit_qty
+                    - float(entry_order.get("fee") or 0.0)
+                    - float(entry_order.get("tax") or 0.0)
+                    - float(entry_order.get("slippage") or 0.0)
+                    - float(exit_row.get("fee") or 0.0)
+                    - float(exit_row.get("tax") or 0.0)
+                    - float(exit_row.get("slippage") or 0.0)
+                )
+                return_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0.0
+            else:
+                position_rows = [
+                    dict(row)
+                    for row in fetch_rows_by_sql(
+                        conn,
+                        "SELECT last_price, qty, unrealized_pnl FROM positions WHERE symbol = ?",
+                        (symbol,),
+                    )
+                ]
+                if not position_rows:
+                    continue
+                position = position_rows[0]
+                last_price = float(position.get("last_price") or 0.0)
+                open_qty = int(position.get("qty") or 0)
+                if last_price <= 0 or open_qty <= 0:
+                    continue
+                tracked_qty = max(1, min(qty, open_qty))
+                pnl = (last_price - entry_price) * tracked_qty
+                return_pct = (last_price - entry_price) / entry_price if entry_price > 0 else 0.0
+            derived.append(
+                {
+                    "return_pct": round(return_pct, 6),
+                    "pnl": round(pnl, 6),
+                }
+            )
+        return derived

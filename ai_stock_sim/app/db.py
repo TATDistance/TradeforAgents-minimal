@@ -21,7 +21,7 @@ from .models import (
     StrategyEvaluation,
     StrategySignal,
 )
-from .settings import Settings, load_settings
+from .settings import Settings, get_primary_simulation_account, load_settings, resolve_simulation_accounts
 
 
 SCHEMA = """
@@ -245,10 +245,22 @@ def now_ts() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def connect_db(settings: Settings | None = None) -> sqlite3.Connection:
+def _resolve_db_path(settings: Settings, account_id: str | None = None, db_path: Path | None = None) -> Path:
+    if db_path is not None:
+        return db_path
+    if account_id:
+        return settings.resolved_account_db_path(account_id)
+    accounts = resolve_simulation_accounts(settings)
+    if settings.simulation_accounts and accounts:
+        return settings.resolved_account_db_path(get_primary_simulation_account(settings).account_id)
+    return settings.db_path
+
+
+def connect_db(settings: Settings | None = None, account_id: str | None = None, db_path: Path | None = None) -> sqlite3.Connection:
     cfg = settings or load_settings()
-    cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(cfg.db_path), timeout=20.0)
+    target_db = _resolve_db_path(cfg, account_id=account_id, db_path=db_path)
+    target_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(target_db), timeout=20.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -270,22 +282,33 @@ def _execute_with_retry(conn: sqlite3.Connection, sql: str, params: tuple[object
     raise last_error
 
 
-def initialize_db(settings: Settings | None = None) -> None:
+def initialize_db(settings: Settings | None = None, account_id: str | None = None, db_path: Path | None = None) -> None:
     cfg = settings or load_settings()
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.logs_dir.mkdir(parents=True, exist_ok=True)
     cfg.cache_dir.mkdir(parents=True, exist_ok=True)
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    cfg.accounts_dir.mkdir(parents=True, exist_ok=True)
     cfg.calendars_dir.mkdir(parents=True, exist_ok=True)
     for subdir in ("backtest", "daily", "weekly", "monthly"):
         (cfg.reports_dir / subdir).mkdir(parents=True, exist_ok=True)
-    conn = connect_db(cfg)
+    conn = connect_db(cfg, account_id=account_id, db_path=db_path)
     try:
         conn.executescript(SCHEMA)
         _ensure_required_columns(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def initialize_simulation_account_dbs(settings: Settings | None = None) -> None:
+    cfg = settings or load_settings()
+    accounts = resolve_simulation_accounts(cfg)
+    if not cfg.simulation_accounts:
+        initialize_db(cfg)
+        return
+    for account in accounts:
+        initialize_db(cfg, account_id=account.account_id)
 
 
 def _ensure_required_columns(conn: sqlite3.Connection) -> None:
@@ -300,10 +323,10 @@ def _ensure_required_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 
-def seed_account(settings: Settings | None = None, cash: float | None = None) -> None:
+def seed_account(settings: Settings | None = None, cash: float | None = None, account_id: str | None = None, db_path: Path | None = None) -> None:
     cfg = settings or load_settings()
-    initialize_db(cfg)
-    conn = connect_db(cfg)
+    initialize_db(cfg, account_id=account_id, db_path=db_path)
+    conn = connect_db(cfg, account_id=account_id, db_path=db_path)
     try:
         row = conn.execute("SELECT COUNT(1) AS count FROM account_snapshots").fetchone()
         if row and int(row["count"]) > 0:
@@ -323,6 +346,16 @@ def seed_account(settings: Settings | None = None, cash: float | None = None) ->
         conn.commit()
     finally:
         conn.close()
+
+
+def seed_simulation_accounts(settings: Settings | None = None) -> None:
+    cfg = settings or load_settings()
+    accounts = resolve_simulation_accounts(cfg)
+    if not cfg.simulation_accounts:
+        seed_account(cfg)
+        return
+    for account in accounts:
+        seed_account(cfg, cash=account.initial_cash, account_id=account.account_id)
 
 
 def write_signal(conn: sqlite3.Connection, signal: StrategySignal) -> int:

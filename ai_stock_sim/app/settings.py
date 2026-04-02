@@ -240,6 +240,25 @@ class StyleConfig:
 
 
 @dataclass
+class CapitalProfileConfig:
+    small_account_equity_threshold: float = 20_000.0
+    small_account_buy_threshold_bonus: float = 0.08
+    small_account_watch_threshold_bonus: float = 0.05
+    small_account_affordable_lot_pct: float = 0.12
+    small_account_block_lot_pct: float = 0.18
+    small_account_position_scale: float = 0.7
+
+
+@dataclass
+class SimulationAccountConfig:
+    account_id: str = "paper_main"
+    name: str = "标准账户"
+    initial_cash: float = 100000.0
+    enabled: bool = True
+    is_primary: bool = False
+
+
+@dataclass
 class Settings:
     project_root: Path
     initial_cash: float = 100000.0
@@ -287,6 +306,8 @@ class Settings:
     ui: UIConfig = field(default_factory=UIConfig)
     adaptive: AdaptiveConfig = field(default_factory=AdaptiveConfig)
     style: StyleConfig = field(default_factory=StyleConfig)
+    capital_profile: CapitalProfileConfig = field(default_factory=CapitalProfileConfig)
+    simulation_accounts: List[SimulationAccountConfig] = field(default_factory=list)
 
     @property
     def data_dir(self) -> Path:
@@ -295,6 +316,10 @@ class Settings:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "db.sqlite3"
+
+    @property
+    def accounts_dir(self) -> Path:
+        return self.data_dir / "accounts"
 
     @property
     def logs_dir(self) -> Path:
@@ -315,6 +340,24 @@ class Settings:
     @property
     def live_state_path(self) -> Path:
         return self.cache_dir / "live_decision_state.json"
+
+    def account_db_path(self, account_id: str) -> Path:
+        return self.accounts_dir / f"{account_id}.sqlite3"
+
+    def account_live_state_path(self, account_id: str) -> Path:
+        return self.cache_dir / f"live_decision_state_{account_id}.json"
+
+    def resolved_account_db_path(self, account_id: str) -> Path:
+        primary = next((account for account in self.simulation_accounts if account.is_primary), None)
+        if primary is not None and primary.account_id == account_id:
+            return self.db_path
+        return self.account_db_path(account_id)
+
+    def resolved_account_live_state_path(self, account_id: str) -> Path:
+        primary = next((account for account in self.simulation_accounts if account.is_primary), None)
+        if primary is not None and primary.account_id == account_id:
+            return self.live_state_path
+        return self.account_live_state_path(account_id)
 
     @property
     def trading_calendar_file(self) -> Path:
@@ -380,6 +423,61 @@ def _merge_dataclass(instance: Any, payload: Dict[str, Any]) -> Any:
     return instance
 
 
+def _normalize_account_id(raw: Any) -> str:
+    text = str(raw or "").strip()
+    normalized = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in text)
+    return normalized or "paper_main"
+
+
+def _build_simulation_accounts(payload: List[Any] | None, initial_cash: float) -> List[SimulationAccountConfig]:
+    accounts: List[SimulationAccountConfig] = []
+    for item in payload or []:
+        if not isinstance(item, dict):
+            continue
+        account = _merge_dataclass(SimulationAccountConfig(), item)
+        account.account_id = _normalize_account_id(account.account_id)
+        account.name = str(account.name or account.account_id).strip() or account.account_id
+        account.initial_cash = float(account.initial_cash or initial_cash)
+        account.enabled = bool(account.enabled)
+        account.is_primary = bool(account.is_primary)
+        accounts.append(account)
+
+    enabled_accounts = [account for account in accounts if account.enabled]
+    if not enabled_accounts:
+        enabled_accounts = [
+            SimulationAccountConfig(
+                account_id="paper_main",
+                name="标准账户",
+                initial_cash=float(initial_cash),
+                enabled=True,
+                is_primary=True,
+            )
+        ]
+
+    if not any(account.is_primary for account in enabled_accounts):
+        enabled_accounts[0].is_primary = True
+
+    deduped: List[SimulationAccountConfig] = []
+    seen: set[str] = set()
+    for account in enabled_accounts:
+        if account.account_id in seen:
+            continue
+        seen.add(account.account_id)
+        deduped.append(account)
+    return deduped
+
+
+def resolve_simulation_accounts(settings: Settings) -> List[SimulationAccountConfig]:
+    if settings.simulation_accounts:
+        return [account for account in settings.simulation_accounts if account.enabled]
+    return _build_simulation_accounts([], settings.initial_cash)
+
+
+def get_primary_simulation_account(settings: Settings) -> SimulationAccountConfig:
+    accounts = resolve_simulation_accounts(settings)
+    return next((account for account in accounts if account.is_primary), accounts[0])
+
+
 def load_settings(project_root: Path | None = None) -> Settings:
     root = project_root or Path(__file__).resolve().parents[1]
     load_dotenv(root / ".env", override=False)
@@ -388,8 +486,10 @@ def load_settings(project_root: Path | None = None) -> Settings:
     payload: Dict[str, Any] = {}
     if settings_file.exists():
         payload = yaml.safe_load(settings_file.read_text(encoding="utf-8")) or {}
+    raw_accounts = payload.pop("simulation_accounts", None)
     settings = Settings(project_root=root)
     _merge_dataclass(settings, payload)
+    settings.simulation_accounts = _build_simulation_accounts(raw_accounts if isinstance(raw_accounts, list) else None, settings.initial_cash)
     if settings.dashboard.auto_refresh_seconds:
         settings.dashboard_refresh_seconds = settings.dashboard.auto_refresh_seconds
     return settings

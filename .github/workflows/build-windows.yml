@@ -1,0 +1,73 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v1.0.0"
+        required: false
+        default: "v0.0.0-dev"
+      build_installer:
+        description: "Build Inno Setup installer"
+        required: false
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  windows-package:
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version || 'v0.0.0-dev' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows bundle
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag" -or "${{ inputs.build_installer }}" -eq "true") {
+            & .\packaging\windows\build_exe.ps1 -Version $env:RELEASE_VERSION -BuildInstaller
+          } else {
+            & .\packaging\windows\build_exe.ps1 -Version $env:RELEASE_VERSION
+          }
+
+      - name: Upload no-install directory
+        uses: actions/upload-artifact@v4
+        with:
+          name: TradeforAgents-minimal-windows-noinstall
+          path: dist/TradeforAgents-minimal-windows-noinstall
+
+      - name: Upload packaged assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: TradeforAgents-minimal-windows-assets
+          path: |
+            dist/TradeforAgents-minimal-windows-noinstall.zip
+            dist/tradeforagents-windows-noinstall-${{ env.RELEASE_VERSION }}.zip
+            dist/TradeforAgents-minimal-windows-installer.exe
+            dist/tradeforagents-windows-installer-${{ env.RELEASE_VERSION }}.exe
+            dist/tradeforagents-release-notes-${{ env.RELEASE_VERSION }}.md
+          if-no-files-found: warn
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') || contains(github.ref_name, '-preview') }}
+          fail_on_unmatched_files: false
+          files: |
+            dist/tradeforagents-windows-noinstall-${{ env.RELEASE_VERSION }}.zip
+            dist/tradeforagents-windows-installer-${{ env.RELEASE_VERSION }}.exe
+            dist/tradeforagents-release-notes-${{ env.RELEASE_VERSION }}.md

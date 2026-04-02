@@ -60,6 +60,35 @@ bash start.sh web
 
 - `http://127.0.0.1:8600/`
 
+### Windows 用户
+
+如果你使用 Windows 分发包，优先使用这两条路径：
+
+- 安装版：
+  - 下载 `tradeforagents-windows-installer-vX.Y.Z.exe`
+  - 双击安装
+  - 从桌面或开始菜单启动
+- 绿色版：
+  - 下载 `tradeforagents-windows-noinstall-vX.Y.Z.zip`
+  - 解压
+  - 双击 `start.bat`
+
+Windows 分发包默认目标：
+
+- 不需要单独安装 Python
+- 双击即可启动 `8600`
+- 可选同时启动实时引擎与 `8610`
+- 日志保留在 `ai_stock_sim/data/logs/`
+
+发布与分发建议：
+
+- 对外至少同时提供：
+  - 安装版：`tradeforagents-windows-installer-vX.Y.Z.exe`
+  - 免安装版：`tradeforagents-windows-noinstall-vX.Y.Z.zip`
+- 不建议只发布 installer
+- `start.bat` 与 `debug_console.bat` 应保留在包内，便于测试和排错
+- `.bat` 不需要单独作为 Release 附件上传
+
 首页点击：
 
 - `一键启动 AI 实时决策（会自动补监控池）`
@@ -217,6 +246,15 @@ AI 交易工作流说明见：
 
 如果你希望当前浏览器会话明确使用自己的配置，请在首页设置区手动保存。
 
+### Windows 双击启动后没反应怎么办？
+
+优先检查：
+
+- 重新运行 `debug_console.bat`
+- 查看 `ai_stock_sim/data/logs/`
+- 确认 `8600` 是否已被其它进程占用
+- 确认 `.env` 或首页设置里已经填写 `DEEPSEEK_API_KEY`
+
 ### 一键启动是不是还需要先手动选股？
 
 正常不需要。
@@ -249,6 +287,7 @@ AI 交易工作流说明见：
 - [云端部署说明](/home/alientek/workspace/tools/TradeforAgents-minimal/docs/minimal_cloud_deploy.md)
 - [实时引擎说明](/home/alientek/workspace/tools/TradeforAgents-minimal/ai_stock_sim/README.md)
 - [Release Notes 索引](/home/alientek/workspace/tools/TradeforAgents-minimal/docs/releases/README.md)
+- Windows 打包脚本目录： [packaging/windows](/home/alientek/workspace/tools/TradeforAgents-minimal/packaging/windows)
 
 ## 更新记录 / Releases
 

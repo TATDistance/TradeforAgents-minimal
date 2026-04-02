@@ -18,6 +18,9 @@ class SymbolRuntimeState:
     last_ai_action: str = "HOLD"
     last_trigger_at: Optional[str] = None
     last_trigger_reasons: List[str] = field(default_factory=list)
+    last_reject_at: Optional[str] = None
+    last_reject_action: str = ""
+    last_reject_reason: str = ""
     last_market_regime: str = ""
     last_phase: str = ""
     last_position_qty: int = 0
@@ -82,6 +85,14 @@ class SymbolRuntimeStateStore:
         state = self.ensure(symbol)
         state.last_trigger_at = datetime.now().isoformat(timespec="seconds")
         state.last_trigger_reasons = list(reasons)
+        state.touch()
+        return state
+
+    def mark_reject(self, symbol: str, *, action: str, reason: str) -> SymbolRuntimeState:
+        state = self.ensure(symbol)
+        state.last_reject_at = datetime.now().isoformat(timespec="seconds")
+        state.last_reject_action = str(action or "")
+        state.last_reject_reason = str(reason or "")
         state.touch()
         return state
 

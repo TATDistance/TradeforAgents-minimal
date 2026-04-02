@@ -61,6 +61,7 @@ AI_STOCK_SIM_DASHBOARD_PID = AI_STOCK_SIM_HOME / "data" / "dashboard.pid"
 AI_STOCK_SIM_DASHBOARD_URL = "http://127.0.0.1:8610"
 AI_STOCK_SIM_DASHBOARD_HEALTH_URL = "http://127.0.0.1:8610/_stcore/health"
 AI_STOCK_SIM_RUNTIME_SYMBOLS = AI_STOCK_SIM_HOME / "config" / "runtime_symbols.yaml"
+AI_STOCK_SIM_REPORTS_DIR = AI_STOCK_SIM_HOME / "data" / "reports"
 AI_STOCK_SIM_SETTINGS = load_settings(AI_STOCK_SIM_HOME)
 WEB_BUILD_TAG = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 SYMBOL_NAME_CACHE: Dict[str, str] = {}
@@ -128,6 +129,7 @@ TASK_LOCK = threading.Lock()
 app = FastAPI(title="TradingAgents-CN Minimal Web")
 app.mount("/results", StaticFiles(directory=str(RESULTS_DIR)), name="results")
 app.mount("/ai_trade_reports", StaticFiles(directory=str(AI_TRADE_REPORTS_DIR)), name="ai_trade_reports")
+app.mount("/ai_stock_sim_reports", StaticFiles(directory=str(AI_STOCK_SIM_REPORTS_DIR)), name="ai_stock_sim_reports")
 if LEGACY_AI_TRADE_REPORTS_DIR.exists() and LEGACY_AI_TRADE_REPORTS_DIR != AI_TRADE_REPORTS_DIR:
     app.mount("/ai_trade_reports_legacy", StaticFiles(directory=str(LEGACY_AI_TRADE_REPORTS_DIR)), name="ai_trade_reports_legacy")
 
@@ -1199,17 +1201,17 @@ def health(response: Response) -> Dict[str, str]:
 
 
 @app.get("/api/ui/home")
-def ui_home() -> Dict[str, object]:
-    return get_home_view()
+def ui_home(account_id: str = "") -> Dict[str, object]:
+    return get_home_view(account_id=account_id or None)
 
 
 @app.get("/api/ui/debug")
-def ui_debug() -> Dict[str, object]:
-    return get_debug_view()
+def ui_debug(account_id: str = "") -> Dict[str, object]:
+    return get_debug_view(account_id=account_id or None)
 
 
 @app.get("/api/ui/chart")
-def ui_chart(symbol: str) -> Dict[str, object]:
+def ui_chart(symbol: str, account_id: str = "") -> Dict[str, object]:
     code = symbol.strip()
     if not code:
         raise HTTPException(status_code=400, detail="symbol 不能为空")
@@ -1217,7 +1219,7 @@ def ui_chart(symbol: str) -> Dict[str, object]:
         "symbol": code,
         "intraday": get_intraday_chart_data(code, AI_STOCK_SIM_SETTINGS),
         "kline": get_kline_chart_data(code, AI_STOCK_SIM_SETTINGS),
-        "equity": get_equity_curve_data(AI_STOCK_SIM_SETTINGS),
+        "equity": get_equity_curve_data(AI_STOCK_SIM_SETTINGS, account_id=account_id or None),
     }
 
 

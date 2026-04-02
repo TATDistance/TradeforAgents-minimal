@@ -37,6 +37,10 @@ def render_ai_trading_home(build_tag: str) -> str:
     .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}
     .brand h1{margin:0;font-size:32px}
     .brand p{margin:6px 0 0;color:var(--muted);font-size:15px}
+    .account-switcher{min-width:260px;max-width:320px;padding:14px 16px;border-radius:18px;background:rgba(10,18,34,.88);border:1px solid rgba(59,130,246,.14)}
+    .account-switcher-label{color:#9cc2ff;font-size:13px;font-weight:700;margin-bottom:8px}
+    .account-switcher select{width:100%;padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:rgba(15,23,42,.92);color:var(--text);outline:none}
+    .account-switcher-hint{margin-top:8px;color:#9fb2cf;font-size:12px;line-height:1.6}
     .nav{display:flex;gap:10px;flex-wrap:wrap}
     .nav a{color:#cfe1ff;text-decoration:none;background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.18);padding:10px 14px;border-radius:999px;font-weight:600}
     .hero{background:linear-gradient(140deg,rgba(37,99,235,.25),rgba(15,23,42,.9));border:1px solid rgba(96,165,250,.16);border-radius:22px;padding:22px;display:grid;grid-template-columns:1.5fr 1fr;gap:18px}
@@ -182,6 +186,13 @@ def render_ai_trading_home(build_tag: str) -> str:
         <h1>AI 实时决策首页</h1>
         <p>默认入口只回答三件事：系统现在在做什么、现在能不能交易、AI 建议做什么。</p>
       </div>
+      <div class="account-switcher">
+        <div class="account-switcher-label">首页账户</div>
+        <select id="accountSelect">
+          <option value="">正在读取账户...</option>
+        </select>
+        <div id="accountHint" class="account-switcher-hint">选择哪个账户，就看哪个账户的主页首页。</div>
+      </div>
       <div class="nav">
         <a href="/research">研究中心</a>
         <a href="/evaluation">复盘中心</a>
@@ -195,6 +206,11 @@ def render_ai_trading_home(build_tag: str) -> str:
       <div class="card span-12">
         <h3>账户信息</h3>
         <div class="kv" id="accountGrid"></div>
+      </div>
+
+      <div class="card span-12">
+        <h3>最新盘后报告</h3>
+        <div class="kv" id="reportLinksGrid"></div>
       </div>
 
       <div class="card span-4">
@@ -369,9 +385,12 @@ def render_ai_trading_home(build_tag: str) -> str:
     const systemError = document.getElementById('systemError');
     const statusTags = document.getElementById('statusTags');
     const lastUpdated = document.getElementById('lastUpdated');
+    const accountSelect = document.getElementById('accountSelect');
+    const accountHint = document.getElementById('accountHint');
     const phaseGrid = document.getElementById('phaseGrid');
     const strategyGrid = document.getElementById('strategyGrid');
     const accountGrid = document.getElementById('accountGrid');
+    const reportLinksGrid = document.getElementById('reportLinksGrid');
     const styleProfileCard = document.getElementById('styleProfileCard');
     const strategyPerformanceCard = document.getElementById('strategyPerformanceCard');
     const adaptiveAdjustCard = document.getElementById('adaptiveAdjustCard');
@@ -411,6 +430,50 @@ def render_ai_trading_home(build_tag: str) -> str:
     const homeTaskLog = document.getElementById('homeTaskLog');
     let latestHomePayload = null;
     let activeChartSymbol = '';
+    let activeAccountId = '';
+
+    function loadPreferredAccountId(){
+      try{
+        return window.localStorage.getItem('aiHomeAccountId') || '';
+      }catch(_err){
+        return '';
+      }
+    }
+
+    function savePreferredAccountId(accountId){
+      try{
+        if(accountId){
+          window.localStorage.setItem('aiHomeAccountId', accountId);
+        }else{
+          window.localStorage.removeItem('aiHomeAccountId');
+        }
+      }catch(_err){
+      }
+    }
+
+    function buildAccountQuery(){
+      return activeAccountId ? ('&account_id=' + encodeURIComponent(activeAccountId)) : '';
+    }
+
+    function renderAccountSelector(accounts, currentAccountId, currentAccountName){
+      const rows = Array.isArray(accounts) ? accounts : [];
+      const fallbackLabel = currentAccountName || '主账户';
+      if(!rows.length){
+        accountSelect.innerHTML = '<option value="' + (currentAccountId || '') + '">' + fallbackLabel + '</option>';
+        accountSelect.value = currentAccountId || '';
+        accountHint.textContent = '当前查看：' + fallbackLabel;
+        return;
+      }
+      accountSelect.innerHTML = rows.map(item => (
+        '<option value="' + item.account_id + '">' + (item.name || item.account_id) + '</option>'
+      )).join('');
+      const hasCurrent = rows.some(item => item.account_id === currentAccountId);
+      accountSelect.value = hasCurrent ? currentAccountId : (rows[0] && rows[0].account_id) || '';
+      const selected = rows.find(item => item.account_id === accountSelect.value) || rows[0] || null;
+      accountHint.textContent = selected
+        ? ('当前查看：' + (selected.name || selected.account_id) + '（' + selected.account_id + '）')
+        : '选择哪个账户，就看哪个账户的主页首页。';
+    }
 
     function badgeClass(state){
       if(state === 'running') return 'status-running';
@@ -558,6 +621,23 @@ def render_ai_trading_home(build_tag: str) -> str:
         '</div>';
     }
 
+    function renderReportLinks(links){
+      const entries = Object.values(links || {});
+      if(!entries.length){
+        reportLinksGrid.innerHTML = '<div class="empty">收盘后这里会显示今日日报、本周周报和本月月报入口。</div>';
+        return;
+      }
+      reportLinksGrid.innerHTML = entries.map(item => (
+        '<div class="item">' +
+          '<div class="label">' + (item.label || '报告') + '</div>' +
+          '<div class="value" style="font-size:16px">' +
+            (item.url ? ('<a href="' + item.url + '" target="_blank" style="color:#bfdbfe;text-decoration:none">打开查看</a>') : '暂不可用') +
+          '</div>' +
+          '<div class="subvalue">' + (item.name || '当前还没有生成对应报告') + '</div>' +
+        '</div>'
+      )).join('');
+    }
+
     function renderStrategyPerformance(summary){
       const entries = Object.entries(summary || {});
       if(!entries.length){
@@ -567,8 +647,17 @@ def render_ai_trading_home(build_tag: str) -> str:
       strategyPerformanceCard.innerHTML = entries.slice(0, 3).map(([name, item]) => (
         '<div class="action-item">' +
           '<strong>' + name + '</strong>' +
-          '<div class="muted-note">胜率 ' + fmtPct(item.win_rate || 0) + ' ｜ 平均收益 ' + fmtPct(item.avg_return || 0) + '</div>' +
-          '<div class="muted-note">最大回撤 ' + fmtPct(item.max_drawdown || 0) + ' ｜ 交易数 ' + String(item.trades || 0) + '</div>' +
+          (
+            Number(item.trades || 0) > 0
+              ? (
+                  '<div class="muted-note">胜率 ' + fmtPct(item.win_rate || 0) + ' ｜ 平均收益 ' + fmtPct(item.avg_return || 0) + '</div>' +
+                  '<div class="muted-note">最大回撤 ' + fmtPct(item.max_drawdown || 0) + ' ｜ 交易数 ' + String(item.trades || 0) + '</div>'
+                )
+              : (
+                  '<div class="muted-note">当前可归因成交样本不足，暂不展示胜率与收益。</div>' +
+                  '<div class="muted-note">综合评分 ' + fmtNum(item.score_total || 0) + ' ｜ 最近窗口 ' + String(item.window_days || 0) + ' 天</div>'
+                )
+          ) +
         '</div>'
       )).join('');
     }
@@ -629,7 +718,7 @@ def render_ai_trading_home(build_tag: str) -> str:
           '<div style="margin-top:6px">' +
           String(item.ts || '').slice(11,16) + ' ' +
           ((item.action || '') === 'ADD' ? '新增 ' : '移除 ') +
-          item.symbol + '：' + (item.reason || '监控池已更新') +
+          item.symbol + ((item.name && item.name !== item.symbol) ? (' ' + item.name) : '') + '：' + (item.reason || '监控池已更新') +
           '</div>'
         )).join('');
       }else{
@@ -1017,11 +1106,17 @@ def render_ai_trading_home(build_tag: str) -> str:
 
     async function loadHome(){
       try{
-        const resp = await fetch('/api/ui/home?ts=' + Date.now(), {cache:'no-store'});
+        if(!activeAccountId){
+          activeAccountId = loadPreferredAccountId();
+        }
+        const resp = await fetch('/api/ui/home?ts=' + Date.now() + buildAccountQuery(), {cache:'no-store'});
         const data = await resp.json();
         if(!resp.ok){
           throw new Error(data.detail || '读取首页失败');
         }
+        activeAccountId = data.current_account_id || activeAccountId || '';
+        savePreferredAccountId(activeAccountId);
+        renderAccountSelector(data.accounts || [], data.current_account_id || '', data.current_account_name || '');
         summaryText.textContent = data.summary || '暂无摘要';
         const status = data.system_status || {};
         systemStatus.innerHTML = '<span class="status-pill ' + badgeClass(status.state) + '">' + (status.label || '未知') + '</span>';
@@ -1081,11 +1176,12 @@ def render_ai_trading_home(build_tag: str) -> str:
 
         const account = data.account || {};
         renderStatGrid(accountGrid, [
-          {label:'总资产', value: fmtNum(account.equity)},
+          {label:'总资产', value: fmtNum(account.equity), subvalue: '当前账户 ' + (account.account_name || data.current_account_name || '-')},
           {label:'现金比例', value: fmtPct(account.cash_ratio)},
           {label:'仓位', value: fmtPct(account.position_ratio)},
           {label:'浮盈亏', value: fmtNum(account.unrealized_pnl), subvalue: '回撤 ' + fmtPct(account.drawdown)}
         ]);
+        renderReportLinks(data.report_links || {});
         renderStyleProfile(data.style_profile || {});
         renderStrategyPerformance(data.strategy_performance || {});
         renderAdaptiveAdjustments(data.adaptive_adjustments || []);
@@ -1145,7 +1241,7 @@ def render_ai_trading_home(build_tag: str) -> str:
       }
       activeChartSymbol = symbol;
       try{
-        const resp = await fetch('/api/ui/chart?symbol=' + encodeURIComponent(symbol) + '&ts=' + Date.now(), {cache:'no-store'});
+        const resp = await fetch('/api/ui/chart?symbol=' + encodeURIComponent(symbol) + '&ts=' + Date.now() + buildAccountQuery(), {cache:'no-store'});
         const data = await resp.json();
         if(!resp.ok){
           throw new Error(data.detail || '读取图表失败');
@@ -1251,6 +1347,12 @@ def render_ai_trading_home(build_tag: str) -> str:
     bindApiKey.addEventListener('change', saveBindingConfig);
     saveBinding.addEventListener('click', saveBindingConfig);
     homeStartAll.addEventListener('click', runHomeQuickStart);
+    accountSelect.addEventListener('change', (event) => {
+      activeAccountId = event.target.value || '';
+      activeChartSymbol = '';
+      savePreferredAccountId(activeAccountId);
+      loadHome();
+    });
     chartSymbolSelect.addEventListener('change', (event) => {
       const symbol = event.target.value;
       activeChartSymbol = symbol;

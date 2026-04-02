@@ -11,6 +11,7 @@
 - `v1.0.0.md`
 - `v1.0.1.md`
 - `v1.1.0.md`
+- `GITHUB_RELEASE_TEMPLATE.md`
 
 推荐每个 release 至少包含：
 
@@ -37,3 +38,22 @@
 - 启动
 - 使用说明
 - 文档入口
+
+## Windows 发布补充
+
+Windows 相关发布建议统一附带：
+
+- `tradeforagents-windows-installer-vX.Y.Z.exe`
+- `tradeforagents-windows-noinstall-vX.Y.Z.zip`
+- `tradeforagents-release-notes-vX.Y.Z.md`
+
+发布策略建议：
+
+- 不要只发 installer
+- installer 给普通用户
+- noinstall zip 给测试、排错、权限受限环境
+- `.bat` 保留在压缩包或安装目录中，但不作为单独资产上传
+
+GitHub Release 文案模板见：
+
+- [GITHUB_RELEASE_TEMPLATE.md](/home/alientek/workspace/tools/TradeforAgents-minimal/docs/releases/GITHUB_RELEASE_TEMPLATE.md)

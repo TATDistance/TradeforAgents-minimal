@@ -4,7 +4,7 @@ import signal
 import sys
 import time
 
-from .db import initialize_db, seed_account
+from .db import initialize_simulation_account_dbs, seed_simulation_accounts
 from .logger import configure_logger, log_event
 from .scheduler import TradingScheduler
 from .settings import load_settings
@@ -12,8 +12,8 @@ from .settings import load_settings
 
 def main() -> int:
     settings = load_settings()
-    initialize_db(settings)
-    seed_account(settings)
+    initialize_simulation_account_dbs(settings)
+    seed_simulation_accounts(settings)
     logger = configure_logger(settings.logs_dir / "engine.log")
     scheduler = TradingScheduler(settings, logger=logger)
 

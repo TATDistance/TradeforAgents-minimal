@@ -55,7 +55,36 @@ class RiskEngine:
         raw_qty = int(target_value / max(signal.entry_price, 0.01))
         qty = self._lot_round_down(raw_qty)
         if qty <= 0:
-            return RiskCheckResult(allowed=False, adjusted_qty=0, adjusted_position_pct=0.0, reject_reason="不足 100 股", risk_state="REJECT", final_action="BUY")
+            min_lot_cost = BOARD_LOT * max(signal.entry_price, 0.0)
+            single_cap_limit = max(0.0, portfolio.equity * self.settings.max_single_position_pct)
+            daily_cap_limit = max(0.0, portfolio.equity * self.settings.max_daily_open_position_pct - portfolio.today_open_ratio * portfolio.equity)
+            if min_lot_cost > single_cap + 1e-6:
+                reject_reason = (
+                    f"买一手约需 {min_lot_cost:.2f} 元，已超过单票可用仓位上限 "
+                    f"{max(single_cap, 0.0):.2f} 元"
+                )
+            elif min_lot_cost > daily_cap + 1e-6:
+                reject_reason = (
+                    f"买一手约需 {min_lot_cost:.2f} 元，已超过当日可用开仓额度 "
+                    f"{max(daily_cap, 0.0):.2f} 元"
+                )
+            elif min_lot_cost > portfolio.cash + 1e-6:
+                reject_reason = (
+                    f"买一手约需 {min_lot_cost:.2f} 元，当前可用现金仅 {max(portfolio.cash, 0.0):.2f} 元"
+                )
+            elif min_lot_cost > single_cap_limit + 1e-6:
+                reject_reason = (
+                    f"买一手约需 {min_lot_cost:.2f} 元，已超过单票总仓位上限 "
+                    f"{single_cap_limit:.2f} 元"
+                )
+            elif min_lot_cost > daily_cap_limit + 1e-6:
+                reject_reason = (
+                    f"买一手约需 {min_lot_cost:.2f} 元，已超过当日总开仓额度 "
+                    f"{daily_cap_limit:.2f} 元"
+                )
+            else:
+                reject_reason = "不足 100 股"
+            return RiskCheckResult(allowed=False, adjusted_qty=0, adjusted_position_pct=0.0, reject_reason=reject_reason, risk_state="REJECT", final_action="BUY")
 
         turnover = qty * signal.entry_price
         fee = turnover * self.settings.commission_rate + turnover * self.settings.transfer_fee_rate

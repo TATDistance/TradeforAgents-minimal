@@ -1,4 +1,15 @@
 initial_cash: 100000
+simulation_accounts:
+  - account_id: paper_main
+    name: 标准账户 10 万
+    initial_cash: 100000
+    enabled: true
+    is_primary: true
+  - account_id: paper_small_1w
+    name: 小资金测试 1 万
+    initial_cash: 10000
+    enabled: true
+    is_primary: false
 refresh_interval_seconds: 10
 scan_limit: 200
 strategy_candidate_limit: 20
@@ -112,6 +123,13 @@ adaptive:
   weight_adjustment_rate: 0.1
 style:
   enable_auto_style: true
+capital_profile:
+  small_account_equity_threshold: 20000
+  small_account_buy_threshold_bonus: 0.08
+  small_account_watch_threshold_bonus: 0.05
+  small_account_affordable_lot_pct: 0.12
+  small_account_block_lot_pct: 0.18
+  small_account_position_scale: 0.7
 strategy:
   momentum_lookback: 20
   momentum_min_score: 0.55

@@ -96,9 +96,9 @@ def get_kline_chart_data(symbol: str, settings: Settings | None = None) -> Dict[
     }
 
 
-def get_equity_curve_data(settings: Settings | None = None) -> Dict[str, object]:
+def get_equity_curve_data(settings: Settings | None = None, account_id: str | None = None) -> Dict[str, object]:
     resolved_settings = settings or load_settings()
-    conn = connect_db(resolved_settings)
+    conn = connect_db(resolved_settings, account_id=account_id)
     try:
         rows = [
             dict(row)

@@ -12,12 +12,19 @@ import requests
 
 try:
     from ai_stock_sim.app.db import connect_db, fetch_rows_by_sql
-    from ai_stock_sim.app.settings import Settings, load_settings
+    from ai_stock_sim.app.settings import (
+        Settings,
+        get_primary_simulation_account,
+        load_settings,
+        resolve_simulation_accounts,
+    )
+    from ai_stock_sim.app.strategy_evaluation_service import StrategyEvaluationService
     from ai_stock_sim.app.watchlist_service import get_active_watchlist
     from ai_stock_sim.app.watchlist_sync_service import load_runtime_watchlist
 except ModuleNotFoundError:  # pragma: no cover - test/runtime import compatibility
     from app.db import connect_db, fetch_rows_by_sql
-    from app.settings import Settings, load_settings
+    from app.settings import Settings, get_primary_simulation_account, load_settings, resolve_simulation_accounts
+    from app.strategy_evaluation_service import StrategyEvaluationService
     from app.watchlist_service import get_active_watchlist
     from app.watchlist_sync_service import load_runtime_watchlist
 
@@ -36,12 +43,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SETTINGS = load_settings(PROJECT_ROOT)
 ENGINE_PID_PATH = SETTINGS.data_dir / "engine.pid"
 DASHBOARD_PID_PATH = SETTINGS.data_dir / "dashboard.pid"
-LIVE_STATE_PATH = SETTINGS.live_state_path
 ENGINE_LOG_PATH = SETTINGS.logs_dir / "engine.log"
 DASHBOARD_HEALTH_URL = "http://127.0.0.1:8610/_stcore/health"
 SYMBOL_NAME_CACHE: Dict[str, str] = {}
 EASTMONEY_NAME_RETRY_ATTEMPTS = 3
 EASTMONEY_NAME_RETRY_BACKOFF_SECONDS = 0.25
+SIMULATION_ACCOUNTS = resolve_simulation_accounts(SETTINGS)
+PRIMARY_ACCOUNT = get_primary_simulation_account(SETTINGS)
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -73,11 +81,37 @@ def _dashboard_healthy() -> bool:
         return False
 
 
-def _load_live_state() -> Dict[str, object]:
-    if not LIVE_STATE_PATH.exists():
+def _available_accounts() -> List[Dict[str, object]]:
+    return [
+        {
+            "account_id": account.account_id,
+            "name": account.name,
+            "initial_cash": float(account.initial_cash),
+            "is_primary": bool(account.is_primary),
+        }
+        for account in SIMULATION_ACCOUNTS
+    ]
+
+
+def _resolve_account_id(account_id: str | None = None) -> str:
+    normalized = str(account_id or "").strip()
+    valid_ids = {account.account_id for account in SIMULATION_ACCOUNTS}
+    if normalized and normalized in valid_ids:
+        return normalized
+    return PRIMARY_ACCOUNT.account_id
+
+
+def _account_live_state_path(account_id: str | None = None) -> Path:
+    resolved_account_id = _resolve_account_id(account_id)
+    return SETTINGS.resolved_account_live_state_path(resolved_account_id)
+
+
+def _load_live_state(account_id: str | None = None) -> Dict[str, object]:
+    live_state_path = _account_live_state_path(account_id)
+    if not live_state_path.exists():
         return {}
     try:
-        return json.loads(LIVE_STATE_PATH.read_text(encoding="utf-8"))
+        return json.loads(live_state_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -172,10 +206,10 @@ def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
     return mapping
 
 
-def _symbol_name_map(settings: Settings) -> Dict[str, str]:
+def _symbol_name_map(settings: Settings, account_id: str | None = None) -> Dict[str, str]:
     mapping = _load_snapshot_symbol_names(settings)
     watch_symbols: List[str] = []
-    live_state = _load_live_state()
+    live_state = _load_live_state(account_id)
     for row in live_state.get("final_actions") or []:
         symbol = str(row.get("symbol") or "").strip()
         if symbol:
@@ -194,7 +228,7 @@ def _symbol_name_map(settings: Settings) -> Dict[str, str]:
         code = str(symbol).strip()
         if code:
             watch_symbols.append(code)
-    conn = connect_db(settings)
+    conn = connect_db(settings, account_id=account_id)
     try:
         for row in fetch_rows_by_sql(conn, "SELECT symbol FROM positions ORDER BY id DESC LIMIT 64"):
             code = str(dict(row).get("symbol") or "").strip()
@@ -214,8 +248,8 @@ def _symbol_name_map(settings: Settings) -> Dict[str, str]:
     return mapping
 
 
-def _query_rows(sql: str, params: Tuple[object, ...] = ()) -> List[Dict[str, object]]:
-    conn = connect_db(SETTINGS)
+def _query_rows(sql: str, params: Tuple[object, ...] = (), account_id: str | None = None) -> List[Dict[str, object]]:
+    conn = connect_db(SETTINGS, account_id=account_id)
     try:
         rows = fetch_rows_by_sql(conn, sql, params)
         return [dict(row) for row in rows]
@@ -233,6 +267,43 @@ def _candidate_report_dirs(settings: Settings) -> List[Path]:
         if path.exists() and path not in dirs:
             dirs.append(path)
     return dirs
+
+
+def _latest_ai_stock_sim_report(subdir: str, pattern: str) -> Path | None:
+    report_dir = SETTINGS.data_dir / "reports" / subdir
+    if not report_dir.exists():
+        return None
+    candidates = sorted(report_dir.glob(pattern), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _sim_report_url(path: Path | None) -> str | None:
+    if not path or not path.exists():
+        return None
+    try:
+        relative = path.relative_to(SETTINGS.data_dir / "reports")
+    except ValueError:
+        return None
+    return "/ai_stock_sim_reports/" + str(relative).replace("\\", "/")
+
+
+def _latest_report_links() -> Dict[str, Dict[str, str | None]]:
+    daily_md = _latest_ai_stock_sim_report("daily", "daily_*.md")
+    weekly_md = _latest_ai_stock_sim_report("weekly", "weekly_*.md")
+    monthly_md = _latest_ai_stock_sim_report("monthly", "monthly_*.md")
+    items = [
+        ("daily", "今日日报", daily_md),
+        ("weekly", "本周周报", weekly_md),
+        ("monthly", "本月月报", monthly_md),
+    ]
+    payload: Dict[str, Dict[str, str | None]] = {}
+    for key, label, path in items:
+        payload[key] = {
+            "label": label,
+            "name": path.name if path else None,
+            "url": _sim_report_url(path),
+        }
+    return payload
 
 
 def _latest_report_json(settings: Settings, pattern: str) -> Dict[str, object]:
@@ -263,6 +334,10 @@ def _build_observe_candidates(
     feature_fusions = live_state.get("feature_fusions") or {}
     ai_engine = live_state.get("ai_decision_engine") or {}
     risk_mode = str(strategy_status.get("risk_mode") or "")
+    portfolio_feedback = live_state.get("portfolio_feedback") if isinstance(live_state, dict) else {}
+    equity = float((portfolio_feedback or {}).get("equity") or 0.0)
+    cash = float((portfolio_feedback or {}).get("cash") or 0.0)
+    today_open_ratio = float((portfolio_feedback or {}).get("today_open_ratio") or 0.0)
     buy_threshold = float(settings.scoring.min_execution_score_to_buy)
     rows: List[Dict[str, object]] = []
     for item in selected[:6]:
@@ -288,6 +363,38 @@ def _build_observe_candidates(
             reasons.append("setup_score {0:.2f} 仍低于观察阈值 {1:.2f}".format(setup_score, settings.scoring.min_setup_score_to_watch))
         if execution_score < buy_threshold:
             reasons.append("execution_score {0:.2f} 未达到买入阈值 {1:.2f}".format(execution_score, buy_threshold))
+        latest_price = float(((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("latest_price") or 0.0))
+        if equity > 0 and latest_price > 0:
+            one_lot_cost = latest_price * 100
+            current_value = 0.0
+            positions_detail = (portfolio_feedback or {}).get("positions_detail") or []
+            for pos in positions_detail:
+                if isinstance(pos, dict) and str(pos.get("symbol") or "") == symbol:
+                    current_value = float(pos.get("market_value") or 0.0)
+                    break
+            single_cap = max(0.0, equity * settings.max_single_position_pct - current_value)
+            daily_cap = max(0.0, equity * settings.max_daily_open_position_pct - today_open_ratio * equity)
+            if one_lot_cost > single_cap + 1e-6:
+                reasons.append(
+                    "买一手约需 {0:.1f} 万元，已超过当前单票可用仓位上限 {1:.1f} 万元，卖出其他持仓也无法解决".format(
+                        one_lot_cost / 10000.0,
+                        max(single_cap, 0.0) / 10000.0,
+                    )
+                )
+            elif one_lot_cost > daily_cap + 1e-6:
+                reasons.append(
+                    "买一手约需 {0:.1f} 万元，已超过当前单日可用开仓额度 {1:.1f} 万元".format(
+                        one_lot_cost / 10000.0,
+                        max(daily_cap, 0.0) / 10000.0,
+                    )
+                )
+            elif one_lot_cost > cash + 1e-6:
+                reasons.append(
+                    "买一手约需 {0:.1f} 万元，当前可用现金仅 {1:.1f} 万元；若想参与，需要先卖出部分已有持仓腾挪现金".format(
+                        one_lot_cost / 10000.0,
+                        max(cash, 0.0) / 10000.0,
+                    )
+                )
         warnings = (decision or {}).get("warnings") or []
         if isinstance(warnings, list):
             for warning in warnings[:2]:
@@ -335,6 +442,7 @@ def _build_watchlist_entries(
     live_state: Dict[str, object],
     symbol_names: Dict[str, str],
     ai_decisions: List[Dict[str, object]],
+    account_id: str | None = None,
 ) -> Dict[str, object]:
     watchlist = _resolve_watchlist(settings)
     live_watchlist = live_state.get("runtime_watchlist") if isinstance(live_state, dict) else {}
@@ -343,7 +451,8 @@ def _build_watchlist_entries(
     last_scan_at = str((live_watchlist or {}).get("last_scan_at") or live_state.get("watchlist_scan", {}).get("scan_time") or watchlist.get("last_scan_at") or "")
     decision_map = {str(item.get("symbol") or ""): item for item in ai_decisions}
     positions = _query_rows(
-        "SELECT symbol, qty, avg_cost, last_price, market_value, unrealized_pnl, can_sell_qty FROM positions ORDER BY symbol"
+        "SELECT symbol, qty, avg_cost, last_price, market_value, unrealized_pnl, can_sell_qty FROM positions ORDER BY symbol",
+        account_id=account_id,
     )
     position_map = {str(item.get("symbol") or ""): item for item in positions}
     decision_contexts = live_state.get("decision_contexts") if isinstance(live_state, dict) else {}
@@ -387,6 +496,16 @@ def _build_watchlist_entries(
         }
         for item in positions
     ]
+    decorated_events: List[Dict[str, object]] = []
+    for item in events[:10]:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip()
+        decorated = dict(item)
+        decorated["symbol"] = symbol
+        decorated["name"] = symbol_names.get(symbol, symbol)
+        decorated_events.append(decorated)
+
     return {
         "source": str(watchlist.get("source") or "default_fallback"),
         "generated_at": str(watchlist.get("generated_at") or ""),
@@ -395,7 +514,7 @@ def _build_watchlist_entries(
         "stale": bool(watchlist.get("stale")),
         "last_scan_at": last_scan_at,
         "evolution": evolution,
-        "events": events[:10],
+        "events": decorated_events,
         "entries": entries[:16],
         "holdings": holdings[:12],
     }
@@ -452,6 +571,7 @@ def _build_trade_explanations(
     names: Dict[str, str],
     ai_decisions: List[Dict[str, object]],
     watchlist: Dict[str, object],
+    account_id: str | None = None,
 ) -> Dict[str, object]:
     order_rows = _query_rows(
         """
@@ -461,7 +581,8 @@ def _build_trade_explanations(
           AND status IN ('FILLED', 'PARTIAL_FILLED')
         ORDER BY id DESC
         LIMIT 30
-        """
+        """,
+        account_id=account_id,
     )
     buys: List[Dict[str, object]] = []
     sells: List[Dict[str, object]] = []
@@ -709,7 +830,7 @@ def _parse_time(raw: object) -> time:
     return time.fromisoformat(str(raw))
 
 
-def get_current_phase() -> Dict[str, object]:
+def get_current_phase(account_id: str | None = None) -> Dict[str, object]:
     now = datetime.now()
     trade_day = now.date()
     next_day = _next_trading_day(trade_day, SETTINGS).isoformat()
@@ -770,8 +891,8 @@ def get_current_phase() -> Dict[str, object]:
     }
 
 
-def get_execution_gate() -> Dict[str, object]:
-    phase = get_current_phase()
+def get_execution_gate(account_id: str | None = None) -> Dict[str, object]:
+    phase = get_current_phase(account_id=account_id)
     phase_name = str(phase.get("phase") or "")
     can_execute_fill = phase_name in {"CONTINUOUS_AUCTION_AM", "CONTINUOUS_AUCTION_PM"}
     if SETTINGS.execution_gate.block_all_fill_outside_continuous_auction and phase_name not in {
@@ -801,9 +922,9 @@ def get_execution_gate() -> Dict[str, object]:
     }
 
 
-def get_latest_ai_decisions() -> List[Dict[str, object]]:
-    live_state = _load_live_state()
-    names = _symbol_name_map(SETTINGS)
+def get_latest_ai_decisions(account_id: str | None = None) -> List[Dict[str, object]]:
+    live_state = _load_live_state(account_id)
+    names = _symbol_name_map(SETTINGS, account_id=account_id)
     engine = live_state.get("ai_decision_engine") if isinstance(live_state, dict) else {}
     if isinstance(engine, dict) and engine:
         rows = []
@@ -892,13 +1013,22 @@ def get_latest_ai_decisions() -> List[Dict[str, object]]:
     return rows
 
 
-def get_account_snapshot() -> Dict[str, object]:
-    rows = _query_rows("SELECT * FROM account_snapshots ORDER BY id DESC LIMIT 1")
+def get_account_snapshot(account_id: str | None = None) -> Dict[str, object]:
+    resolved_account_id = _resolve_account_id(account_id)
+    current_account = next(
+        (account for account in SIMULATION_ACCOUNTS if account.account_id == resolved_account_id),
+        PRIMARY_ACCOUNT,
+    )
+    rows = _query_rows("SELECT * FROM account_snapshots ORDER BY id DESC LIMIT 1", account_id=resolved_account_id)
     row = rows[0] if rows else {}
     equity = float(row.get("equity") or 0.0)
     cash = float(row.get("cash") or 0.0)
     market_value = float(row.get("market_value") or 0.0)
     return {
+        "account_id": current_account.account_id,
+        "account_name": current_account.name,
+        "is_primary": bool(current_account.is_primary),
+        "initial_cash": float(current_account.initial_cash),
         "cash": cash,
         "equity": equity,
         "market_value": market_value,
@@ -911,19 +1041,133 @@ def get_account_snapshot() -> Dict[str, object]:
     }
 
 
-def get_action_summary() -> Dict[str, int]:
-    live_state = _load_live_state()
+def get_action_summary(account_id: str | None = None) -> Dict[str, int]:
+    live_state = _load_live_state(account_id)
     cards = build_action_cards(
         live_state.get("final_actions") or [],
         live_state.get("risk_results") or [],
-        _symbol_name_map(SETTINGS),
+        _symbol_name_map(SETTINGS, account_id=account_id),
     )
-    return summarize_action_cards(cards)
+    current = summarize_action_cards(cards)
+    today = _today_action_summary(account_id=account_id)
+    return {
+        "intent_count": max(int(current.get("intent_count") or 0), int(today.get("intent_count") or 0)),
+        "executed_count": max(int(current.get("executed_count") or 0), int(today.get("executed_count") or 0)),
+        "blocked_count": max(int(current.get("blocked_count") or 0), int(today.get("blocked_count") or 0)),
+    }
 
 
-def _latest_error() -> Tuple[str | None, str | None]:
+def _today_action_summary(account_id: str | None = None) -> Dict[str, int]:
+    today = datetime.now().date().isoformat()
     rows = _query_rows(
-        "SELECT ts, message FROM system_logs WHERE level = 'ERROR' ORDER BY id DESC LIMIT 1"
+        """
+        SELECT status, intent_only
+        FROM orders
+        WHERE date(ts) = ?
+        """,
+        (today,),
+        account_id=account_id,
+    )
+    intent_count = 0
+    executed_count = 0
+    blocked_count = 0
+    for row in rows:
+        status = str(row.get("status") or "").upper()
+        intent_only = bool(row.get("intent_only"))
+        if intent_only or status == "INTENT_ONLY":
+            intent_count += 1
+        elif status in {"FILLED", "PARTIAL_FILLED"}:
+            executed_count += 1
+        elif status == "REJECTED":
+            blocked_count += 1
+    return {
+        "intent_count": intent_count,
+        "executed_count": executed_count,
+        "blocked_count": blocked_count,
+    }
+
+
+def _hydrate_strategy_performance(summary: Dict[str, object], account_id: str | None = None) -> Dict[str, object]:
+    if any(int((item or {}).get("trades") or 0) > 0 for item in summary.values() if isinstance(item, dict)):
+        return summary
+    conn = connect_db(SETTINGS, account_id=account_id)
+    try:
+        refreshed = StrategyEvaluationService(SETTINGS).evaluate_strategy_performance(conn, window_days=3)
+    except Exception:
+        refreshed = summary
+    finally:
+        conn.close()
+    ranked = sorted(
+        refreshed.items(),
+        key=lambda kv: (
+            -int((kv[1] or {}).get("trades") or 0),
+            -float((kv[1] or {}).get("win_rate") or 0.0),
+            -float((kv[1] or {}).get("score_total") or 0.0),
+            kv[0],
+        ),
+    )
+    return {name: item for name, item in ranked}
+
+
+def _fallback_adaptive_adjustments(
+    adaptive_weights: Dict[str, object],
+    strategy_performance: Dict[str, object],
+    style_profile: Dict[str, object],
+    account_id: str | None = None,
+) -> List[Dict[str, object]]:
+    history_rows = _query_rows(
+        """
+        SELECT key_name, old_value, new_value, reason, ts
+        FROM adaptive_weight_history
+        ORDER BY ts DESC, id DESC
+        LIMIT 3
+        """,
+        account_id=account_id,
+    )
+    if history_rows:
+        return [
+            {
+                "key": str(row.get("key_name") or "调整"),
+                "old_value": float(row.get("old_value") or 0.0),
+                "new_value": float(row.get("new_value") or 0.0),
+                "reason": str(row.get("reason") or "已按近期表现做平滑调整。"),
+            }
+            for row in history_rows
+        ]
+    performance_items = list(strategy_performance.values())
+    total_trades = sum(int(item.get("trades") or 0) for item in performance_items if isinstance(item, dict))
+    ai_multiplier = float(adaptive_weights.get("ai_score_multiplier") or 1.0)
+    risk_multiplier = float(adaptive_weights.get("risk_penalty_multiplier") or 1.0)
+    style_label = str(style_profile.get("style") or "balanced")
+    if total_trades <= 0:
+        return [
+            {
+                "key": "当前权重",
+                "old_value": ai_multiplier,
+                "new_value": ai_multiplier,
+                "reason": "最近可用于学习的成交样本仍不足，系统暂时保持当前自适应权重不变。",
+            }
+        ]
+    return [
+        {
+            "key": "AI 加分倍率",
+            "old_value": ai_multiplier,
+            "new_value": ai_multiplier,
+            "reason": f"当前学习层已启用，最近风格为 {style_label}，暂未触发新的权重调整。",
+        },
+        {
+            "key": "风险惩罚倍率",
+            "old_value": risk_multiplier,
+            "new_value": risk_multiplier,
+            "reason": "近期表现未触发新的平滑调权，系统继续沿用当前风险惩罚倍率。",
+        },
+    ]
+
+
+def _latest_error(account_id: str | None = None) -> Tuple[str | None, str | None]:
+    rows = _query_rows(
+        "SELECT ts, message FROM system_logs WHERE level = 'ERROR' ORDER BY id DESC LIMIT 1",
+        account_id=account_id,
     )
     if not rows:
         return None, None
@@ -953,11 +1197,11 @@ def _heartbeat_running(last_updated_at: str | None, refresh_interval_seconds: in
     return (datetime.now() - updated_dt).total_seconds() <= stale_seconds
 
 
-def _system_status() -> Dict[str, object]:
+def _system_status(account_id: str | None = None) -> Dict[str, object]:
     engine_pid = _read_pid(ENGINE_PID_PATH)
-    live_state = _load_live_state()
-    account = get_account_snapshot()
-    last_error, last_error_ts = _latest_error()
+    live_state = _load_live_state(account_id)
+    account = get_account_snapshot(account_id=account_id)
+    last_error, last_error_ts = _latest_error(account_id=account_id)
     last_updated = str(live_state.get("ts") or account.get("ts") or "")
     engine_running = _pid_alive(engine_pid) or _heartbeat_running(last_updated or None, SETTINGS.refresh_interval_seconds)
     status = build_system_status(
@@ -994,14 +1238,15 @@ def _system_status() -> Dict[str, object]:
     return status
 
 
-def get_home_view() -> Dict[str, object]:
-    live_state = _load_live_state()
-    phase = get_current_phase()
-    execution = get_execution_gate()
-    names = _symbol_name_map(SETTINGS)
+def get_home_view(account_id: str | None = None) -> Dict[str, object]:
+    resolved_account_id = _resolve_account_id(account_id)
+    live_state = _load_live_state(resolved_account_id)
+    phase = get_current_phase(account_id=resolved_account_id)
+    execution = get_execution_gate(account_id=resolved_account_id)
+    names = _symbol_name_map(SETTINGS, account_id=resolved_account_id)
     actions = build_action_cards(live_state.get("final_actions") or [], live_state.get("risk_results") or [], names)
-    account = get_account_snapshot()
-    ai_decisions = get_latest_ai_decisions()
+    account = get_account_snapshot(account_id=resolved_account_id)
+    ai_decisions = get_latest_ai_decisions(account_id=resolved_account_id)
     manager = live_state.get("ai_portfolio_manager") if isinstance(live_state, dict) else {}
     ai_runtime = _build_ai_runtime(SETTINGS, live_state)
     strategy_status = build_ai_strategy_status(
@@ -1010,8 +1255,8 @@ def get_home_view() -> Dict[str, object]:
         manager if isinstance(manager, dict) else {},
         ai_runtime,
     )
-    stats = get_action_summary()
-    system_status = _system_status()
+    stats = get_action_summary(account_id=resolved_account_id)
+    system_status = _system_status(account_id=resolved_account_id)
     summary = build_home_summary(
         system_status=system_status,
         phase=phase,
@@ -1040,17 +1285,27 @@ def get_home_view() -> Dict[str, object]:
         for row in actions
         if bool(row.get("executable_now")) and str(row.get("action") or "") in {"SELL", "REDUCE"}
     )
-    timeline = get_recent_action_timeline(settings=SETTINGS)
+    timeline = get_recent_action_timeline(settings=SETTINGS, account_id=resolved_account_id)
     for row in timeline:
         symbol = str(row.get("symbol") or "")
         row["name"] = names.get(symbol, symbol)
-    watchlist = _build_watchlist_entries(SETTINGS, live_state, names, ai_decisions)
+    watchlist = _build_watchlist_entries(SETTINGS, live_state, names, ai_decisions, account_id=resolved_account_id)
     watchlist_sections = _build_watchlist_sections(watchlist, SETTINGS)
-    trade_explanations = _build_trade_explanations(names, ai_decisions, watchlist)
+    trade_explanations = _build_trade_explanations(names, ai_decisions, watchlist, account_id=resolved_account_id)
     style_profile = dict(live_state.get("style_profile") or {})
-    strategy_performance = dict(live_state.get("strategy_performance") or {})
+    strategy_performance = _hydrate_strategy_performance(
+        dict(live_state.get("strategy_performance") or {}),
+        account_id=resolved_account_id,
+    )
     adaptive_weights = dict(live_state.get("adaptive_weights") or {})
     adaptive_adjustments = list(adaptive_weights.get("adjustments") or [])
+    if not adaptive_adjustments:
+        adaptive_adjustments = _fallback_adaptive_adjustments(
+            adaptive_weights,
+            strategy_performance,
+            style_profile,
+            account_id=resolved_account_id,
+        )
     chart_symbol = _select_chart_symbol(watchlist, timeline, ai_decisions)
     core_symbol = _build_core_symbol(watchlist, ai_decisions, timeline)
     score_breakdowns = sorted(
@@ -1061,9 +1316,12 @@ def get_home_view() -> Dict[str, object]:
         "selected_symbol": chart_symbol,
         "intraday": get_intraday_chart_data(chart_symbol, SETTINGS) if chart_symbol else {"symbol": "", "points": []},
         "kline": get_kline_chart_data(chart_symbol, SETTINGS) if chart_symbol else {"symbol": "", "rows": []},
-        "equity": get_equity_curve_data(SETTINGS),
+        "equity": get_equity_curve_data(SETTINGS, account_id=resolved_account_id),
     }
     return {
+        "accounts": _available_accounts(),
+        "current_account_id": resolved_account_id,
+        "current_account_name": str(account.get("account_name") or resolved_account_id),
         "summary": summary,
         "system_status": system_status,
         "engine_mode": str(live_state.get("engine_mode") or SETTINGS.runtime.engine_mode),
@@ -1083,6 +1341,7 @@ def get_home_view() -> Dict[str, object]:
         "strategy_performance": strategy_performance,
         "adaptive_weights": adaptive_weights,
         "adaptive_adjustments": adaptive_adjustments[:3],
+        "report_links": _latest_report_links(),
         "core_symbol": core_symbol,
         "timeline": timeline,
         "charts": charts,
@@ -1096,10 +1355,16 @@ def get_home_view() -> Dict[str, object]:
     }
 
 
-def get_debug_view() -> Dict[str, object]:
-    status = _system_status()
-    logs = _query_rows("SELECT ts, level, module, message FROM system_logs ORDER BY id DESC LIMIT 12")
+def get_debug_view(account_id: str | None = None) -> Dict[str, object]:
+    resolved_account_id = _resolve_account_id(account_id)
+    status = _system_status(account_id=resolved_account_id)
+    logs = _query_rows(
+        "SELECT ts, level, module, message FROM system_logs ORDER BY id DESC LIMIT 12",
+        account_id=resolved_account_id,
+    )
     return {
+        "accounts": _available_accounts(),
+        "current_account_id": resolved_account_id,
         "system_status": status,
         "logs": logs,
         "dashboard_url": status.get("dashboard_url"),

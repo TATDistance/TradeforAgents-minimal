@@ -62,6 +62,11 @@ class AIDecisionEngine:
             warnings.append("成交额偏低")
         if research.get("warning"):
             warnings.append(str(research["warning"]))
+        capital_profile = self._resolve_capital_profile(portfolio_state=portfolio_state, snapshot=snapshot)
+        if capital_profile["is_small_account"] and capital_profile["lot_ratio"] >= capital_profile["affordable_lot_pct"]:
+            warnings.append(
+                "小资金账户买一手约占总资产 {0:.1f}%".format(float(capital_profile["lot_ratio"]) * 100.0)
+            )
 
         risk_mode = self._resolve_risk_mode(regime_name, portfolio_risk_mode, float(portfolio_state.get("drawdown") or 0.0))
         has_position = bool(position_state.get("has_position"))
@@ -85,6 +90,7 @@ class AIDecisionEngine:
             allow_new_buy=allow_new_buy,
             adaptive_weights=adaptive_weights,
             style_profile=style_profile,
+            capital_profile=capital_profile,
         )
         setup_bundle = self.score_service.compute_scores(
             symbol=symbol,
@@ -125,6 +131,7 @@ class AIDecisionEngine:
                 portfolio_risk_penalty=portfolio_risk_penalty,
                 phase_penalty=phase_penalty,
                 gate_penalty=gate_penalty,
+                capital_profile=capital_profile,
             )
 
         if risk_mode == "RISK_OFF" and not has_position:
@@ -245,11 +252,43 @@ class AIDecisionEngine:
                 symbol,
             )
 
-        if direction == "LONG" and execution_score >= self.settings.scoring.min_execution_score_to_buy:
+        buy_threshold = self.settings.scoring.min_execution_score_to_buy + float(capital_profile["buy_threshold_bonus"])
+        watch_threshold = self.settings.scoring.min_setup_score_to_watch + float(capital_profile["watch_threshold_bonus"])
+
+        if (
+            direction == "LONG"
+            and capital_profile["is_small_account"]
+            and float(capital_profile["lot_ratio"]) >= float(capital_profile["block_lot_pct"])
+        ):
+            return normalize_engine_output(
+                {
+                    "symbol": symbol,
+                    "action": "WATCH_NEXT_DAY",
+                    "confidence": min(0.84, 0.54 + max(setup_score, 0.0) * 0.2),
+                    "ai_score": round(ai_score, 4),
+                    "setup_score": round(setup_score, 4),
+                    "execution_score": round(execution_score, 4),
+                    "market_risk_penalty": round(market_risk_penalty, 4),
+                    "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
+                    "phase_penalty": round(phase_penalty, 4),
+                    "gate_penalty": round(gate_penalty, 4),
+                    "risk_mode": risk_mode,
+                    "holding_bias": "SHORT_TERM",
+                    "reason": "该标的一手资金占用对小资金账户过高，先观察更适合小本金参与的机会。",
+                    "warnings": warnings,
+                    "final_score": round(execution_score, 4),
+                    "feature_score": round(feature_score, 4),
+                },
+                symbol,
+            )
+
+        if direction == "LONG" and execution_score >= buy_threshold:
             base_pct = min(self.settings.max_single_position_pct, 0.06 + execution_score * 0.12)
             if risk_mode == "DEFENSIVE":
                 base_pct *= 0.65
             base_pct *= max(0.4, min(1.0, float(portfolio_state.get("cash_pct") or 0.0) + 0.15))
+            if capital_profile["is_small_account"]:
+                base_pct *= float(capital_profile["position_scale"])
             return normalize_engine_output(
                 {
                     "symbol": symbol,
@@ -273,7 +312,7 @@ class AIDecisionEngine:
                 symbol,
             )
 
-        neutral_action = "WATCH_NEXT_DAY" if setup_score >= self.settings.scoring.min_setup_score_to_watch else "AVOID_NEW_BUY" if direction == "SHORT" else "HOLD"
+        neutral_action = "WATCH_NEXT_DAY" if setup_score >= watch_threshold else "AVOID_NEW_BUY" if direction == "SHORT" else "HOLD"
         return normalize_engine_output(
             {
                 "symbol": symbol,
@@ -324,8 +363,13 @@ class AIDecisionEngine:
         portfolio_risk_penalty: float,
         phase_penalty: float,
         gate_penalty: float,
+        capital_profile: Mapping[str, float | bool] | None = None,
     ) -> AIDecisionEngineOutput:
         allow_prepare_actions = not (phase_name == "POST_CLOSE" and not self.settings.market_session.allow_post_close_paper_execution)
+        resolved_capital_profile = dict(capital_profile or {})
+        watch_threshold = self.settings.scoring.min_setup_score_to_watch + float(
+            resolved_capital_profile.get("watch_threshold_bonus") or 0.0
+        )
         if has_position:
             if allow_prepare_actions and can_sell_qty > 0 and (risk_mode == "RISK_OFF" or execution_score <= -self.settings.scoring.min_execution_score_to_reduce):
                 return normalize_engine_output(
@@ -372,10 +416,22 @@ class AIDecisionEngine:
                 symbol,
             )
 
-        if allow_prepare_actions and allow_new_buy and direction == "LONG" and setup_score >= self.settings.scoring.min_setup_score_to_watch:
+        if (
+            allow_prepare_actions
+            and allow_new_buy
+            and direction == "LONG"
+            and setup_score >= watch_threshold
+            and not (
+                bool(resolved_capital_profile.get("is_small_account"))
+                and float(resolved_capital_profile.get("lot_ratio") or 0.0)
+                >= float(resolved_capital_profile.get("block_lot_pct") or 1.0)
+            )
+        ):
             base_pct = min(self.settings.max_single_position_pct, 0.06 + max(execution_score, setup_score) * 0.12)
             if risk_mode == "DEFENSIVE":
                 base_pct *= 0.65
+            if resolved_capital_profile.get("is_small_account"):
+                base_pct *= float(resolved_capital_profile.get("position_scale") or 1.0)
             return normalize_engine_output(
                 {
                     "symbol": symbol,
@@ -436,6 +492,7 @@ class AIDecisionEngine:
         allow_new_buy: bool,
         adaptive_weights: Mapping[str, object],
         style_profile: Mapping[str, object],
+        capital_profile: Mapping[str, float | bool],
     ) -> float:
         score = 0.0
         regime = str(market_regime.get("regime") or "")
@@ -492,6 +549,16 @@ class AIDecisionEngine:
                 score -= 0.05
             elif final_score > 0 and unrealized_pct > 0:
                 score += 0.03
+        if direction == "LONG" and bool(capital_profile.get("is_small_account")):
+            lot_ratio = float(capital_profile.get("lot_ratio") or 0.0)
+            affordable_lot_pct = float(capital_profile.get("affordable_lot_pct") or 0.0)
+            block_lot_pct = float(capital_profile.get("block_lot_pct") or 0.0)
+            if lot_ratio >= block_lot_pct:
+                score -= 0.08
+            elif lot_ratio > affordable_lot_pct:
+                score -= min(0.06, (lot_ratio - affordable_lot_pct) * 0.6)
+            elif 0.0 < lot_ratio <= affordable_lot_pct * 0.7:
+                score += 0.02
         score *= ai_multiplier
         return max(-0.25, min(0.25, score))
 
@@ -516,6 +583,29 @@ class AIDecisionEngine:
             "confidence": float(payload.get("confidence", 0.5) or 0.5),
             "warning": str(payload.get("warning") or ""),
             "reason": str(payload.get("reason") or payload.get("reasoning") or ""),
+        }
+
+    def _resolve_capital_profile(
+        self,
+        *,
+        portfolio_state: Mapping[str, object],
+        snapshot: Mapping[str, object],
+    ) -> Dict[str, float | bool]:
+        equity = max(0.0, float(portfolio_state.get("equity") or 0.0))
+        latest_price = max(0.0, float(snapshot.get("latest_price") or snapshot.get("close") or 0.0))
+        one_lot_cost = latest_price * 100.0
+        lot_ratio = 0.0 if equity <= 0 or one_lot_cost <= 0 else one_lot_cost / equity
+        is_small_account = equity > 0 and equity <= float(self.settings.capital_profile.small_account_equity_threshold)
+        return {
+            "equity": equity,
+            "one_lot_cost": one_lot_cost,
+            "lot_ratio": lot_ratio,
+            "is_small_account": is_small_account,
+            "buy_threshold_bonus": self.settings.capital_profile.small_account_buy_threshold_bonus if is_small_account else 0.0,
+            "watch_threshold_bonus": self.settings.capital_profile.small_account_watch_threshold_bonus if is_small_account else 0.0,
+            "affordable_lot_pct": float(self.settings.capital_profile.small_account_affordable_lot_pct),
+            "block_lot_pct": float(self.settings.capital_profile.small_account_block_lot_pct),
+            "position_scale": float(self.settings.capital_profile.small_account_position_scale if is_small_account else 1.0),
         }
 
     @staticmethod

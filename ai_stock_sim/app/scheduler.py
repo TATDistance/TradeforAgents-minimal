@@ -32,7 +32,7 @@ from .report_service import ReportService
 from .realtime_engine import RealtimeEngine
 from .review_service import ReviewService
 from .risk_engine import RiskEngine
-from .settings import Settings, load_settings
+from .settings import Settings, SimulationAccountConfig, get_primary_simulation_account, load_settings, resolve_simulation_accounts
 from .signal_fusion import SignalFusion
 from .style_profile_service import StyleProfileService
 from .strategy_evaluation_service import StrategyEvaluationService
@@ -45,6 +45,13 @@ from .watchlist_sync_service import load_runtime_watchlist, sync_watchlist_to_ru
 
 
 class TradingScheduler:
+    REJECT_RETRY_COOLDOWN_SECONDS = 600
+    NON_EXECUTABLE_BUY_MARKERS = (
+        "不足 100 股",
+        "买一手约需",
+        "仓位上限已用尽",
+    )
+
     def __init__(self, settings: Settings | None = None, logger=None) -> None:
         self.settings = settings or load_settings()
         self.logger = logger
@@ -78,10 +85,10 @@ class TradingScheduler:
         self.opportunity_pool_service = OpportunityPoolService(self.settings)
         self.watchlist_evolution_service = WatchlistEvolutionService(self.settings)
         self.scheduler = BackgroundScheduler()
-        self._last_t1_release_date: str | None = None
-        self._last_evaluation_trade_date: str | None = None
-        self._last_report_trade_date: str | None = None
-        self._last_phase_key: str | None = None
+        self._last_t1_release_date: Dict[str, str] = {}
+        self._last_evaluation_trade_date: Dict[str, str] = {}
+        self._last_report_trade_date: Dict[str, str] = {}
+        self._last_phase_key: Dict[str, str] = {}
         self._last_intraday_scan_at: datetime | None = None
 
     def start(self) -> None:
@@ -91,23 +98,39 @@ class TradingScheduler:
     def shutdown(self) -> None:
         self.scheduler.shutdown(wait=False)
 
-    def run_cycle(self) -> Dict[str, object]:
+    def run_cycle(self, account: SimulationAccountConfig | None = None) -> Dict[str, object]:
+        if account is None:
+            accounts = resolve_simulation_accounts(self.settings)
+            if self.settings.simulation_accounts:
+                primary_account = get_primary_simulation_account(self.settings)
+                summaries: List[Dict[str, object]] = []
+                primary_result: Dict[str, object] | None = None
+                for item in accounts:
+                    result = self.run_cycle(account=item)
+                    summaries.append(result)
+                    if item.account_id == primary_account.account_id:
+                        primary_result = result
+                self._write_accounts_summary(summaries)
+                return primary_result or (summaries[0] if summaries else {})
+            account = get_primary_simulation_account(self.settings)
+
         phase_state = self.market_phase_service.resolve()
         execution_gate = self.execution_gate_service.resolve(phase_state)
         trade_date = phase_state.trade_date
         mode_state = self.decision_mode_router.resolve()
-        conn = connect_db(self.settings)
-        initialize_db(self.settings)
+        conn = connect_db(self.settings, account_id=account.account_id)
+        initialize_db(self.settings, account_id=account.account_id)
 
         def _safe_log(level: str, module: str, message: str) -> None:
+            scoped_module = f"{module}[{account.account_id}]"
             try:
-                write_system_log(conn, level, module, message)
+                write_system_log(conn, level, scoped_module, message)
             except sqlite3.Error as exc:
                 if self.logger:
                     log_event(
                         self.logger,
                         level.lower(),
-                        module,
+                        scoped_module,
                         "db_log_failed",
                         message=message,
                         db_error=str(exc),
@@ -115,13 +138,13 @@ class TradingScheduler:
 
         try:
             phase_key = f"{trade_date}:{phase_state.phase}"
-            if phase_key != self._last_phase_key:
+            if phase_key != self._last_phase_key.get(account.account_id):
                 _safe_log("INFO", "market_phase", f"{trade_date} 阶段切换到 {phase_state.phase}：{phase_state.reason}")
-                self._last_phase_key = phase_key
+                self._last_phase_key[account.account_id] = phase_key
 
-            if phase_state.is_trading_day and self._last_t1_release_date != trade_date:
+            if phase_state.is_trading_day and self._last_t1_release_date.get(account.account_id) != trade_date:
                 self.broker.release_t1_positions(conn)
-                self._last_t1_release_date = trade_date
+                self._last_t1_release_date[account.account_id] = trade_date
 
             universe_result = self.universe.build_universe() if execution_gate.can_update_market else self.universe.empty_result("market_closed")
             asset_type_map = {
@@ -455,6 +478,26 @@ class TradingScheduler:
                     if action.symbol == "*":
                         _safe_log("INFO", "ai_pm", action.reason)
                         continue
+                    reject_reason = self._recent_reject_reason(action.symbol, action.action)
+                    if reject_reason:
+                        _safe_log("INFO", "portfolio_decision", f"{action.symbol} BUY 冷却中: {reject_reason}")
+                        risk_results.append(
+                            {
+                                "symbol": action.symbol,
+                                "action": action.action,
+                                "mode_name": action.mode_name,
+                                "phase": action.phase,
+                                "intent_only": action.intent_only,
+                                "executable_now": False,
+                                "allowed": False,
+                                "final_action": "HOLD",
+                                "adjusted_qty": 0,
+                                "risk_state": "COOLDOWN",
+                                "phase_blocked": False,
+                                "reason": reject_reason,
+                            }
+                        )
+                        continue
                     quote = quote_map.get(action.symbol)
                     if quote is None:
                         _safe_log("WARNING", "market_data", f"{action.symbol} 实时行情获取失败，跳过动作执行")
@@ -484,6 +527,12 @@ class TradingScheduler:
                             "reason": risk.reject_reason or action.reason,
                         }
                     )
+                    if not risk.allowed and action.action == "BUY":
+                        self.realtime_engine.state_store.mark_reject(
+                            action.symbol,
+                            action=action.action,
+                            reason=risk.reject_reason or action.reason,
+                        )
                     if action.action in {"HOLD", "AVOID_NEW_BUY", "ENTER_DEFENSIVE_MODE"}:
                         _safe_log("INFO", "portfolio_decision", f"{action.symbol} {action.action}: {action.reason}")
                         continue
@@ -523,9 +572,9 @@ class TradingScheduler:
             write_account_snapshot(conn, snapshot)
             portfolio_feedback = build_portfolio_feedback(conn, self.settings)
             self.decision_attribution_service.backfill_trade_results(conn, lookback_days=max(3, int(self.settings.adaptive.evaluation_window_days or 5)))
-            if self._should_persist_evaluation(trade_date, phase_state.phase, execution_events):
+            if self._should_persist_evaluation(account.account_id, trade_date, phase_state.phase, execution_events):
                 self.evaluation_service.persist_evaluations(conn, reference_date=trade_date)
-                self._last_evaluation_trade_date = trade_date
+                self._last_evaluation_trade_date[account.account_id] = trade_date
             adaptive_update = adaptive_weights
             if phase_state.phase == "POST_CLOSE" and self.settings.adaptive.enabled:
                 adaptive_update = self.adaptive_weight_service.update_strategy_weights(conn)
@@ -542,16 +591,17 @@ class TradingScheduler:
                     adaptive_weights=adaptive_weights,
                 )
                 self.style_profile_service.save(conn, style_profile)
-            if self.settings.evaluation.report_auto_generate and execution_gate.can_generate_report and phase_state.phase == "POST_CLOSE" and self._last_report_trade_date != trade_date:
+            if self.settings.evaluation.report_auto_generate and execution_gate.can_generate_report and phase_state.phase == "POST_CLOSE" and self._last_report_trade_date.get(account.account_id) != trade_date:
                 self.report_service.export_daily_report(conn, trade_date)
                 current_day = datetime.fromisoformat(trade_date).date()
                 week_start = current_day - timedelta(days=current_day.weekday())
                 self.report_service.export_weekly_report(conn, week_start.isoformat(), trade_date)
                 self.report_service.export_monthly_report(conn, current_day.strftime("%Y-%m"))
-                self._last_report_trade_date = trade_date
+                self._last_report_trade_date[account.account_id] = trade_date
             for warning in universe_result.warnings:
                 _safe_log("WARNING", "universe", warning)
             self._write_live_state(
+                account_id=account.account_id,
                 phase_name=phase_state.phase,
                 trading_calendar={
                     "is_trading_day": phase_state.is_trading_day,
@@ -605,6 +655,8 @@ class TradingScheduler:
                     orders=len(execution_events),
                 )
             return {
+                "account_id": account.account_id,
+                "account_name": account.name,
                 "trade_date": trade_date,
                 "phase": phase_state.phase,
                 "is_trading_day": phase_state.is_trading_day,
@@ -707,6 +759,7 @@ class TradingScheduler:
 
     def _write_live_state(
         self,
+        account_id: str,
         phase_name: str,
         trading_calendar: Dict[str, object],
         execution_gate: Dict[str, object],
@@ -736,6 +789,7 @@ class TradingScheduler:
         watchlist_events: List[Dict[str, object]],
     ) -> None:
         payload = {
+            "account_id": account_id,
             "ts": datetime.now().isoformat(timespec="seconds"),
             "phase": phase_name,
             "trading_calendar": trading_calendar,
@@ -766,6 +820,25 @@ class TradingScheduler:
             "watchlist_evolution": watchlist_evolution_result,
             "watchlist_events": watchlist_events,
         }
+        target_path = self.settings.resolved_account_live_state_path(account_id)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        content = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        target_path.write_text(content, encoding="utf-8")
+        if account_id == get_primary_simulation_account(self.settings).account_id:
+            self.settings.live_state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.settings.live_state_path.write_text(content, encoding="utf-8")
+
+    def _write_accounts_summary(self, summaries: List[Dict[str, object]]) -> None:
+        primary_account = get_primary_simulation_account(self.settings)
+        primary_path = self.settings.account_live_state_path(primary_account.account_id)
+        if primary_path.exists():
+            try:
+                payload = json.loads(primary_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+        else:
+            payload = {}
+        payload["accounts_summary"] = summaries
         self.settings.live_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings.live_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
@@ -812,6 +885,23 @@ class TradingScheduler:
         interval = timedelta(minutes=int(self.settings.watchlist_evolution.scan_interval_minutes or 30))
         return datetime.now() - self._last_intraday_scan_at >= interval
 
+    def _recent_reject_reason(self, symbol: str, action: str) -> str | None:
+        if action != "BUY":
+            return None
+        state = self.realtime_engine.state_store.get(symbol)
+        if state is None or state.last_reject_action != "BUY" or not state.last_reject_at:
+            return None
+        reason = str(state.last_reject_reason or "")
+        if not any(marker in reason for marker in self.NON_EXECUTABLE_BUY_MARKERS):
+            return None
+        try:
+            rejected_at = datetime.fromisoformat(str(state.last_reject_at))
+        except Exception:
+            return None
+        if (datetime.now() - rejected_at).total_seconds() > self.REJECT_RETRY_COOLDOWN_SECONDS:
+            return None
+        return f"{reason}；系统将在冷却后再尝试，避免连续重复下单"
+
     @staticmethod
     def _build_watchlist_events(
         evolution: Mapping[str, object],
@@ -848,8 +938,8 @@ class TradingScheduler:
             )
         return events[:20]
 
-    def _should_persist_evaluation(self, trade_date: str, phase_name: str, execution_events: List[Dict[str, object]]) -> bool:
-        if self._last_evaluation_trade_date != trade_date:
+    def _should_persist_evaluation(self, account_id: str, trade_date: str, phase_name: str, execution_events: List[Dict[str, object]]) -> bool:
+        if self._last_evaluation_trade_date.get(account_id) != trade_date:
             return True
         if any(not bool(item.get("intent_only")) for item in execution_events):
             return True
