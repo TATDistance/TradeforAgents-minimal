@@ -122,7 +122,7 @@ def build_home_summary(
     if state == "stopped":
         return "系统未运行，当前展示最近一次 AI 决策快照。"
     if state == "error":
-        return "系统运行异常，请优先查看调试面板确认最近错误。"
+        return "系统当前未稳定运行，可先点击“一键启动 AI 实时决策（会自动补监控池）”尝试恢复。"
     executable = [row for row in actions if bool(row.get("executable_now"))]
     blocked = [row for row in actions if bool(row.get("blocked"))]
     if executable:

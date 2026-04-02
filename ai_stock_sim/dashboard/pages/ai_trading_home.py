@@ -1,48 +1,22 @@
 from __future__ import annotations
 
 try:
+    from ai_stock_sim.dashboard.components.ai_decision_hero_card import render_ai_decision_hero_card
     from ai_stock_sim.dashboard.components.action_timeline_panel import render_action_timeline_panel
     from ai_stock_sim.dashboard.components.equity_curve_panel import render_equity_curve_panel
-    from ai_stock_sim.dashboard.components.intraday_panel import render_intraday_panel
     from ai_stock_sim.dashboard.components.kline_panel import render_kline_panel
 except ModuleNotFoundError:  # pragma: no cover - test/runtime import compatibility
+    from dashboard.components.ai_decision_hero_card import render_ai_decision_hero_card
     from dashboard.components.action_timeline_panel import render_action_timeline_panel
     from dashboard.components.equity_curve_panel import render_equity_curve_panel
-    from dashboard.components.intraday_panel import render_intraday_panel
     from dashboard.components.kline_panel import render_kline_panel
 
 
 def render_ai_trading_home(build_tag: str) -> str:
-    intraday_panel = render_intraday_panel()
+    hero_panel = render_ai_decision_hero_card()
     kline_panel = render_kline_panel()
     equity_curve_panel = render_equity_curve_panel()
     action_timeline_panel = render_action_timeline_panel()
-    chart_combo_panel = """
-      <div class="card span-12">
-        <div class="chart-focus">
-          <div class="focus-meta">
-            <div class="focus-title" id="chartFocusTitle">正在选择图表观察标的…</div>
-            <div class="focus-sub" id="chartFocusSub">系统会优先展示当前持仓标的、execution_score 最高标的或最近有动作的标的。</div>
-          </div>
-          <div>
-            <div class="label" style="margin-bottom:8px">观察标的</div>
-            <select id="chartSymbolSelect"></select>
-          </div>
-        </div>
-        <div class="chart-combo-grid">
-          <div class="chart-panel-shell">
-            <h3>分时图</h3>
-            <div class="subvalue" style="margin-bottom:10px">优先展示当前最重要标的的盘中变化，并标注最近动作。</div>
-            <div id="intradayPanel" class="empty">正在加载图表数据…</div>
-          </div>
-          <div class="chart-panel-shell">
-            <h3>K 线图</h3>
-            <div class="subvalue" style="margin-bottom:10px">最近 N 日价格区间、收盘线和动作标记。</div>
-            <div id="klinePanel" class="empty">正在加载图表数据…</div>
-          </div>
-        </div>
-      </div>
-    """
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -66,8 +40,10 @@ def render_ai_trading_home(build_tag: str) -> str:
     .nav{display:flex;gap:10px;flex-wrap:wrap}
     .nav a{color:#cfe1ff;text-decoration:none;background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.18);padding:10px 14px;border-radius:999px;font-weight:600}
     .hero{background:linear-gradient(140deg,rgba(37,99,235,.25),rgba(15,23,42,.9));border:1px solid rgba(96,165,250,.16);border-radius:22px;padding:22px;display:grid;grid-template-columns:1.5fr 1fr;gap:18px}
-    .hero h2{margin:0 0 10px;font-size:30px}
+    .hero h2{margin:0 0 10px;font-size:38px;line-height:1.25}
     .hero p{margin:0;color:#c5d4ea;line-height:1.7}
+    .hero-kicker{font-size:12px;font-weight:800;letter-spacing:.12em;color:#9cc2ff;text-transform:uppercase;margin-bottom:10px}
+    .hero-side-title{font-size:15px;font-weight:700;color:#cfe1ff;margin-bottom:10px}
     .status-box{background:rgba(8,15,30,.65);border:1px solid var(--line);border-radius:18px;padding:16px}
     .status-pill{display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;font-weight:700;font-size:13px}
     .status-running{background:rgba(34,197,94,.15);color:#b6f0c9;border:1px solid rgba(34,197,94,.28)}
@@ -120,6 +96,10 @@ def render_ai_trading_home(build_tag: str) -> str:
     .hero-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
     .watchlist-meta{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 14px;color:#9fb2cf;font-size:13px}
     .watchlist-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .watch-section{display:grid;gap:12px;margin-bottom:14px}
+    .watch-section-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
+    .watch-section-title{font-size:17px;font-weight:800}
+    .watch-section-desc{color:#90a4c4;font-size:13px;line-height:1.6}
     .watch-item{border:1px solid rgba(59,130,246,.12);background:rgba(15,23,42,.78);border-radius:16px;padding:14px}
     .watch-item-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
     .watch-item h4{margin:0;font-size:16px}
@@ -134,7 +114,7 @@ def render_ai_trading_home(build_tag: str) -> str:
     .chart-focus .focus-title{font-size:20px;font-weight:700}
     .chart-focus .focus-sub{color:#9fb2cf;font-size:13px;line-height:1.6}
     .chart-focus select{min-width:240px;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(15,23,42,.92);color:var(--text)}
-    .chart-combo-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+    .chart-combo-grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
     .chart-panel-shell{background:rgba(15,23,42,.35);border:1px dashed rgba(59,130,246,.18);border-radius:18px;padding:14px}
     .chart-box{background:rgba(7,14,26,.9);border:1px solid rgba(59,130,246,.14);border-radius:16px;padding:12px;min-height:300px}
     .chart-svg{width:100%;height:280px;display:block}
@@ -155,14 +135,42 @@ def render_ai_trading_home(build_tag: str) -> str:
     .legend span{display:inline-flex;align-items:center;gap:6px}
     .dot{width:10px;height:10px;border-radius:999px;display:inline-block}
     .dot-buy{background:#22c55e}.dot-sell{background:#ef4444}.dot-reduce{background:#f59e0b}.dot-hold{background:#94a3b8}
+    .decision-hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
+    .hero-summary-block{background:rgba(10,20,38,.82);border:1px solid rgba(59,130,246,.18);border-radius:18px;padding:18px}
+    .hero-summary-label{font-size:13px;color:#9cc2ff;font-weight:700;margin-bottom:8px}
+    .hero-summary-main{font-size:28px;font-weight:800;line-height:1.35}
+    .hero-summary-explain{margin-top:10px;color:#cad7ea;font-size:15px;line-height:1.7}
+    .decision-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px}
+    .decision-chip{background:rgba(15,23,42,.82);border:1px solid rgba(59,130,246,.14);border-radius:16px;padding:14px}
+    .decision-chip .label{margin-bottom:6px}
+    .decision-chip .value{font-size:18px}
+    .hero-action-buy{color:#bbf7d0}
+    .hero-action-sell{color:#fecaca}
+    .hero-action-wait{color:#fde68a}
+    .hero-action-hold{color:#bfdbfe}
+    .core-symbol-card{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
+    .core-symbol-main{display:grid;gap:10px}
+    .core-symbol-title{font-size:28px;font-weight:800;line-height:1.2}
+    .core-score-strip{display:flex;gap:10px;flex-wrap:wrap}
+    .core-score-pill{padding:8px 12px;border-radius:999px;background:rgba(59,130,246,.12);border:1px solid rgba(96,165,250,.16);color:#dbeafe;font-size:13px;font-weight:700}
+    .core-symbol-reason{font-size:15px;line-height:1.75;color:#dbe7f6}
+    .monitoring-grid{display:grid;grid-template-columns:1.35fr .65fr;gap:16px}
+    .holding-pool-card{background:rgba(15,23,42,.45);border:1px dashed rgba(59,130,246,.18);border-radius:18px;padding:14px}
+    .chart-stack{display:grid;gap:16px}
+    .opportunity-summary-list{display:grid;gap:12px}
+    .opportunity-item{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;background:rgba(15,23,42,.78);border:1px solid rgba(59,130,246,.1);border-radius:16px;padding:14px}
+    .muted-note{color:#90a4c4;font-size:13px;line-height:1.6}
+    details.settings-card summary{cursor:pointer;list-style:none;font-weight:700}
+    details.settings-card summary::-webkit-details-marker{display:none}
     @media (max-width: 980px){
       .hero{grid-template-columns:1fr}
       .span-4,.span-6,.span-8,.span-12{grid-column:span 12}
       .kv{grid-template-columns:1fr}
       .col-3,.col-6{grid-column:span 12}
       .topbar{flex-direction:column;align-items:flex-start}
-      .watchlist-grid,.watch-sections,.chart-combo-grid{grid-template-columns:1fr}
+      .watchlist-grid,.watch-sections,.chart-combo-grid,.decision-hero-grid,.core-symbol-card,.monitoring-grid{grid-template-columns:1fr}
       .timeline-item{grid-template-columns:1fr}
+      .decision-strip{grid-template-columns:1fr}
     }
   </style>
 </head>
@@ -181,34 +189,130 @@ def render_ai_trading_home(build_tag: str) -> str:
       </div>
     </div>
 
-    <div class="hero">
-      <div>
-        <h2 id="summaryText">正在读取当前 AI 决策摘要…</h2>
-        <p id="summarySub">首页不会自动启动实时引擎，也不会触发交易动作；这里只展示当前状态、最近结果和导航入口。</p>
-        <div class="summary">
-          <strong>系统状态</strong>
-          <div id="systemStatus"></div>
-          <div class="hero-actions">
-            <button id="homeAutoPipeline" type="button" class="small-btn">自动选股并生成计划</button>
-            <button id="homeStartAll" type="button" class="small-btn">一键启动 AI 实时决策</button>
-            <a href="http://127.0.0.1:8610/" target="_blank" class="small-btn" style="text-decoration:none">打开 8610 调试面板</a>
-          </div>
-          <div id="homeStartStatus" class="setting-status" style="margin-top:12px">首页不会自动启动引擎；如需开始实时模拟，请手动点击上面的按钮。</div>
-          <div id="homeTaskLog" class="log-box" style="display:none"></div>
-          <div id="systemHint" class="hint-box" style="display:none"></div>
-          <div id="systemError" class="error-box" style="display:none"></div>
-        </div>
-      </div>
-      <div class="status-box">
-        <div class="state-row" id="statusTags"></div>
-        <div class="footer-note" id="lastUpdated">最近更新时间：-</div>
-      </div>
-    </div>
+    __HERO_PANEL__
 
     <div class="grid">
       <div class="card span-12">
-        <h3>用户设置</h3>
-        <div class="form-grid">
+        <h3>账户信息</h3>
+        <div class="kv" id="accountGrid"></div>
+      </div>
+
+      <div class="card span-4">
+        <h3>当前交易状态</h3>
+        <div class="kv" id="phaseGrid"></div>
+      </div>
+      <div class="card span-4">
+        <h3>执行权限与风险模式</h3>
+        <div class="kv" id="strategyGrid"></div>
+      </div>
+      <div class="card span-4">
+        <h3>当前动作统计</h3>
+        <div class="kv" id="statsGrid"></div>
+      </div>
+
+      <div class="card span-12">
+        <h3>AI 结论主卡</h3>
+        <div class="decision-hero-grid">
+          <div class="hero-summary-block">
+            <div class="hero-summary-label">今日 AI 决策总结</div>
+            <div class="hero-summary-main" id="heroAdviceMain">正在分析当前市场…</div>
+            <div class="hero-summary-explain" id="heroAdviceExplain">系统会把当前能否交易、风险模式和最重要动作浓缩成一句清楚的人话总结。</div>
+            <div class="decision-strip">
+              <div class="decision-chip">
+                <div class="label">市场状态</div>
+                <div class="value" id="heroMarketState">读取中</div>
+              </div>
+              <div class="decision-chip">
+                <div class="label">当前建议</div>
+                <div class="value" id="heroActionAdvice">读取中</div>
+              </div>
+              <div class="decision-chip">
+                <div class="label">是否可交易</div>
+                <div class="value" id="heroTradeReady">读取中</div>
+              </div>
+            </div>
+          </div>
+          <div class="hero-summary-block">
+            <div class="hero-summary-label">当前最重要的股票</div>
+            <div id="coreSymbolCard" class="empty">正在计算当前最重要标的…</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card span-12">
+        <h3>当前监控池</h3>
+        <div class="watchlist-meta" id="watchlistMeta"></div>
+        <div class="monitoring-grid">
+          <div id="watchlistSections" class="watch-section"></div>
+          <div class="holding-pool-card">
+            <h3 style="margin-bottom:10px">持仓池</h3>
+            <div id="holdingsPool" class="action-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card span-12">
+        <h3>最近买入 / 卖出解释</h3>
+        <div class="monitoring-grid">
+          <div>
+            <h3 style="margin-bottom:10px">为什么买入</h3>
+            <div id="buyExplainList" class="action-list"></div>
+          </div>
+          <div>
+            <h3 style="margin-bottom:10px">为什么卖出 / 暂未卖出</h3>
+            <div id="sellExplainList" class="action-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card span-12">
+        <div class="chart-focus">
+          <div class="focus-meta">
+            <div class="focus-title" id="chartFocusTitle">正在选择图表观察标的…</div>
+            <div class="focus-sub" id="chartFocusSub">系统会优先展示当前持仓标的、execution_score 最高标的或最近有动作的标的。</div>
+          </div>
+          <div>
+            <div class="label" style="margin-bottom:8px">观察标的</div>
+            <select id="chartSymbolSelect"></select>
+          </div>
+        </div>
+        <div class="chart-combo-grid">
+          <div class="chart-panel-shell">
+            <h3>分时图</h3>
+            <div class="subvalue" style="margin-bottom:10px">优先展示当前最重要标的的盘中变化，并把买入、卖出、减仓动作直接叠加在图上。</div>
+            <div id="intradayPanel" class="empty">正在加载图表数据…</div>
+          </div>
+        </div>
+      </div>
+
+      __EQUITY_PANEL__
+      __KLINE_PANEL__
+      __TIMELINE_PANEL__
+
+      <div class="card span-12">
+        <h3>可执行机会摘要</h3>
+        <div class="kv" id="opportunityGrid"></div>
+        <div class="opportunity-summary-list" id="opportunityCandidates" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card span-12">
+        <h3>实时动作</h3>
+        <div id="actionList" class="action-list"></div>
+      </div>
+
+      <div class="card span-12">
+        <h3>为什么现在没有买入</h3>
+        <div id="noBuyReasons" class="action-list"></div>
+      </div>
+
+      <div class="card span-6">
+        <h3>分数拆解面板</h3>
+        <div id="scoreBreakdowns" class="action-list"></div>
+      </div>
+
+      <details class="card span-12 settings-card">
+        <summary>模型与 API 设置</summary>
+        <div class="form-grid" style="margin-top:16px">
           <div class="field col-3">
             <label>绑定大模型平台</label>
             <select id="bindProvider">
@@ -237,72 +341,10 @@ def render_ai_trading_home(build_tag: str) -> str:
           <div class="field col-6">
             <button id="saveBinding" type="button" class="small-btn">保存首页 AI 绑定</button>
             <div id="bindingStatus" class="setting-status">当前运行中的实时引擎来源，仍以首页“AI 来源”为准。</div>
-            <div class="setting-note">这里是用户确认当前绑定哪种大模型 AI 的地方。首页与研究中心共用这套浏览器本地配置。你现在用的是 DeepSeek 时，这里就会显示 `DeepSeek + deepseek-chat` 或 `DeepSeek + deepseek-reasoner`。</div>
+            <div class="setting-note">配置项已经收进折叠区，避免打断前台决策视图。首页与研究中心共用这套浏览器本地配置。</div>
           </div>
         </div>
-      </div>
-
-      <div class="card span-4">
-        <h3>当前交易状态</h3>
-        <div class="kv" id="phaseGrid"></div>
-      </div>
-      <div class="card span-4">
-        <h3>AI 当前策略</h3>
-        <div class="kv" id="strategyGrid"></div>
-      </div>
-      <div class="card span-4">
-        <h3>执行统计</h3>
-        <div class="kv" id="statsGrid"></div>
-      </div>
-
-      <div class="card span-6">
-        <h3>可执行机会摘要</h3>
-        <div class="kv" id="opportunityGrid"></div>
-      </div>
-
-      <div class="card span-12">
-        <h3>当前监控池与持仓池</h3>
-        <div class="watchlist-meta" id="watchlistMeta"></div>
-        <div class="watch-sections">
-          <div>
-            <div class="subvalue" style="margin-bottom:10px">当前 watchlist 中的股票会参与实时决策；优先使用今日自动选股结果，找不到时才回退到最近候选池或默认观察池。</div>
-            <div id="watchlistGrid" class="watchlist-grid"></div>
-          </div>
-          <div class="watch-side">
-            <div id="holdingsPool" class="action-list"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card span-6">
-        <h3>分数拆解面板</h3>
-        <div id="scoreBreakdowns" class="action-list"></div>
-      </div>
-
-      <div class="card span-8">
-        <h3>实时动作</h3>
-        <div id="actionList" class="action-list"></div>
-      </div>
-
-      <div class="card span-4">
-        <h3>账户信息</h3>
-        <div class="kv" id="accountGrid"></div>
-      </div>
-
-      <div class="card span-12">
-        <h3>为什么现在没有买入</h3>
-        <div id="noBuyReasons" class="action-list"></div>
-      </div>
-
-      <div class="card span-12">
-        <h3>观察股距离买入还差什么</h3>
-        <div class="subvalue" style="margin-bottom:12px">这里会同时展示两类分数：`静态候选分` 来自自动选股结果，盘中不会变化；`实时综合分` 来自实时引擎，会随行情、阶段、风险模式和 AI 决策动态更新。</div>
-        <div id="observeCandidates" class="action-list"></div>
-      </div>
-
-      __CHART_COMBO_PANEL__
-      __EQUITY_PANEL__
-      __TIMELINE_PANEL__
+      </details>
     </div>
   </div>
 
@@ -318,13 +360,15 @@ def render_ai_trading_home(build_tag: str) -> str:
     const accountGrid = document.getElementById('accountGrid');
     const statsGrid = document.getElementById('statsGrid');
     const opportunityGrid = document.getElementById('opportunityGrid');
+    const opportunityCandidates = document.getElementById('opportunityCandidates');
     const scoreBreakdowns = document.getElementById('scoreBreakdowns');
     const actionList = document.getElementById('actionList');
     const noBuyReasons = document.getElementById('noBuyReasons');
-    const observeCandidates = document.getElementById('observeCandidates');
     const watchlistMeta = document.getElementById('watchlistMeta');
-    const watchlistGrid = document.getElementById('watchlistGrid');
+    const watchlistSections = document.getElementById('watchlistSections');
     const holdingsPool = document.getElementById('holdingsPool');
+    const buyExplainList = document.getElementById('buyExplainList');
+    const sellExplainList = document.getElementById('sellExplainList');
     const chartSymbolSelect = document.getElementById('chartSymbolSelect');
     const intradayPanel = document.getElementById('intradayPanel');
     const klinePanel = document.getElementById('klinePanel');
@@ -332,12 +376,17 @@ def render_ai_trading_home(build_tag: str) -> str:
     const actionTimelinePanel = document.getElementById('actionTimelinePanel');
     const chartFocusTitle = document.getElementById('chartFocusTitle');
     const chartFocusSub = document.getElementById('chartFocusSub');
+    const heroAdviceMain = document.getElementById('heroAdviceMain');
+    const heroAdviceExplain = document.getElementById('heroAdviceExplain');
+    const heroMarketState = document.getElementById('heroMarketState');
+    const heroActionAdvice = document.getElementById('heroActionAdvice');
+    const heroTradeReady = document.getElementById('heroTradeReady');
+    const coreSymbolCard = document.getElementById('coreSymbolCard');
     const bindProvider = document.getElementById('bindProvider');
     const bindModel = document.getElementById('bindModel');
     const bindBaseUrl = document.getElementById('bindBaseUrl');
     const bindApiKey = document.getElementById('bindApiKey');
     const saveBinding = document.getElementById('saveBinding');
-    const homeAutoPipeline = document.getElementById('homeAutoPipeline');
     const bindingStatus = document.getElementById('bindingStatus');
     const homeStartAll = document.getElementById('homeStartAll');
     const homeStartStatus = document.getElementById('homeStartStatus');
@@ -367,6 +416,32 @@ def render_ai_trading_home(build_tag: str) -> str:
 
     function fmtNum(value){
       return Number(value || 0).toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2});
+    }
+
+    function actionCn(action){
+      const mapping = {
+        BUY: '买入',
+        SELL: '卖出',
+        REDUCE: '减仓',
+        HOLD: '持有',
+        WAIT: '观望',
+        AVOID: '观望',
+        WATCH_NEXT_DAY: '观望',
+        HOLD_FOR_TOMORROW: '持有',
+        PREPARE_BUY: '买入准备',
+        PREPARE_REDUCE: '减仓准备',
+        AVOID_NEW_BUY: '观望'
+      };
+      return mapping[String(action || '').toUpperCase()] || String(action || '持有');
+    }
+
+    function riskModeCn(mode){
+      const mapping = {NORMAL:'正常', DEFENSIVE:'防守', AGGRESSIVE:'进攻', RISK_OFF:'风险关闭'};
+      return mapping[String(mode || '').toUpperCase()] || (mode || '正常');
+    }
+
+    function statusYesNo(ok){
+      return ok ? '✔ 可以' : '✘ 不可';
     }
 
     async function fetchJsonSafe(url, options){
@@ -405,19 +480,19 @@ def render_ai_trading_home(build_tag: str) -> str:
 
     function renderActions(actions){
       if(!actions || !actions.length){
-        actionList.innerHTML = '<div class="empty">当前暂无高优先级动作。系统会继续显示阶段状态、账户信息和最近一次决策结果。</div>';
+        actionList.innerHTML = '<div class="empty">当前暂无高优先级动作。系统会继续监控关键标的，一旦出现可执行买入、减仓或卖出机会，会优先显示在这里。</div>';
         return;
       }
       actionList.innerHTML = actions.map(item => (
         '<div class="action-card">' +
         '<div class="action-top">' +
         '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + item.category_label + '</div></div>' +
-        '<div class="badge ' + cardBadgeClass(item.category_color) + '">' + item.display_action + '</div>' +
+        '<div class="badge ' + cardBadgeClass(item.category_color) + '">' + actionCn(item.display_action || item.action) + '</div>' +
         '</div>' +
         '<div class="action-meta">' +
         (item.position_pct ? '<span>仓位 ' + fmtPct(item.position_pct) + '</span>' : '') +
         (item.reduce_pct ? '<span>减仓 ' + fmtPct(item.reduce_pct) + '</span>' : '') +
-        (item.planned_qty ? '<span>数量 ' + item.planned_qty + '</span>' : '') +
+        (item.planned_qty ? '<span>计划数量 ' + item.planned_qty + ' 股</span>' : '') +
         (item.phase ? '<span>阶段 ' + item.phase + '</span>' : '') +
         '</div>' +
         '<div class="action-reason">' + (item.reason || '暂无说明') + '</div>' +
@@ -425,9 +500,55 @@ def render_ai_trading_home(build_tag: str) -> str:
       )).join('');
     }
 
-    function renderWatchlist(watchlist){
+    function renderCoreSymbol(core){
+      if(!core || !core.symbol){
+        coreSymbolCard.innerHTML = '<div class="empty">当前还没有明确的核心标的，系统会在持仓、最高 execution_score 或最近动作股票中自动选择。</div>';
+        return;
+      }
+      coreSymbolCard.innerHTML =
+        '<div class="core-symbol-card">' +
+          '<div class="core-symbol-main">' +
+            '<div class="core-symbol-title">' + core.symbol + ' ' + (core.name || '') + '</div>' +
+            '<div class="subvalue">当前价格 ' + fmtNum(core.latest_price || 0) + ' ｜ 涨跌幅 ' + fmtPct(core.pct_change || 0) + '</div>' +
+            '<div class="core-score-strip">' +
+              '<span class="core-score-pill">AI 动作：' + actionCn(core.action || 'HOLD') + '</span>' +
+              '<span class="core-score-pill">setup ' + Number(core.setup_score || 0).toFixed(2) + '</span>' +
+              '<span class="core-score-pill">execution ' + Number(core.execution_score || 0).toFixed(2) + '</span>' +
+            '</div>' +
+            '<div class="core-symbol-reason">' + (core.reason || '当前仍在等待更明确的盘中动作信号。') + '</div>' +
+          '</div>' +
+          '<div class="kv">' +
+            '<div class="item"><div class="label">是否持仓</div><div class="value">' + (core.has_position ? '是' : '否') + '</div>' + (core.has_position ? '<div class="subvalue">数量 ' + (core.position_qty || 0) + ' 股</div>' : '') + '</div>' +
+            '<div class="item"><div class="label">AI 置信度</div><div class="value">' + fmtPct(core.confidence || 0) + '</div></div>' +
+          '</div>' +
+        '</div>';
+    }
+
+    function renderWatchlist(watchlist, sections){
       const entries = (watchlist && watchlist.entries) || [];
       const holdings = (watchlist && watchlist.holdings) || [];
+      const chartEntriesMap = new Map();
+      entries.forEach(item => {
+        if(item && item.symbol){
+          chartEntriesMap.set(item.symbol, item);
+        }
+      });
+      holdings.forEach(item => {
+        if(item && item.symbol && !chartEntriesMap.has(item.symbol)){
+          chartEntriesMap.set(item.symbol, {
+            symbol: item.symbol,
+            name: item.name || item.symbol,
+            latest_price: item.last_price || 0,
+            pct_change: 0,
+            action: 'HOLD',
+            setup_score: 0,
+            execution_score: 0,
+            has_position: true,
+            position_qty: item.qty || 0,
+          });
+        }
+      });
+      const chartEntries = Array.from(chartEntriesMap.values());
       watchlistMeta.innerHTML = [
         '<span class="state-tag">来源：' + (watchlist && watchlist.source || '-') + '</span>',
         '<span class="state-tag">生成时间：' + (watchlist && watchlist.generated_at || '暂无') + '</span>',
@@ -435,15 +556,24 @@ def render_ai_trading_home(build_tag: str) -> str:
         '<span class="state-tag">交易日：' + (watchlist && watchlist.trading_day || '暂无') + '</span>'
       ].join('');
       if(!entries.length){
-        watchlistGrid.innerHTML = '<div class="empty">当前监控池为空；一键启动时会优先尝试自动选股并补齐 watchlist。</div>';
+        watchlistSections.innerHTML = '<div class="empty">当前监控池为空；一键启动时会优先尝试自动选股并补齐监控池。</div>';
       }else{
-        watchlistGrid.innerHTML = entries.map(item => (
-          '<div class="watch-item">' +
-          '<div class="watch-item-top">' +
-          '<div><h4>' + item.symbol + ' ' + (item.name || '') + '</h4><div class="subvalue">最新价 ' + fmtNum(item.latest_price) + ' ｜ 涨跌幅 ' + fmtPct(item.pct_change) + '</div></div>' +
-          '<div class="badge ' + cardBadgeClass(item.action === 'BUY' ? 'success' : (item.action === 'SELL' || item.action === 'REDUCE' ? 'warning' : 'neutral')) + '">' + (item.action || 'HOLD') + '</div>' +
-          '</div>' +
-          '<div class="meta"><span>setup ' + Number(item.setup_score || 0).toFixed(2) + '</span><span>execution ' + Number(item.execution_score || 0).toFixed(2) + '</span>' + (item.has_position ? '<span>持仓 ' + item.position_qty + ' 股</span>' : '<span>当前未持仓</span>') + '</div>' +
+        watchlistSections.innerHTML = (sections || []).map(section => (
+          '<div class="watch-section">' +
+            '<div class="watch-section-head">' +
+              '<div><div class="watch-section-title">' + section.title + '</div><div class="watch-section-desc">' + section.description + '</div></div>' +
+            '</div>' +
+            '<div class="watchlist-grid">' +
+              (section.items || []).map(item => (
+                '<div class="watch-item">' +
+                  '<div class="watch-item-top">' +
+                    '<div><h4>' + item.symbol + ' ' + (item.name || '') + '</h4><div class="subvalue">最新价 ' + fmtNum(item.latest_price) + ' ｜ 涨跌幅 ' + fmtPct(item.pct_change) + '</div></div>' +
+                    '<div class="badge ' + cardBadgeClass(item.action === 'BUY' ? 'success' : (item.action === 'SELL' || item.action === 'REDUCE' ? 'warning' : (item.action && item.action.indexOf('WATCH') === 0 ? 'muted' : 'neutral'))) + '">' + actionCn(item.action || 'HOLD') + '</div>' +
+                  '</div>' +
+                  '<div class="meta"><span>setup ' + Number(item.setup_score || 0).toFixed(2) + '</span><span>execution ' + Number(item.execution_score || 0).toFixed(2) + '</span>' + (item.has_position ? '<span>持仓 ' + item.position_qty + ' 股</span>' : '<span>当前未持仓</span>') + '</div>' +
+                '</div>'
+              )).join('') +
+            '</div>' +
           '</div>'
         )).join('');
       }
@@ -458,10 +588,10 @@ def render_ai_trading_home(build_tag: str) -> str:
           '</div>'
         )).join('');
       }
-      const options = entries.map(item => '<option value="' + item.symbol + '">' + item.symbol + ' ' + (item.name || '') + '</option>');
+      const options = chartEntries.map(item => '<option value="' + item.symbol + '">' + item.symbol + ' ' + (item.name || '') + '</option>');
       chartSymbolSelect.innerHTML = options.join('');
-      const chartSymbol = activeChartSymbol || ((latestHomePayload || {}).charts || {}).selected_symbol || (entries[0] && entries[0].symbol) || '';
-      const focusEntry = entries.find(item => item.symbol === chartSymbol) || entries[0] || null;
+      const chartSymbol = activeChartSymbol || ((latestHomePayload || {}).charts || {}).selected_symbol || (chartEntries[0] && chartEntries[0].symbol) || '';
+      const focusEntry = chartEntries.find(item => item.symbol === chartSymbol) || chartEntries[0] || null;
       if(focusEntry){
         chartFocusTitle.textContent = focusEntry.symbol + ' ' + (focusEntry.name || '');
         chartFocusSub.textContent = '最新价 ' + fmtNum(focusEntry.latest_price || 0) + ' ｜ 涨跌幅 ' + fmtPct(focusEntry.pct_change || 0) + ' ｜ AI 动作 ' + (focusEntry.action || 'HOLD') + ' ｜ setup ' + Number(focusEntry.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(focusEntry.execution_score || 0).toFixed(2);
@@ -470,6 +600,47 @@ def render_ai_trading_home(build_tag: str) -> str:
         chartFocusTitle.textContent = '当前暂无图表观察标的';
         chartFocusSub.textContent = '系统会优先展示当前持仓标的、execution_score 最高标的或最近有动作的标的。';
         activeChartSymbol = '';
+      }
+    }
+
+    function renderTradeExplanations(payload){
+      const buys = (payload && payload.recent_buys) || [];
+      const sells = (payload && payload.recent_sells) || [];
+      const holds = (payload && payload.hold_reasons) || [];
+
+      if(!buys.length){
+        buyExplainList.innerHTML = '<div class="empty">今天还没有新的真实买入成交。后续一旦出现新开仓，这里会直接解释为什么买。</div>';
+      }else{
+        buyExplainList.innerHTML = buys.map(item => (
+          '<div class="action-card">' +
+          '<div class="action-top"><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="badge badge-success">买入</div></div>' +
+          '<div class="action-meta"><span>' + String(item.ts || '').slice(11,16) + '</span><span>价格 ' + fmtNum(item.price || 0) + '</span><span>数量 ' + (item.qty || 0) + ' 股</span></div>' +
+          '<div class="action-reason">' + (item.reason || '满足多因子和风险条件，触发模拟买入。') + '</div>' +
+          '</div>'
+        )).join('');
+      }
+
+      if(sells.length){
+        sellExplainList.innerHTML = sells.map(item => (
+          '<div class="action-card">' +
+          '<div class="action-top"><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="badge badge-warning">' + actionCn(item.action || 'SELL') + '</div></div>' +
+          '<div class="action-meta"><span>' + String(item.ts || '').slice(11,16) + '</span><span>价格 ' + fmtNum(item.price || 0) + '</span><span>数量 ' + (item.qty || 0) + ' 股</span></div>' +
+          '<div class="action-reason">' + (item.reason || '满足退出条件，触发模拟卖出。') + '</div>' +
+          '</div>'
+        )).join('');
+        return;
+      }
+
+      if(holds.length){
+        sellExplainList.innerHTML = holds.map(item => (
+          '<div class="action-card">' +
+          '<div class="action-top"><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="badge badge-neutral">继续持有</div></div>' +
+          '<div class="action-meta"><span>setup ' + Number(item.setup_score || 0).toFixed(2) + '</span><span>execution ' + Number(item.execution_score || 0).toFixed(2) + '</span></div>' +
+          '<div class="action-reason">' + (item.reason || '当前持仓仍与市场状态匹配，暂不减仓或卖出。') + '</div>' +
+          '</div>'
+        )).join('');
+      }else{
+        sellExplainList.innerHTML = '<div class="empty">今天还没有卖出或减仓成交，当前也没有明确的卖出解释。</div>';
       }
     }
 
@@ -678,11 +849,12 @@ def render_ai_trading_home(build_tag: str) -> str:
         actionTimelinePanel.innerHTML = '<div class="empty">当前还没有动作时间线。引擎记录意图、成交或被拦截动作后，会在这里逐条显示。</div>';
         return;
       }
+      const statusLabelMap = {intent:'意图', filled:'已成交', rejected:'被拦截'};
       actionTimelinePanel.innerHTML = '<div class="timeline-list">' + items.map(item => (
         '<div class="timeline-item">' +
         '<div>' + String(item.ts || '').slice(11, 16) + '</div>' +
-        '<div>' + item.symbol + '</div>' +
-        '<div class="timeline-status-' + (item.status || 'intent') + '">' + (item.action || '-') + ' ' + (item.status || '-') + '</div>' +
+        '<div>' + item.symbol + ' ' + ((item.name && item.name !== item.symbol) ? item.name : '') + '</div>' +
+        '<div class="timeline-status-' + (item.status || 'intent') + '">' + actionCn(item.action || '-') + ' ' + (statusLabelMap[item.status || 'intent'] || '状态未知') + '</div>' +
         '<div>' + (item.reason || '暂无说明') + '</div>' +
         '</div>'
       )).join('') + '</div>';
@@ -700,25 +872,6 @@ def render_ai_trading_home(build_tag: str) -> str:
         '<div class="badge badge-warning">观察</div>' +
         '</div>' +
         '<div class="action-reason">' + item + '</div>' +
-        '</div>'
-      )).join('');
-    }
-
-    function renderObserveCandidates(items){
-      if(!items || !items.length){
-        observeCandidates.innerHTML = '<div class="empty">当前没有可解释的观察股，通常表示还没有生成候选池，或本轮没有重点观察标的。</div>';
-        return;
-      }
-      observeCandidates.innerHTML = items.map(item => (
-        '<div class="action-card">' +
-        '<div class="action-top">' +
-        '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + (item.stance || '观察') + ' ｜ 静态候选分 ' + Number(item.score || 0).toFixed(2) + ' ｜ setup ' + Number(item.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(item.execution_score || 0).toFixed(2) + '</div></div>' +
-        '<div class="badge badge-neutral">' + (item.current_action || 'HOLD') + '</div>' +
-        '</div>' +
-        '<div class="action-meta">' +
-        '<span>AI 加分 ' + Number(item.ai_score || 0).toFixed(2) + '</span>' +
-        '</div>' +
-        '<div class="action-reason">' + (item.reasons || []).map(reason => '· ' + reason).join('<br>') + '</div>' +
         '</div>'
       )).join('');
     }
@@ -743,6 +896,22 @@ def render_ai_trading_home(build_tag: str) -> str:
         '<span>阶段惩罚 ' + Number(item.phase_penalty || 0).toFixed(2) + '</span>' +
         '</div>' +
         '<div class="action-reason">' + (item.reason || '暂无说明') + '</div>' +
+        '</div>'
+      )).join('');
+    }
+
+    function renderOpportunityCandidates(items){
+      if(!items || !items.length){
+        opportunityCandidates.innerHTML = '<div class="empty">当前没有接近执行阈值的股票。后续一旦有股票接近建仓线，这里会优先提示。</div>';
+        return;
+      }
+      opportunityCandidates.innerHTML = items.map(item => (
+        '<div class="opportunity-item">' +
+          '<div>' +
+            '<div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div>' +
+            '<div class="muted-note">当前动作 ' + actionCn(item.action || 'HOLD') + ' ｜ execution ' + Number(item.execution_score || 0).toFixed(2) + '</div>' +
+          '</div>' +
+          '<div class="badge badge-warning">还差 ' + Number(item.gap_to_buy || 0).toFixed(2) + '</div>' +
         '</div>'
       )).join('');
     }
@@ -796,28 +965,34 @@ def render_ai_trading_home(build_tag: str) -> str:
 
         const phase = data.phase || {};
         const execution = data.execution || {};
+        const strategyStatus = data.strategy_status || {};
+        const coreSymbol = data.core_symbol || {};
+        const opportunityData = data.opportunities || {};
+        heroAdviceMain.textContent = data.summary || '当前暂无明确结论';
+        heroAdviceExplain.textContent = (coreSymbol.reason || (opportunityData.top_limitations || [])[0] || '系统会在满足交易阶段、执行权限和风险约束时自动放大可执行机会。');
+        heroMarketState.textContent = (strategyStatus.strategy_style || '') + ' / ' + riskModeCn(strategyStatus.risk_mode || 'NORMAL');
+        heroActionAdvice.textContent = actionCn((coreSymbol.action || (((data.actions || [])[0] || {}).action) || 'HOLD'));
+        heroTradeReady.textContent = execution.can_execute_fill ? '✔ 当前可成交' : '✘ 当前不可成交';
         statusTags.innerHTML = [
-          '<span class="state-tag">引擎模式：' + (data.engine_mode || '-') + '</span>',
           '<span class="state-tag">交易日：' + ((phase.is_trading_day ? '是' : '否')) + '</span>',
           '<span class="state-tag">阶段：' + (phase.phase_label || phase.phase || '-') + '</span>',
           '<span class="state-tag">允许成交：' + (execution.can_execute_fill ? 'YES' : 'NO') + '</span>',
-          '<span class="state-tag">允许开仓：' + (execution.can_open_position ? 'YES' : 'NO') + '</span>'
+          '<span class="state-tag">允许开仓：' + (execution.can_open_position ? 'YES' : 'NO') + '</span>',
+          '<span class="state-tag">风险模式：' + riskModeCn(strategyStatus.risk_mode || 'NORMAL') + '</span>'
         ].join('');
 
         renderStatGrid(phaseGrid, [
           {label:'交易日', value: phase.is_trading_day ? '是' : '否'},
           {label:'当前阶段', value: phase.phase_label || phase.phase || '-'},
-          {label:'允许开仓', value: execution.can_open_position ? 'YES' : 'NO'},
-          {label:'允许成交', value: execution.can_execute_fill ? 'YES' : 'NO'}
+          {label:'允许开仓', value: execution.can_open_position ? '✔ 可开仓' : '✘ 不可开仓'},
+          {label:'允许成交', value: execution.can_execute_fill ? '✔ 可成交' : '✘ 不可成交'}
         ]);
 
-        const strategyStatus = data.strategy_status || {};
         renderStatGrid(strategyGrid, [
-          {label:'风险模式', value: strategyStatus.risk_mode || '-'},
+          {label:'风险模式', value: riskModeCn(strategyStatus.risk_mode || '-')},
           {label:'策略风格', value: strategyStatus.strategy_style || '-'},
           {label:'仓位策略', value: strategyStatus.position_strategy || '-'},
-          {label:'AI 状态', value: strategyStatus.ai_status || '-'},
-          {label:'AI 来源', value: strategyStatus.ai_source || '-', subvalue:'未在页面填写 API Key 时，可能来自本地 .env 或研究缓存'}
+          {label:'AI 状态', value: strategyStatus.ai_status || '-'}
         ]);
         bindingStatus.textContent =
           '当前运行来源：' + (strategyStatus.ai_source || '未知') +
@@ -833,28 +1008,30 @@ def render_ai_trading_home(build_tag: str) -> str:
 
         const stats = data.stats || {};
         renderStatGrid(statsGrid, [
-          {label:'意图数', value: String(stats.intent_count || 0)},
-          {label:'成交数', value: String(stats.executed_count || 0)},
-          {label:'被拦截数', value: String(stats.blocked_count || 0)}
+          {label:'动作意图', value: String(stats.intent_count || 0)},
+          {label:'真实成交', value: String(stats.executed_count || 0)},
+          {label:'被拦截', value: String(stats.blocked_count || 0)}
         ]);
-        const opportunities = data.opportunities || {};
         renderStatGrid(opportunityGrid, [
-          {label:'可建仓机会', value: String(opportunities.buy_count || 0), subvalue: (opportunities.top_limitations || [])[0] || '当前暂无高优先级建仓机会'},
-          {label:'可减仓机会', value: String(opportunities.reduce_count || 0), subvalue: (opportunities.top_limitations || [])[1] || '当前暂无高优先级减仓机会'}
+          {label:'可建仓机会', value: String(opportunityData.buy_count || 0), subvalue: (opportunityData.top_limitations || [])[0] || '当前暂无高优先级建仓机会'},
+          {label:'可减仓机会', value: String(opportunityData.reduce_count || 0), subvalue: (opportunityData.top_limitations || [])[1] || '当前暂无高优先级减仓机会'}
         ]);
 
+        renderCoreSymbol(coreSymbol);
         renderActions(data.actions || []);
         renderNoBuyReasons(data.no_buy_reasons || []);
         renderScoreBreakdowns(data.score_breakdowns || []);
-        renderObserveCandidates(data.observe_candidates || []);
-        renderWatchlist(data.watchlist || {});
+        renderOpportunityCandidates(opportunityData.top_candidates || []);
+        renderWatchlist(data.watchlist || {}, data.watchlist_sections || []);
         renderTimeline(data.timeline || []);
+        renderTradeExplanations(data.trade_explanations || {});
         latestHomePayload = data;
         const entries = ((data.watchlist || {}).entries) || [];
-        const availableSymbols = entries.map(item => item.symbol);
+        const holdings = ((data.watchlist || {}).holdings) || [];
+        const availableSymbols = Array.from(new Set(entries.map(item => item.symbol).concat(holdings.map(item => item.symbol))));
         const selectedSymbol = activeChartSymbol && availableSymbols.includes(activeChartSymbol)
           ? activeChartSymbol
-          : ((data.charts || {}).selected_symbol || (entries[0] && entries[0].symbol) || '');
+          : ((data.charts || {}).selected_symbol || availableSymbols[0] || '');
         if(selectedSymbol && chartSymbolSelect.value !== selectedSymbol){
           chartSymbolSelect.value = selectedSymbol;
         }
@@ -899,7 +1076,6 @@ def render_ai_trading_home(build_tag: str) -> str:
 
     async function runHomeQuickStart(){
       homeStartAll.disabled = true;
-      homeAutoPipeline.disabled = true;
       homeStartStatus.textContent = '正在准备监控池并启动实时 AI 决策...';
       try{
         const watchlist = (latestHomePayload && latestHomePayload.watchlist) || {};
@@ -943,7 +1119,6 @@ def render_ai_trading_home(build_tag: str) -> str:
         homeStartStatus.textContent = '一键启动失败：' + String(err);
       }finally{
         homeStartAll.disabled = false;
-        homeAutoPipeline.disabled = false;
       }
     }
 
@@ -951,8 +1126,16 @@ def render_ai_trading_home(build_tag: str) -> str:
       let done = false;
       homeTaskLog.style.display = 'block';
       while(!done){
-        const resp = await fetch('/api/task/' + taskId + '?ts=' + Date.now(), {cache:'no-store'});
-        const data = await resp.json();
+        const result = await fetchJsonSafe('/api/task/' + taskId + '?ts=' + Date.now(), {cache:'no-store'});
+        const resp = result.resp;
+        const data = result.data || {};
+        if(!resp.ok && !data.status){
+          homeStartStatus.textContent = '任务状态读取失败：' + formatErrorDetail(data.detail);
+          if(data.detail){
+            homeTaskLog.textContent = String(data.detail);
+          }
+          break;
+        }
         const elapsed = data.started_at
           ? '（已运行 ' + Math.max(0, Math.floor((Date.now() - Date.parse(data.started_at)) / 1000)) + 's）'
           : '';
@@ -978,61 +1161,22 @@ def render_ai_trading_home(build_tag: str) -> str:
       }
     }
 
-    async function runHomeAutoPipeline(){
-      homeAutoPipeline.disabled = true;
-      homeStartAll.disabled = true;
-      homeStartStatus.textContent = '正在启动自动选股并生成计划...';
-      try{
-        const payload = {
-          scan_limit: 300,
-          top_n: 12,
-          bar_limit: 120,
-          mode: 'quick',
-          request_timeout: 120,
-          retries: 1,
-          direction_cache_days: 3,
-          execute_sim: true,
-          skip_ai: false,
-          force_refresh_universe: false,
-          force_full_analysis: false,
-          api_key: (bindApiKey.value || '').trim(),
-          base_url: bindBaseUrl.value || ''
-        };
-        const result = await fetchJsonSafe('/api/auto-pipeline', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify(payload)
-        });
-        const resp = result.resp;
-        const data = result.data;
-        if(!resp.ok){
-          throw new Error(formatErrorDetail(data.detail));
-        }
-        homeStartStatus.textContent = '自动选股任务已创建，正在执行...';
-        await pollTask(data.task_id, '自动选股并生成计划已完成。现在首页启动实时 AI 决策会优先沿用最新候选池。');
-      }catch(err){
-        homeStartStatus.textContent = '自动选股失败：' + String(err);
-      }finally{
-        homeAutoPipeline.disabled = false;
-        homeStartAll.disabled = false;
-      }
-    }
-
     bindProvider.addEventListener('change', saveBindingConfig);
     bindModel.addEventListener('change', saveBindingConfig);
     bindBaseUrl.addEventListener('change', saveBindingConfig);
     bindApiKey.addEventListener('change', saveBindingConfig);
     saveBinding.addEventListener('click', saveBindingConfig);
-    homeAutoPipeline.addEventListener('click', runHomeAutoPipeline);
     homeStartAll.addEventListener('click', runHomeQuickStart);
     chartSymbolSelect.addEventListener('change', (event) => {
       const symbol = event.target.value;
       activeChartSymbol = symbol;
       const entries = ((((latestHomePayload || {}).watchlist) || {}).entries) || [];
-      const selectedEntry = entries.find(item => item.symbol === symbol);
+      const holdings = ((((latestHomePayload || {}).watchlist) || {}).holdings) || [];
+      const selectedEntry = entries.find(item => item.symbol === symbol) || holdings.find(item => item.symbol === symbol);
       if(selectedEntry){
         chartFocusTitle.textContent = selectedEntry.symbol + ' ' + (selectedEntry.name || '');
-        chartFocusSub.textContent = '最新价 ' + fmtNum(selectedEntry.latest_price || 0) + ' ｜ 涨跌幅 ' + fmtPct(selectedEntry.pct_change || 0) + ' ｜ AI 动作 ' + (selectedEntry.action || 'HOLD') + ' ｜ setup ' + Number(selectedEntry.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(selectedEntry.execution_score || 0).toFixed(2);
+        const latestPrice = selectedEntry.latest_price || selectedEntry.last_price || 0;
+        chartFocusSub.textContent = '最新价 ' + fmtNum(latestPrice) + ' ｜ 涨跌幅 ' + fmtPct(selectedEntry.pct_change || 0) + ' ｜ AI 动作 ' + (selectedEntry.action || 'HOLD') + ' ｜ setup ' + Number(selectedEntry.setup_score || 0).toFixed(2) + ' ｜ execution ' + Number(selectedEntry.execution_score || 0).toFixed(2);
       }
       loadChart(symbol);
     });
@@ -1042,4 +1186,4 @@ def render_ai_trading_home(build_tag: str) -> str:
     setInterval(loadHome, 5000);
   </script>
 </body>
-</html>""".replace("__WEB_BUILD_TAG__", build_tag).replace("__CHART_COMBO_PANEL__", chart_combo_panel).replace("__EQUITY_PANEL__", equity_curve_panel).replace("__TIMELINE_PANEL__", action_timeline_panel)
+</html>""".replace("__WEB_BUILD_TAG__", build_tag).replace("__HERO_PANEL__", hero_panel).replace("__KLINE_PANEL__", kline_panel).replace("__EQUITY_PANEL__", equity_curve_panel).replace("__TIMELINE_PANEL__", action_timeline_panel)

@@ -108,6 +108,28 @@ def _load_snapshot_symbol_names(settings: Settings) -> Dict[str, str]:
                 mapping[symbol] = name
         if mapping:
             break
+    for cache_path in sorted(market_cache_dir.glob("quote_obj_*.json"), reverse=True):
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        symbol = str(payload.get("symbol") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        if symbol and name and symbol not in mapping and name != symbol:
+            mapping[symbol] = name
+    for report_dir in _candidate_report_dirs(settings):
+        for candidate_path in sorted(report_dir.glob("auto_candidates_*.json"), reverse=True)[:3]:
+            try:
+                payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for row in payload.get("selected") or []:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol") or "").strip()
+                name = str(row.get("name") or "").strip()
+                if symbol and name and symbol not in mapping and name != symbol:
+                    mapping[symbol] = name
     return mapping
 
 
@@ -162,6 +184,30 @@ def _symbol_name_map(settings: Settings) -> Dict[str, str]:
         symbol = str(row.get("symbol") or "").strip()
         if symbol:
             watch_symbols.append(symbol)
+    runtime_watchlist = load_runtime_watchlist(settings)
+    for symbol in runtime_watchlist.get("symbols") or []:
+        code = str(symbol).strip()
+        if code:
+            watch_symbols.append(code)
+    active_watchlist = get_active_watchlist(settings)
+    for symbol in active_watchlist.get("symbols") or []:
+        code = str(symbol).strip()
+        if code:
+            watch_symbols.append(code)
+    conn = connect_db(settings)
+    try:
+        for row in fetch_rows_by_sql(conn, "SELECT symbol FROM positions ORDER BY id DESC LIMIT 64"):
+            code = str(dict(row).get("symbol") or "").strip()
+            if code:
+                watch_symbols.append(code)
+        for row in fetch_rows_by_sql(conn, "SELECT symbol FROM orders ORDER BY id DESC LIMIT 128"):
+            code = str(dict(row).get("symbol") or "").strip()
+            if code:
+                watch_symbols.append(code)
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
     missing = sorted({symbol for symbol in watch_symbols if symbol not in mapping})
     if missing:
         mapping.update(_fetch_eastmoney_symbol_names(missing))
@@ -348,6 +394,116 @@ def _build_watchlist_entries(
     }
 
 
+def _watch_section_key(entry: Dict[str, object], settings: Settings) -> str:
+    action = str(entry.get("action") or "").upper()
+    execution_score = float(entry.get("execution_score") or 0.0)
+    setup_score = float(entry.get("setup_score") or 0.0)
+    has_position = bool(entry.get("has_position"))
+    if has_position or action in {"BUY", "SELL", "REDUCE"} or execution_score >= settings.scoring.min_execution_score_to_buy * 0.8:
+        return "core"
+    if setup_score >= settings.scoring.min_setup_score_to_watch or action in {"WATCH_NEXT_DAY", "HOLD", "PREPARE_BUY", "HOLD_FOR_TOMORROW"}:
+        return "observe"
+    return "low"
+
+
+def _watch_section_priority(entry: Dict[str, object]) -> tuple[float, float, float, str]:
+    return (
+        1.0 if bool(entry.get("has_position")) else 0.0,
+        float(entry.get("execution_score") or 0.0),
+        float(entry.get("setup_score") or 0.0),
+        str(entry.get("symbol") or ""),
+    )
+
+
+def _build_watchlist_sections(watchlist: Dict[str, object], settings: Settings) -> List[Dict[str, object]]:
+    section_meta = {
+        "core": ("🔥 核心关注", "优先关注当前持仓、执行分最高或刚刚触发动作的股票。"),
+        "observe": ("👀 观察中", "股票本身值得继续盯，但当前更适合等待更好的执行时机。"),
+        "low": ("❌ 低优先级", "当前强度不足，先放在更低优先级的观察层。"),
+    }
+    buckets = {"core": [], "observe": [], "low": []}
+    for entry in watchlist.get("entries") or []:
+        buckets[_watch_section_key(entry, settings)].append(entry)
+    sections: List[Dict[str, object]] = []
+    for key in ("core", "observe", "low"):
+        items = sorted(buckets[key], key=_watch_section_priority, reverse=True)
+        if not items:
+            continue
+        title, desc = section_meta[key]
+        sections.append(
+            {
+                "key": key,
+                "title": title,
+                "description": desc,
+                "items": items,
+            }
+        )
+    return sections
+
+
+def _build_trade_explanations(
+    names: Dict[str, str],
+    ai_decisions: List[Dict[str, object]],
+    watchlist: Dict[str, object],
+) -> Dict[str, object]:
+    order_rows = _query_rows(
+        """
+        SELECT ts, symbol, side, price, qty, status, note
+        FROM orders
+        WHERE intent_only = 0
+          AND status IN ('FILLED', 'PARTIAL_FILLED')
+        ORDER BY id DESC
+        LIMIT 30
+        """
+    )
+    buys: List[Dict[str, object]] = []
+    sells: List[Dict[str, object]] = []
+    for row in order_rows:
+        symbol = str(row.get("symbol") or "").strip()
+        side = str(row.get("side") or "").strip().upper()
+        item = {
+            "ts": str(row.get("ts") or ""),
+            "symbol": symbol,
+            "name": names.get(symbol, symbol),
+            "action": side,
+            "price": float(row.get("price") or 0.0),
+            "qty": int(row.get("qty") or 0),
+            "reason": str(row.get("note") or "").strip() or "本轮满足执行条件并完成模拟成交。",
+        }
+        if side == "BUY" and len(buys) < 3:
+            buys.append(item)
+        elif side in {"SELL", "REDUCE"} and len(sells) < 3:
+            sells.append(item)
+        if len(buys) >= 3 and len(sells) >= 3:
+            break
+
+    hold_reasons: List[Dict[str, object]] = []
+    holding_map = {str(item.get("symbol") or ""): item for item in watchlist.get("holdings") or []}
+    for row in ai_decisions:
+        symbol = str(row.get("symbol") or "").strip()
+        if symbol not in holding_map:
+            continue
+        if str(row.get("action") or "").upper() != "HOLD":
+            continue
+        hold_reasons.append(
+            {
+                "symbol": symbol,
+                "name": names.get(symbol, symbol),
+                "action": "HOLD",
+                "reason": str(row.get("reason") or "").strip() or "当前持仓仍与市场状态匹配，暂不减仓或卖出。",
+                "execution_score": float(row.get("execution_score") or 0.0),
+                "setup_score": float(row.get("setup_score") or 0.0),
+            }
+        )
+    hold_reasons.sort(key=lambda item: float(item.get("execution_score") or 0.0), reverse=True)
+
+    return {
+        "recent_buys": buys,
+        "recent_sells": sells,
+        "hold_reasons": hold_reasons[:3],
+    }
+
+
 def _select_chart_symbol(
     watchlist: Dict[str, object],
     timeline: List[Dict[str, object]],
@@ -372,6 +528,69 @@ def _select_chart_symbol(
     if entries:
         return str(entries[0].get("symbol") or "")
     return ""
+
+
+def _build_core_symbol(
+    watchlist: Dict[str, object],
+    ai_decisions: List[Dict[str, object]],
+    timeline: List[Dict[str, object]],
+) -> Dict[str, object]:
+    decision_map = {str(item.get("symbol") or ""): item for item in ai_decisions}
+    entry_map = {str(item.get("symbol") or ""): item for item in watchlist.get("entries") or []}
+    holding_map = {str(item.get("symbol") or ""): item for item in watchlist.get("holdings") or []}
+    chosen_symbol = _select_chart_symbol(watchlist, timeline, ai_decisions)
+    if not chosen_symbol:
+        return {}
+    entry = dict(entry_map.get(chosen_symbol) or {})
+    if not entry:
+        entry = {
+            "symbol": chosen_symbol,
+            "name": str((holding_map.get(chosen_symbol) or {}).get("name") or chosen_symbol),
+            "latest_price": float((holding_map.get(chosen_symbol) or {}).get("last_price") or 0.0),
+            "pct_change": 0.0,
+            "has_position": bool(holding_map.get(chosen_symbol)),
+            "position_qty": int((holding_map.get(chosen_symbol) or {}).get("qty") or 0),
+        }
+    decision = dict(decision_map.get(chosen_symbol) or {})
+    reason = str(decision.get("reason") or "")
+    if not reason:
+        warnings = decision.get("warnings") or []
+        if isinstance(warnings, list) and warnings:
+            reason = str(warnings[0] or "")
+    if not reason:
+        reason = "当前仍在等待更明确的盘中动作信号。"
+    entry.update(
+        {
+            "symbol": chosen_symbol,
+            "action": str(decision.get("action") or entry.get("action") or "HOLD"),
+            "setup_score": float(decision.get("setup_score") or entry.get("setup_score") or 0.0),
+            "execution_score": float(decision.get("execution_score") or entry.get("execution_score") or 0.0),
+            "reason": reason,
+            "confidence": float(decision.get("confidence") or 0.0),
+        }
+    )
+    return entry
+
+
+def _build_top_opportunity_candidates(ai_decisions: List[Dict[str, object]], settings: Settings) -> List[Dict[str, object]]:
+    threshold = float(settings.scoring.min_execution_score_to_buy)
+    rows: List[Dict[str, object]] = []
+    for item in ai_decisions:
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        execution_score = float(item.get("execution_score") or 0.0)
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": str(item.get("name") or symbol),
+                "execution_score": execution_score,
+                "gap_to_buy": max(0.0, threshold - execution_score),
+                "action": str(item.get("action") or "HOLD"),
+            }
+        )
+    rows.sort(key=lambda row: (row["gap_to_buy"], -row["execution_score"], row["symbol"]))
+    return rows[:3]
 
 
 def _has_local_api_key(settings: Settings) -> bool:
@@ -595,6 +814,7 @@ def get_latest_ai_decisions() -> List[Dict[str, object]]:
                     "reason": str(item.get("reason") or ""),
                 "warnings": list(item.get("warnings") or []),
                 "final_score": float(item.get("final_score") or 0.0),
+                "feature_score": float(item.get("feature_score") or 0.0),
                 "ai_score": float(item.get("ai_score") or 0.0),
                 "setup_score": float(item.get("setup_score") or item.get("final_score") or 0.0),
                 "execution_score": float(item.get("execution_score") or item.get("final_score") or 0.0),
@@ -623,6 +843,7 @@ def get_latest_ai_decisions() -> List[Dict[str, object]]:
                     "reason": "来自最近一次运行时状态缓存",
                     "warnings": [],
                     "final_score": float(item.get("last_execution_score") or 0.0),
+                    "feature_score": float(item.get("last_feature_score") or 0.0),
                     "ai_score": float(item.get("last_ai_score") or 0.0),
                     "setup_score": float(item.get("last_setup_score") or 0.0),
                     "execution_score": float(item.get("last_execution_score") or 0.0),
@@ -650,6 +871,7 @@ def get_latest_ai_decisions() -> List[Dict[str, object]]:
                 "reason": str(item.get("reason") or ""),
                 "warnings": [],
                 "final_score": 0.0,
+                "feature_score": 0.0,
                 "ai_score": 0.0,
                 "setup_score": 0.0,
                 "execution_score": 0.0,
@@ -818,8 +1040,14 @@ def get_home_view() -> Dict[str, object]:
         and bool(execution.get("can_reduce_position"))
     )
     timeline = get_recent_action_timeline(settings=SETTINGS)
+    for row in timeline:
+        symbol = str(row.get("symbol") or "")
+        row["name"] = names.get(symbol, symbol)
     watchlist = _build_watchlist_entries(SETTINGS, live_state, names, ai_decisions)
+    watchlist_sections = _build_watchlist_sections(watchlist, SETTINGS)
+    trade_explanations = _build_trade_explanations(names, ai_decisions, watchlist)
     chart_symbol = _select_chart_symbol(watchlist, timeline, ai_decisions)
+    core_symbol = _build_core_symbol(watchlist, ai_decisions, timeline)
     score_breakdowns = sorted(
         [row for row in ai_decisions if row.get("symbol")],
         key=lambda item: abs(SETTINGS.scoring.min_execution_score_to_buy - float(item.get("execution_score") or 0.0)),
@@ -844,12 +1072,16 @@ def get_home_view() -> Dict[str, object]:
         "account": account,
         "stats": stats,
         "watchlist": watchlist,
+        "watchlist_sections": watchlist_sections,
+        "trade_explanations": trade_explanations,
+        "core_symbol": core_symbol,
         "timeline": timeline,
         "charts": charts,
         "opportunities": {
             "buy_count": executable_buy_count,
             "reduce_count": executable_reduce_count,
             "top_limitations": no_buy_reasons[:3],
+            "top_candidates": _build_top_opportunity_candidates(ai_decisions, SETTINGS),
         },
         "score_breakdowns": score_breakdowns,
     }
