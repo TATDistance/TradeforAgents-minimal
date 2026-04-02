@@ -39,7 +39,7 @@ from .ui_summary_service import (
 from .ui_timeline_service import get_recent_action_timeline
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(os.getenv("AI_STOCK_SIM_HOME", str(Path(__file__).resolve().parents[2]))).resolve()
 SETTINGS = load_settings(PROJECT_ROOT)
 ENGINE_PID_PATH = SETTINGS.data_dir / "engine.pid"
 DASHBOARD_PID_PATH = SETTINGS.data_dir / "dashboard.pid"
@@ -725,7 +725,7 @@ def _has_local_api_key(settings: Settings) -> bool:
     env_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if env_key:
         return True
-    env_path = settings.project_root.parent / ".env"
+    env_path = Path(os.getenv("TRADEFORAGENTS_ENV_FILE", str(settings.project_root.parent / ".env"))).resolve()
     if not env_path.exists():
         return False
     try:

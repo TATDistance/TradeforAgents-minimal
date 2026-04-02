@@ -480,7 +480,8 @@ def get_primary_simulation_account(settings: Settings) -> SimulationAccountConfi
 
 def load_settings(project_root: Path | None = None) -> Settings:
     root = project_root or Path(__file__).resolve().parents[1]
-    load_dotenv(root / ".env", override=False)
+    env_file = Path(os.getenv("TRADEFORAGENTS_ENV_FILE", str(root / ".env")))
+    load_dotenv(env_file, override=False)
     settings_path = os.getenv("AI_STOCK_SIM_SETTINGS", "config/settings.yaml")
     settings_file = (root / settings_path).resolve()
     payload: Dict[str, Any] = {}

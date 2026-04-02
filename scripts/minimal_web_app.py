@@ -25,8 +25,10 @@ from pydantic import BaseModel, Field
 import uvicorn
 import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WORKSPACE_ROOT = PROJECT_ROOT.parent.parent
+RESOURCE_ROOT = Path(os.environ.get("TRADEFORAGENTS_RESOURCE_ROOT", str(Path(__file__).resolve().parents[1]))).resolve()
+PROJECT_ROOT = RESOURCE_ROOT
+RUNTIME_ROOT = Path(os.environ.get("TRADEFORAGENTS_RUNTIME_ROOT", str(PROJECT_ROOT))).resolve()
+WORKSPACE_ROOT = Path(os.environ.get("TRADEFORAGENTS_WORKSPACE_ROOT", str(PROJECT_ROOT.parent.parent))).resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from ai_stock_sim.app.settings import load_settings, load_symbol_yaml
@@ -37,9 +39,9 @@ from ai_stock_sim.dashboard.services.ui_chart_service import get_equity_curve_da
 from ai_stock_sim.dashboard.services.ui_home_service import get_debug_view, get_home_view
 
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "minimal_deepseek_report.py"
-RESULTS_DIR = PROJECT_ROOT / "results"
+RESULTS_DIR = Path(os.environ.get("TRADEFORAGENTS_RESULTS_DIR", str(RUNTIME_ROOT / "results"))).resolve()
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-EMBEDDED_AI_TRADE_HOME = PROJECT_ROOT / "ai_trade_system"
+EMBEDDED_AI_TRADE_HOME = RUNTIME_ROOT / "ai_trade_system"
 AI_TRADE_HOME = Path(
     os.environ.get(
         "AI_TRADE_SYSTEM_HOME",
@@ -51,7 +53,7 @@ AI_TRADE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 AI_TRADE_DB_PATH = AI_TRADE_HOME / "data" / "db.sqlite3"
 LEGACY_AI_TRADE_HOME = (WORKSPACE_ROOT / "tools" / "ai_trade_system").resolve()
 LEGACY_AI_TRADE_REPORTS_DIR = LEGACY_AI_TRADE_HOME / "reports"
-AI_STOCK_SIM_HOME = PROJECT_ROOT / "ai_stock_sim"
+AI_STOCK_SIM_HOME = Path(os.environ.get("AI_STOCK_SIM_HOME", str(RUNTIME_ROOT / "ai_stock_sim"))).resolve()
 AI_STOCK_SIM_DB_PATH = AI_STOCK_SIM_HOME / "data" / "db.sqlite3"
 AI_STOCK_SIM_LOG_DIR = AI_STOCK_SIM_HOME / "data" / "logs"
 AI_STOCK_SIM_ENGINE_LOG = AI_STOCK_SIM_LOG_DIR / "engine.log"
@@ -62,6 +64,8 @@ AI_STOCK_SIM_DASHBOARD_URL = "http://127.0.0.1:8610"
 AI_STOCK_SIM_DASHBOARD_HEALTH_URL = "http://127.0.0.1:8610/_stcore/health"
 AI_STOCK_SIM_RUNTIME_SYMBOLS = AI_STOCK_SIM_HOME / "config" / "runtime_symbols.yaml"
 AI_STOCK_SIM_REPORTS_DIR = AI_STOCK_SIM_HOME / "data" / "reports"
+AI_STOCK_SIM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+AI_STOCK_SIM_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 AI_STOCK_SIM_SETTINGS = load_settings(AI_STOCK_SIM_HOME)
 WEB_BUILD_TAG = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 SYMBOL_NAME_CACHE: Dict[str, str] = {}
@@ -943,7 +947,7 @@ def _run_task(task_id: str, req: AnalyzeRequest) -> None:
     env = os.environ.copy()
     # 若没有导出，尝试读项目 .env
     if not env.get("DEEPSEEK_API_KEY") and not req.api_key.strip():
-        env_file = PROJECT_ROOT / ".env"
+        env_file = Path(os.environ.get("TRADEFORAGENTS_ENV_FILE", str(RUNTIME_ROOT / ".env"))).resolve()
         if env_file.exists():
             for raw in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
                 if raw.startswith("DEEPSEEK_API_KEY="):
