@@ -14,6 +14,9 @@ class MarketRegimeService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
 
+    def detect_market_regime(self, snapshot: pd.DataFrame | None, portfolio_feedback: Mapping[str, float | str] | None = None) -> MarketRegimeState:
+        return self.evaluate(snapshot, portfolio_feedback)
+
     def evaluate(self, snapshot: pd.DataFrame | None, portfolio_feedback: Mapping[str, float | str] | None = None) -> MarketRegimeState:
         if not self.settings.market_regime.enabled:
             return MarketRegimeState(regime=self.settings.market_regime.default_regime, confidence=0.5, reason="市场状态机已关闭", risk_bias="NORMAL")

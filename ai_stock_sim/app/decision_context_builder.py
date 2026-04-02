@@ -23,6 +23,8 @@ class DecisionContextBuilder:
         portfolio_feedback: Mapping[str, object],
         phase_state: MarketPhaseState,
         execution_gate: ExecutionGateState,
+        adaptive_weights: Mapping[str, object] | None = None,
+        style_profile: Mapping[str, object] | None = None,
     ) -> Dict[str, object]:
         position_state = self._resolve_position_state(symbol, portfolio_feedback)
         technical_features = self._technical_features(frame)
@@ -43,6 +45,8 @@ class DecisionContextBuilder:
             "market_regime": market_regime.model_dump(),
             "market_phase": phase_state.model_dump(),
             "execution_gate": execution_gate.model_dump(),
+            "adaptive_weights": dict(adaptive_weights or {}),
+            "style_profile": dict(style_profile or {}),
             "portfolio_state": {
                 "equity": float(portfolio_feedback.get("equity", 0.0) or 0.0),
                 "cash": float(portfolio_feedback.get("cash", 0.0) or 0.0),
@@ -74,6 +78,8 @@ class DecisionContextBuilder:
         portfolio_feedback: Mapping[str, object],
         phase_state: MarketPhaseState,
         execution_gate: ExecutionGateState,
+        adaptive_weights: Mapping[str, object] | None = None,
+        style_profile: Mapping[str, object] | None = None,
     ) -> Dict[str, Dict[str, object]]:
         return {
             symbol: self.build_for_symbol(
@@ -85,6 +91,8 @@ class DecisionContextBuilder:
                 portfolio_feedback=portfolio_feedback,
                 phase_state=phase_state,
                 execution_gate=execution_gate,
+                adaptive_weights=adaptive_weights,
+                style_profile=style_profile,
             )
             for symbol in symbols
         }

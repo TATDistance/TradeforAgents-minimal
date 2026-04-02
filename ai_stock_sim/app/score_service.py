@@ -27,9 +27,12 @@ class ScoreService:
         portfolio_state: Mapping[str, object],
         position_state: Mapping[str, object],
         risk_mode: str,
+        risk_penalty_multiplier: float = 1.0,
     ) -> Dict[str, object]:
+        market_penalty = float(market_risk_penalty or 0.0) * float(risk_penalty_multiplier or 1.0)
+        portfolio_penalty = float(portfolio_risk_penalty or 0.0) * float(risk_penalty_multiplier or 1.0)
         setup_base = float(feature_score or 0.0) + float(ai_score or 0.0)
-        setup_score = _clamp_score(setup_base - float(market_risk_penalty or 0.0) - float(portfolio_risk_penalty or 0.0))
+        setup_score = _clamp_score(setup_base - market_penalty - portfolio_penalty)
 
         has_position = bool(position_state.get("has_position"))
         can_open = bool(execution_gate.get("can_open_position"))
@@ -79,8 +82,8 @@ class ScoreService:
             "execution_score": round(execution_score, 4),
             "feature_score": round(float(feature_score or 0.0), 4),
             "ai_score": round(float(ai_score or 0.0), 4),
-            "market_risk_penalty": round(float(market_risk_penalty or 0.0), 4),
-            "portfolio_risk_penalty": round(float(portfolio_risk_penalty or 0.0), 4),
+            "market_risk_penalty": round(market_penalty, 4),
+            "portfolio_risk_penalty": round(portfolio_penalty, 4),
             "phase_penalty": round(phase_penalty, 4),
             "gate_penalty": round(gate_penalty, 4),
             "watch_ready": watch_ready,

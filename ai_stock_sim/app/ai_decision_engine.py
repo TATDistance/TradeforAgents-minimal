@@ -45,6 +45,8 @@ class AIDecisionEngine:
         technical = dict(context.get("technical_features") or {})
         market_phase = dict(context.get("market_phase") or {})
         execution_gate = dict(context.get("execution_gate") or {})
+        adaptive_weights = dict(context.get("adaptive_weights") or {})
+        style_profile = dict(context.get("style_profile") or {})
         research = self._load_research_cache(symbol, trade_date or date.today().isoformat())
 
         regime_name = str(market_regime.get("regime") or self.settings.market_regime.default_regime)
@@ -81,6 +83,8 @@ class AIDecisionEngine:
             snapshot=snapshot,
             technical=technical,
             allow_new_buy=allow_new_buy,
+            adaptive_weights=adaptive_weights,
+            style_profile=style_profile,
         )
         setup_bundle = self.score_service.compute_scores(
             symbol=symbol,
@@ -94,6 +98,7 @@ class AIDecisionEngine:
             portfolio_state=portfolio_state,
             position_state=position_state,
             risk_mode=risk_mode,
+            risk_penalty_multiplier=float(adaptive_weights.get("risk_penalty_multiplier") or 1.0),
         )
         setup_score = float(setup_bundle.get("setup_score") or 0.0)
         execution_score = float(setup_bundle.get("execution_score") or 0.0)
@@ -429,10 +434,14 @@ class AIDecisionEngine:
         snapshot: Mapping[str, object],
         technical: Mapping[str, object],
         allow_new_buy: bool,
+        adaptive_weights: Mapping[str, object],
+        style_profile: Mapping[str, object],
     ) -> float:
         score = 0.0
         regime = str(market_regime.get("regime") or "")
         risk_bias = str(market_regime.get("risk_bias") or "")
+        ai_multiplier = float(adaptive_weights.get("ai_score_multiplier") or 1.0)
+        style_name = str(style_profile.get("style") or "balanced")
         if direction == "LONG":
             score += 0.05
         elif direction == "SHORT":
@@ -459,6 +468,13 @@ class AIDecisionEngine:
         elif regime == "RISK_OFF":
             score -= 0.10
 
+        if style_name == "trend_following":
+            score += 0.03 if direction == "LONG" and regime == "TRENDING_UP" else 0.0
+        elif style_name == "short_term":
+            score += 0.02 if -0.015 <= pct_change <= 0.03 else -0.01
+        elif style_name == "balanced":
+            score += 0.0
+
         if risk_bias == "DEFENSIVE":
             score -= 0.03
         cash_pct = float(portfolio_state.get("cash_pct", 0.0) or 0.0)
@@ -476,7 +492,7 @@ class AIDecisionEngine:
                 score -= 0.05
             elif final_score > 0 and unrealized_pct > 0:
                 score += 0.03
-
+        score *= ai_multiplier
         return max(-0.25, min(0.25, score))
 
     def _load_research_cache(self, symbol: str, trade_date: str) -> Dict[str, object]:

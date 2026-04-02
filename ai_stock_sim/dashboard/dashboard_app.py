@@ -349,6 +349,9 @@ def render_dashboard() -> None:
     evaluations_df = load_table("strategy_evaluations", limit=300)
     comparisons_df = load_table("mode_comparisons", limit=20)
     manual_df = attach_symbol_name(load_table("manual_execution_logs", limit=50))
+    attribution_df = attach_symbol_name(load_table("decision_snapshots", limit=300))
+    adaptive_history_df = load_table("adaptive_weight_history", limit=300)
+    style_history_df = load_table("style_profile_history", limit=120)
     live_state = load_live_state()
 
     st.caption(f"上次数据刷新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -403,6 +406,11 @@ def render_dashboard() -> None:
             "执行结果",
             "账户与持仓",
             "策略评估",
+            "策略表现分析",
+            "决策归因分析",
+            "权重变化历史",
+            "市场状态与风格",
+            "错误决策分析",
             "周期统计",
             "模式对照",
             "成交流水",
@@ -752,6 +760,110 @@ def render_dashboard() -> None:
                 st.info("暂无卖出策略评分记录。需要先有真实平仓成交，才能判断哪种退出更好。")
 
     with top_tabs[14]:
+        st.subheader("策略表现分析")
+        performance_summary = dict((live_state or {}).get("strategy_performance") or {})
+        if performance_summary:
+            perf_df = pd.DataFrame(
+                [
+                    {
+                        "strategy_name": name,
+                        **payload,
+                    }
+                    for name, payload in performance_summary.items()
+                ]
+            )
+            st.dataframe(perf_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("暂无策略表现汇总。")
+        if not evaluations_df.empty:
+            latest_daily = evaluations_df[evaluations_df["period_type"] == "daily"].copy()
+            latest_daily = latest_daily[~latest_daily["strategy_name"].astype(str).str.startswith("exit::")]
+            latest_daily = latest_daily[latest_daily["strategy_name"].astype(str) != "portfolio_actual"]
+            if not latest_daily.empty:
+                latest_daily["ts_dt"] = pd.to_datetime(latest_daily["ts"], errors="coerce")
+                latest_daily = latest_daily.sort_values("ts_dt", ascending=False).drop_duplicates("strategy_name")
+                st.bar_chart(
+                    latest_daily.set_index("strategy_name")[["win_rate", "total_return", "score_total"]],
+                    use_container_width=True,
+                )
+
+    with top_tabs[15]:
+        st.subheader("决策归因分析")
+        if attribution_df.empty:
+            st.info("暂无决策归因快照。")
+        else:
+            attribution_cols = [
+                col
+                for col in [
+                    "ts",
+                    "symbol",
+                    "name",
+                    "action",
+                    "setup_score",
+                    "execution_score",
+                    "ai_score",
+                    "result_return",
+                    "market_regime",
+                    "style_profile",
+                    "reason",
+                ]
+                if col in attribution_df.columns
+            ]
+            st.dataframe(attribution_df[attribution_cols], use_container_width=True, hide_index=True)
+
+    with top_tabs[16]:
+        st.subheader("权重变化历史")
+        adaptive_state = dict((live_state or {}).get("adaptive_weights") or {})
+        if adaptive_state:
+            st.markdown("**当前自适应权重**")
+            cols = st.columns(2)
+            cols[0].metric("AI 加分倍率", f"{float(adaptive_state.get('ai_score_multiplier') or 1.0):.2f}")
+            cols[1].metric("风险惩罚倍率", f"{float(adaptive_state.get('risk_penalty_multiplier') or 1.0):.2f}")
+            weights_df = pd.DataFrame(
+                [{"strategy_name": key, "weight": value} for key, value in (adaptive_state.get("strategy_weights") or {}).items()]
+            )
+            if not weights_df.empty:
+                st.dataframe(weights_df, use_container_width=True, hide_index=True)
+        if not adaptive_history_df.empty:
+            history_df = adaptive_history_df.copy()
+            st.dataframe(history_df, use_container_width=True, hide_index=True)
+            pivot = history_df[history_df["category"] == "strategy_weight"].copy()
+            if not pivot.empty:
+                pivot["ts_dt"] = pd.to_datetime(pivot["ts"], errors="coerce")
+                pivot = pivot.sort_values("ts_dt")
+                line_df = pivot.pivot_table(index="ts_dt", columns="key_name", values="new_value", aggfunc="last")
+                if not line_df.empty:
+                    st.line_chart(line_df, use_container_width=True)
+        else:
+            st.info("暂无权重历史。")
+
+    with top_tabs[17]:
+        st.subheader("市场状态与风格")
+        regime = live_state.get("market_regime") if isinstance(live_state, dict) else {}
+        style_profile = live_state.get("style_profile") if isinstance(live_state, dict) else {}
+        status_cols = st.columns(4)
+        status_cols[0].metric("当前市场状态", str((regime or {}).get("regime") or "-"))
+        status_cols[1].metric("风险偏好", str((regime or {}).get("risk_bias") or "-"))
+        status_cols[2].metric("AI 交易风格", str((style_profile or {}).get("style") or "-"))
+        status_cols[3].metric("持有偏好", str((style_profile or {}).get("holding_preference") or "-"))
+        if style_profile:
+            st.caption(str((style_profile or {}).get("reason") or ""))
+        if not style_history_df.empty:
+            st.dataframe(style_history_df, use_container_width=True, hide_index=True)
+
+    with top_tabs[18]:
+        st.subheader("错误决策分析")
+        bad_decisions = pd.DataFrame((live_state or {}).get("bad_decisions") or [])
+        if bad_decisions.empty and not attribution_df.empty and "result_return" in attribution_df.columns:
+            bad_decisions = attribution_df[attribution_df["result_return"].fillna(0) < 0].copy()
+            if "result_return" in bad_decisions.columns:
+                bad_decisions = bad_decisions.sort_values("result_return", ascending=True).head(10)
+        if bad_decisions.empty:
+            st.info("暂无可分析的亏损决策。")
+        else:
+            st.dataframe(bad_decisions, use_container_width=True, hide_index=True)
+
+    with top_tabs[19]:
         st.subheader("周期统计面板")
         period_options = {
             "今日": "daily",
@@ -767,7 +879,7 @@ def render_dashboard() -> None:
         else:
             st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-    with top_tabs[15]:
+    with top_tabs[20]:
         st.subheader("模式对照")
         live_compare = live_state.get("decision_compare") if isinstance(live_state, dict) else {}
         if isinstance(live_compare, dict) and live_compare.get("rows"):
@@ -817,7 +929,7 @@ def render_dashboard() -> None:
                     st.write(f"利润因子：{float(row['profit_factor']):.2f}")
             st.dataframe(comparisons_df, use_container_width=True, hide_index=True)
 
-    with top_tabs[16]:
+    with top_tabs[21]:
         st.subheader("成交流水")
         if not orders_df.empty:
             order_cols = [col for col in ["ts", "symbol", "name", "side", "price", "qty", "fee", "tax", "slippage", "status", "intent_only", "phase", "strategy_name", "mode_name"] if col in orders_df.columns]
@@ -828,7 +940,7 @@ def render_dashboard() -> None:
             st.markdown("**人工实盘回填记录**")
             st.dataframe(manual_df, use_container_width=True, hide_index=True)
 
-    with top_tabs[17]:
+    with top_tabs[22]:
         st.subheader("日志筛选")
         filter_cols = st.columns(4)
         with filter_cols[0]:
@@ -851,7 +963,7 @@ def render_dashboard() -> None:
                 filtered_logs = filtered_logs[filtered_logs["ts"].astype(str).str.contains(time_text, case=False, na=False)]
         st.dataframe(filtered_logs, use_container_width=True, hide_index=True)
 
-    with top_tabs[18]:
+    with top_tabs[23]:
         st.subheader("人工实盘成交回填")
         if final_signals_df.empty:
             st.info("暂无可回填的信号。")

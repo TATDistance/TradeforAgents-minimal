@@ -198,6 +198,19 @@ def render_ai_trading_home(build_tag: str) -> str:
       </div>
 
       <div class="card span-4">
+        <h3>AI 当前交易风格</h3>
+        <div id="styleProfileCard" class="action-list"></div>
+      </div>
+      <div class="card span-4">
+        <h3>策略表现摘要</h3>
+        <div id="strategyPerformanceCard" class="action-list"></div>
+      </div>
+      <div class="card span-4">
+        <h3>AI 自适应调整</h3>
+        <div id="adaptiveAdjustCard" class="action-list"></div>
+      </div>
+
+      <div class="card span-4">
         <h3>当前交易状态</h3>
         <div class="kv" id="phaseGrid"></div>
       </div>
@@ -359,6 +372,9 @@ def render_ai_trading_home(build_tag: str) -> str:
     const phaseGrid = document.getElementById('phaseGrid');
     const strategyGrid = document.getElementById('strategyGrid');
     const accountGrid = document.getElementById('accountGrid');
+    const styleProfileCard = document.getElementById('styleProfileCard');
+    const strategyPerformanceCard = document.getElementById('strategyPerformanceCard');
+    const adaptiveAdjustCard = document.getElementById('adaptiveAdjustCard');
     const statsGrid = document.getElementById('statsGrid');
     const opportunityGrid = document.getElementById('opportunityGrid');
     const opportunityCandidates = document.getElementById('opportunityCandidates');
@@ -524,6 +540,51 @@ def render_ai_trading_home(build_tag: str) -> str:
             '<div class="item"><div class="label">AI 置信度</div><div class="value">' + fmtPct(core.confidence || 0) + '</div></div>' +
           '</div>' +
         '</div>';
+    }
+
+    function renderStyleProfile(profile){
+      if(!profile || !Object.keys(profile).length){
+        styleProfileCard.innerHTML = '<div class="empty">暂无风格信息。</div>';
+        return;
+      }
+      const styleMap = {short_term:'短线', trend_following:'长线趋势', balanced:'平衡'};
+      const holdMap = {short:'偏短持有', medium:'中性持有', long:'偏长持有', balanced:'平衡'};
+      const riskMap = {low:'低', medium:'中', high:'高'};
+      styleProfileCard.innerHTML =
+        '<div class="action-item">' +
+          '<strong>AI交易风格：' + (styleMap[profile.style] || profile.style || '平衡') + '</strong>' +
+          '<div class="muted-note">持有偏好：' + (holdMap[profile.holding_preference] || profile.holding_preference || '-') + ' ｜ 风险等级：' + (riskMap[profile.aggressiveness] || profile.aggressiveness || '-') + '</div>' +
+          '<div class="muted-note">' + (profile.reason || 'AI 会根据市场状态自动调整交易风格。') + '</div>' +
+        '</div>';
+    }
+
+    function renderStrategyPerformance(summary){
+      const entries = Object.entries(summary || {});
+      if(!entries.length){
+        strategyPerformanceCard.innerHTML = '<div class="empty">暂无策略表现摘要。</div>';
+        return;
+      }
+      strategyPerformanceCard.innerHTML = entries.slice(0, 3).map(([name, item]) => (
+        '<div class="action-item">' +
+          '<strong>' + name + '</strong>' +
+          '<div class="muted-note">胜率 ' + fmtPct(item.win_rate || 0) + ' ｜ 平均收益 ' + fmtPct(item.avg_return || 0) + '</div>' +
+          '<div class="muted-note">最大回撤 ' + fmtPct(item.max_drawdown || 0) + ' ｜ 交易数 ' + String(item.trades || 0) + '</div>' +
+        '</div>'
+      )).join('');
+    }
+
+    function renderAdaptiveAdjustments(items){
+      if(!items || !items.length){
+        adaptiveAdjustCard.innerHTML = '<div class="empty">最近没有新的自适应调整。</div>';
+        return;
+      }
+      adaptiveAdjustCard.innerHTML = items.slice(0, 3).map(item => (
+        '<div class="action-item">' +
+          '<strong>' + (item.key || item.category || '调整') + '</strong>' +
+          '<div class="muted-note">' + fmtNum(item.old_value || 0) + ' → ' + fmtNum(item.new_value || 0) + '</div>' +
+          '<div class="muted-note">' + (item.reason || '已按近期表现做平滑调整。') + '</div>' +
+        '</div>'
+      )).join('');
     }
 
     function renderWatchlist(watchlist, sections){
@@ -1025,6 +1086,9 @@ def render_ai_trading_home(build_tag: str) -> str:
           {label:'仓位', value: fmtPct(account.position_ratio)},
           {label:'浮盈亏', value: fmtNum(account.unrealized_pnl), subvalue: '回撤 ' + fmtPct(account.drawdown)}
         ]);
+        renderStyleProfile(data.style_profile || {});
+        renderStrategyPerformance(data.strategy_performance || {});
+        renderAdaptiveAdjustments(data.adaptive_adjustments || []);
 
         const stats = data.stats || {};
         renderStatGrid(statsGrid, [

@@ -105,6 +105,13 @@ ui:
   show_equity_curve: true
   show_action_timeline: true
   default_symbol_selection_mode: priority_based
+adaptive:
+  enabled: true
+  evaluation_window_days: 5
+  min_trades_for_adjustment: 10
+  weight_adjustment_rate: 0.1
+style:
+  enable_auto_style: true
 strategy:
   momentum_lookback: 20
   momentum_min_score: 0.55

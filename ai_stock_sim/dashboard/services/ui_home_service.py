@@ -1033,18 +1033,12 @@ def get_home_view() -> Dict[str, object]:
         strategy_status=strategy_status,
     )
     executable_buy_count = sum(
-        1
-        for row in ai_decisions
-        if str(row.get("action") or "") == "BUY"
-        and float(row.get("execution_score") or 0.0) >= SETTINGS.scoring.min_execution_score_to_buy
-        and bool(execution.get("can_open_position"))
+        1 for row in actions if bool(row.get("executable_now")) and str(row.get("action") or "") == "BUY"
     )
     executable_reduce_count = sum(
         1
-        for row in ai_decisions
-        if str(row.get("action") or "") in {"SELL", "REDUCE"}
-        and abs(float(row.get("execution_score") or 0.0)) >= SETTINGS.scoring.min_execution_score_to_reduce
-        and bool(execution.get("can_reduce_position"))
+        for row in actions
+        if bool(row.get("executable_now")) and str(row.get("action") or "") in {"SELL", "REDUCE"}
     )
     timeline = get_recent_action_timeline(settings=SETTINGS)
     for row in timeline:
@@ -1053,6 +1047,10 @@ def get_home_view() -> Dict[str, object]:
     watchlist = _build_watchlist_entries(SETTINGS, live_state, names, ai_decisions)
     watchlist_sections = _build_watchlist_sections(watchlist, SETTINGS)
     trade_explanations = _build_trade_explanations(names, ai_decisions, watchlist)
+    style_profile = dict(live_state.get("style_profile") or {})
+    strategy_performance = dict(live_state.get("strategy_performance") or {})
+    adaptive_weights = dict(live_state.get("adaptive_weights") or {})
+    adaptive_adjustments = list(adaptive_weights.get("adjustments") or [])
     chart_symbol = _select_chart_symbol(watchlist, timeline, ai_decisions)
     core_symbol = _build_core_symbol(watchlist, ai_decisions, timeline)
     score_breakdowns = sorted(
@@ -1081,6 +1079,10 @@ def get_home_view() -> Dict[str, object]:
         "watchlist": watchlist,
         "watchlist_sections": watchlist_sections,
         "trade_explanations": trade_explanations,
+        "style_profile": style_profile,
+        "strategy_performance": strategy_performance,
+        "adaptive_weights": adaptive_weights,
+        "adaptive_adjustments": adaptive_adjustments[:3],
         "core_symbol": core_symbol,
         "timeline": timeline,
         "charts": charts,

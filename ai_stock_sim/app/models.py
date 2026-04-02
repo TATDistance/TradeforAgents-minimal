@@ -304,3 +304,43 @@ class ManualExecutionLog(BaseModel):
     actual_qty: Optional[int] = None
     reason: str = ""
     note: str = ""
+
+
+class DecisionSnapshot(BaseModel):
+    ts: datetime = Field(default_factory=datetime.now)
+    symbol: str
+    decision_time: str
+    action: str
+    final_score: float = 0.0
+    setup_score: float = 0.0
+    execution_score: float = 0.0
+    ai_score: float = 0.0
+    feature_json: Optional[str] = None
+    context_json: Optional[str] = None
+    result_return: Optional[float] = None
+    result_pnl: Optional[float] = None
+    market_regime: str = ""
+    style_profile: str = ""
+    reason: str = ""
+    metadata_json: Optional[str] = None
+
+
+class AdaptiveWeightRecord(BaseModel):
+    ts: datetime = Field(default_factory=datetime.now)
+    category: str
+    key_name: str
+    old_value: float = 0.0
+    target_value: float = 0.0
+    new_value: float = 0.0
+    reason: str = ""
+    metadata_json: Optional[str] = None
+
+
+class StyleProfileState(BaseModel):
+    ts: datetime = Field(default_factory=datetime.now)
+    style: str
+    holding_preference: str = "balanced"
+    aggressiveness: str = "medium"
+    market_regime: str = ""
+    reason: str = ""
+    metadata_json: Optional[str] = None

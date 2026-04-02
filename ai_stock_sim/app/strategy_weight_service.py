@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Dict, Mapping
 
 from .models import MarketRegimeState
@@ -70,4 +71,17 @@ class StrategyWeightService:
                         weights[key] *= 0.85
                     elif score_value >= 80:
                         weights[key] *= 1.05
+        adaptive = self._load_adaptive_weights()
+        for key, value in (adaptive.get("strategy_weights") or {}).items():
+            if key in weights:
+                weights[key] *= float(value or 1.0)
         return {key: round(value, 4) for key, value in weights.items()}
+
+    def _load_adaptive_weights(self) -> Dict[str, object]:
+        path = self.settings.cache_dir / "adaptive_weights.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}

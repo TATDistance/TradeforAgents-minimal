@@ -9,12 +9,15 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from .models import (
     AccountSnapshot,
+    AdaptiveWeightRecord,
     AIDecision,
+    DecisionSnapshot,
     FinalSignal,
     ManualExecutionLog,
     ModeComparison,
     OrderRecord,
     PositionRecord,
+    StyleProfileState,
     StrategyEvaluation,
     StrategySignal,
 )
@@ -172,6 +175,49 @@ CREATE TABLE IF NOT EXISTS manual_execution_logs (
     actual_qty INTEGER,
     reason TEXT,
     note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS decision_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    decision_time TEXT NOT NULL,
+    action TEXT NOT NULL,
+    final_score REAL NOT NULL DEFAULT 0,
+    setup_score REAL NOT NULL DEFAULT 0,
+    execution_score REAL NOT NULL DEFAULT 0,
+    ai_score REAL NOT NULL DEFAULT 0,
+    feature_json TEXT,
+    context_json TEXT,
+    result_return REAL,
+    result_pnl REAL,
+    market_regime TEXT,
+    style_profile TEXT,
+    reason TEXT,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS adaptive_weight_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    category TEXT NOT NULL,
+    key_name TEXT NOT NULL,
+    old_value REAL NOT NULL DEFAULT 0,
+    target_value REAL NOT NULL DEFAULT 0,
+    new_value REAL NOT NULL DEFAULT 0,
+    reason TEXT,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS style_profile_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    style TEXT NOT NULL,
+    holding_preference TEXT,
+    aggressiveness TEXT,
+    market_regime TEXT,
+    reason TEXT,
+    metadata_json TEXT
 );
 """
 
@@ -472,6 +518,77 @@ def write_manual_execution_log(conn: sqlite3.Connection, log: ManualExecutionLog
     return int(cursor.lastrowid)
 
 
+def write_decision_snapshot(conn: sqlite3.Connection, snapshot: DecisionSnapshot) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO decision_snapshots (
+            ts, symbol, decision_time, action, final_score, setup_score, execution_score, ai_score,
+            feature_json, context_json, result_return, result_pnl, market_regime, style_profile, reason, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot.ts.isoformat(timespec="seconds"),
+            snapshot.symbol,
+            snapshot.decision_time,
+            snapshot.action,
+            snapshot.final_score,
+            snapshot.setup_score,
+            snapshot.execution_score,
+            snapshot.ai_score,
+            snapshot.feature_json,
+            snapshot.context_json,
+            snapshot.result_return,
+            snapshot.result_pnl,
+            snapshot.market_regime,
+            snapshot.style_profile,
+            snapshot.reason,
+            snapshot.metadata_json,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def write_adaptive_weight_record(conn: sqlite3.Connection, record: AdaptiveWeightRecord) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO adaptive_weight_history (
+            ts, category, key_name, old_value, target_value, new_value, reason, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record.ts.isoformat(timespec="seconds"),
+            record.category,
+            record.key_name,
+            record.old_value,
+            record.target_value,
+            record.new_value,
+            record.reason,
+            record.metadata_json,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def write_style_profile(conn: sqlite3.Connection, profile: StyleProfileState) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO style_profile_history (
+            ts, style, holding_preference, aggressiveness, market_regime, reason, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            profile.ts.isoformat(timespec="seconds"),
+            profile.style,
+            profile.holding_preference,
+            profile.aggressiveness,
+            profile.market_regime,
+            profile.reason,
+            profile.metadata_json,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
 def upsert_position(conn: sqlite3.Connection, position: PositionRecord) -> None:
     conn.execute(
         """
@@ -563,6 +680,9 @@ def fetch_recent_rows(conn: sqlite3.Connection, table: str, limit: int = 20) -> 
         "strategy_evaluations",
         "mode_comparisons",
         "manual_execution_logs",
+        "decision_snapshots",
+        "adaptive_weight_history",
+        "style_profile_history",
     }:
         raise ValueError("unsupported table")
     return conn.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (limit,)).fetchall()

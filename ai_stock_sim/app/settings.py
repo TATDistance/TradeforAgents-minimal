@@ -199,6 +199,7 @@ class WatchlistConfig:
     enable_auto_refresh_on_start: bool = True
     use_recent_candidates_as_fallback: bool = True
     use_default_watchlist_as_last_resort: bool = True
+    max_reuse_minutes_on_start: int = 30
 
 
 @dataclass
@@ -223,6 +224,19 @@ class UIConfig:
     show_equity_curve: bool = True
     show_action_timeline: bool = True
     default_symbol_selection_mode: str = "priority_based"
+
+
+@dataclass
+class AdaptiveConfig:
+    enabled: bool = True
+    evaluation_window_days: int = 5
+    min_trades_for_adjustment: int = 10
+    weight_adjustment_rate: float = 0.1
+
+
+@dataclass
+class StyleConfig:
+    enable_auto_style: bool = True
 
 
 @dataclass
@@ -271,6 +285,8 @@ class Settings:
     watchlist: WatchlistConfig = field(default_factory=WatchlistConfig)
     watchlist_evolution: WatchlistEvolutionConfig = field(default_factory=WatchlistEvolutionConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    adaptive: AdaptiveConfig = field(default_factory=AdaptiveConfig)
+    style: StyleConfig = field(default_factory=StyleConfig)
 
     @property
     def data_dir(self) -> Path:

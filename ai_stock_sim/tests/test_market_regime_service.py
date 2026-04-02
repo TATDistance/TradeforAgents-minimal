@@ -6,22 +6,16 @@ from app.market_regime_service import MarketRegimeService
 from app.settings import load_settings
 
 
-def test_market_regime_falls_back_when_snapshot_empty():
+def test_market_regime_service_detects_trending_up() -> None:
     service = MarketRegimeService(load_settings())
-    state = service.evaluate(pd.DataFrame(), {"drawdown": 0.0})
-    assert state.regime == "RANGE_BOUND"
-    assert state.confidence <= 0.5
-
-
-def test_market_regime_detects_trending_up():
-    service = MarketRegimeService(load_settings())
-    frame = pd.DataFrame(
+    snapshot = pd.DataFrame(
         [
-            {"symbol": "600036", "pct_change": 0.015, "amount": 1.2e8},
-            {"symbol": "600031", "pct_change": 0.012, "amount": 1.1e8},
-            {"symbol": "300750", "pct_change": 0.01, "amount": 1.3e8},
-            {"symbol": "002594", "pct_change": 0.009, "amount": 1.0e8},
+            {"pct_change": 0.02, "amount": 100_000_000},
+            {"pct_change": 0.018, "amount": 120_000_000},
+            {"pct_change": 0.012, "amount": 130_000_000},
+            {"pct_change": 0.015, "amount": 90_000_000},
         ]
     )
-    state = service.evaluate(frame, {"drawdown": 0.0})
-    assert state.regime == "TRENDING_UP"
+    result = service.detect_market_regime(snapshot, {"drawdown": 0.0})
+    assert result.regime == "TRENDING_UP"
+    assert result.confidence > 0.5

@@ -60,6 +60,9 @@ class ReportService:
         watchlist = load_runtime_watchlist(self.settings)
         if not watchlist.get("symbols"):
             watchlist = get_active_watchlist(self.settings)
+        adaptive_rows = [dict(row) for row in fetch_rows_by_sql(conn, "SELECT * FROM adaptive_weight_history WHERE date(ts) BETWEEN ? AND ? ORDER BY id DESC LIMIT 30", (period_start, period_end))]
+        style_rows = [dict(row) for row in fetch_rows_by_sql(conn, "SELECT * FROM style_profile_history WHERE date(ts) BETWEEN ? AND ? ORDER BY id DESC LIMIT 20", (period_start, period_end))]
+        decision_rows = [dict(row) for row in fetch_rows_by_sql(conn, "SELECT * FROM decision_snapshots WHERE date(ts) BETWEEN ? AND ? ORDER BY id DESC LIMIT 50", (period_start, period_end))]
         return {
             "report_scope": report_scope,
             "label": label,
@@ -74,6 +77,9 @@ class ReportService:
             "phase_logs": phase_logs,
             "tomorrow_actions": tomorrow_actions,
             "watchlist": watchlist,
+            "adaptive_history": adaptive_rows,
+            "style_profiles": style_rows,
+            "decision_snapshots": decision_rows,
             "summary": {
                 "phase_blocked_actions": len(intent_orders),
                 "actual_fills": len(actual_orders),
@@ -101,6 +107,8 @@ class ReportService:
         risk_logs = payload["risk_logs"]
         phase_logs = payload["phase_logs"]
         tomorrow_actions = payload["tomorrow_actions"]
+        adaptive_rows = payload.get("adaptive_history") or []
+        style_rows = payload.get("style_profiles") or []
         summary = payload["summary"]
         runtime_metrics = evaluation.get("metadata_json")
         runtime_stats = {}
@@ -177,6 +185,19 @@ class ReportService:
                 lines.append(f"- [{row['level']}] {row['module']}：{row['message']}")
         else:
             lines.append("- 无告警")
+        lines.append("")
+        lines.append("## AI 风格与自适应调整")
+        if style_rows:
+            latest_style = style_rows[0]
+            lines.append(f"- 当前 AI 风格：{latest_style.get('style')} / 持有偏好 {latest_style.get('holding_preference')} / 风险等级 {latest_style.get('aggressiveness')}")
+            lines.append(f"- 风格说明：{latest_style.get('reason') or '无'}")
+        else:
+            lines.append("- 暂无 AI 风格记录")
+        if adaptive_rows:
+            for row in adaptive_rows[:8]:
+                lines.append(f"- {row['category']}::{row['key_name']} {float(row.get('old_value') or 0.0):.2f} → {float(row.get('new_value') or 0.0):.2f}：{row.get('reason') or ''}")
+        else:
+            lines.append("- 暂无自适应调整记录")
         lines.append("")
         lines.append("## 明日观察与准备动作")
         if tomorrow_actions:

@@ -32,7 +32,7 @@ def build_user_prompt(context: Mapping[str, object]) -> str:
     return (
         "请根据以下 A 股实时上下文生成结构化决策，不要省略字段。\n"
         "上下文如下：\n"
-        f"{json.dumps(dict(context), ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(dict(context), ensure_ascii=False, indent=2, default=str)}\n\n"
         "输出协议如下：\n"
         f"{json.dumps(OUTPUT_PROTOCOL, ensure_ascii=False, indent=2)}"
     )

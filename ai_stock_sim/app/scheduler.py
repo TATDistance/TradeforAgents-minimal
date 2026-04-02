@@ -8,8 +8,10 @@ from typing import Dict, List, Mapping
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from .action_planner import ActionPlanner
+from .adaptive_weight_service import AdaptiveWeightService
 from .ai_decision_engine import AIDecisionEngine
 from .ai_portfolio_manager import AIPortfolioManager
+from .decision_attribution_service import DecisionAttributionService
 from .decision_compare_service import DecisionCompareService
 from .decision_context_builder import DecisionContextBuilder
 from .decision_mode_router import AI_ENGINE_MODE, COMPARE_MODE, DecisionModeRouter, LEGACY_MODE
@@ -32,6 +34,8 @@ from .review_service import ReviewService
 from .risk_engine import RiskEngine
 from .settings import Settings, load_settings
 from .signal_fusion import SignalFusion
+from .style_profile_service import StyleProfileService
+from .strategy_evaluation_service import StrategyEvaluationService
 from .strategy_weight_service import StrategyWeightService
 from .strategy_engine import StrategyEngine
 from .trading_calendar_service import TradingCalendarService
@@ -51,6 +55,10 @@ class TradingScheduler:
         self.execution_gate_service = ExecutionGateService(self.settings)
         self.market_regime_service = MarketRegimeService(self.settings)
         self.strategy_weight_service = StrategyWeightService(self.settings)
+        self.strategy_evaluation_service = StrategyEvaluationService(self.settings)
+        self.adaptive_weight_service = AdaptiveWeightService(self.settings, strategy_evaluation_service=self.strategy_evaluation_service)
+        self.style_profile_service = StyleProfileService(self.settings)
+        self.decision_attribution_service = DecisionAttributionService(self.settings)
         self.strategy_engine = StrategyEngine(self.settings, self.market_data)
         self.signal_fusion = SignalFusion(self.settings)
         self.decision_context_builder = DecisionContextBuilder(self.settings)
@@ -135,6 +143,12 @@ class TradingScheduler:
             portfolio_feedback = build_portfolio_feedback(conn, self.settings)
             market_regime = self.market_regime_service.evaluate(universe_result.snapshot, portfolio_feedback)
             self.market_regime_service.save_state(market_regime)
+            adaptive_weights = self.adaptive_weight_service.get_current_weights(conn)
+            style_profile = self.style_profile_service.determine_style(
+                market_regime.model_dump(),
+                portfolio_feedback=portfolio_feedback,
+                adaptive_weights=adaptive_weights,
+            )
             strategy_weights = self.strategy_weight_service.resolve_weights(market_regime, portfolio_feedback)
             runtime_watchlist = load_runtime_watchlist(self.settings)
             watchlist_scan_result: Dict[str, object] = {"scan_time": "", "candidates": [], "reason": ""}
@@ -318,6 +332,8 @@ class TradingScheduler:
                         portfolio_feedback,
                         phase_state,
                         execution_gate,
+                        adaptive_weights=adaptive_weights,
+                        style_profile=style_profile.model_dump(),
                     )
                     try:
                         engine_decisions = self.ai_decision_engine.decide_batch(
@@ -374,6 +390,14 @@ class TradingScheduler:
                             position_qty=int(position_detail.get("qty", 0) or 0) if isinstance(position_detail, Mapping) else 0,
                             cash_pct=float(portfolio_feedback.get("cash_pct", 0.0) or 0.0),
                         )
+                        if str(decision.action) != "HOLD" or float(decision.setup_score or 0.0) >= self.settings.scoring.min_setup_score_to_watch:
+                            self.decision_attribution_service.record_decision_snapshot(
+                                conn,
+                                context=decision_contexts.get(symbol) or {"symbol": symbol},
+                                action=decision.model_dump(),
+                                market_regime=market_regime.regime,
+                                style_profile=style_profile.style,
+                            )
                     runtime_states = self.realtime_engine.state_store.export()
                 else:
                     engine_actions = []
@@ -498,9 +522,26 @@ class TradingScheduler:
 
             write_account_snapshot(conn, snapshot)
             portfolio_feedback = build_portfolio_feedback(conn, self.settings)
+            self.decision_attribution_service.backfill_trade_results(conn, lookback_days=max(3, int(self.settings.adaptive.evaluation_window_days or 5)))
             if self._should_persist_evaluation(trade_date, phase_state.phase, execution_events):
                 self.evaluation_service.persist_evaluations(conn, reference_date=trade_date)
                 self._last_evaluation_trade_date = trade_date
+            adaptive_update = adaptive_weights
+            if phase_state.phase == "POST_CLOSE" and self.settings.adaptive.enabled:
+                adaptive_update = self.adaptive_weight_service.update_strategy_weights(conn)
+                style_profile = self.style_profile_service.determine_style(
+                    market_regime.model_dump(),
+                    portfolio_feedback=portfolio_feedback,
+                    adaptive_weights=adaptive_update,
+                )
+                self.style_profile_service.save(conn, style_profile)
+            elif phase_state.phase in {"CONTINUOUS_AUCTION_AM", "CONTINUOUS_AUCTION_PM"} and datetime.now().minute == 0:
+                style_profile = self.style_profile_service.determine_style(
+                    market_regime.model_dump(),
+                    portfolio_feedback=portfolio_feedback,
+                    adaptive_weights=adaptive_weights,
+                )
+                self.style_profile_service.save(conn, style_profile)
             if self.settings.evaluation.report_auto_generate and execution_gate.can_generate_report and phase_state.phase == "POST_CLOSE" and self._last_report_trade_date != trade_date:
                 self.report_service.export_daily_report(conn, trade_date)
                 current_day = datetime.fromisoformat(trade_date).date()
@@ -534,6 +575,13 @@ class TradingScheduler:
                 planned_actions=planned_actions,
                 risk_results=risk_results,
                 portfolio_feedback=portfolio_feedback,
+                adaptive_weights=adaptive_update,
+                style_profile=style_profile.model_dump(),
+                strategy_performance=self.strategy_evaluation_service.evaluate_strategy_performance(
+                    conn,
+                    window_days=min(3, int(self.settings.adaptive.evaluation_window_days or 5)),
+                ),
+                bad_decisions=self.decision_attribution_service.analyze_bad_decisions(conn, limit=10),
                 final_signals=final_signals,
                 runtime_watchlist=runtime_watchlist,
                 watchlist_scan_result=watchlist_scan_result,
@@ -677,6 +725,10 @@ class TradingScheduler:
         planned_actions,
         risk_results,
         portfolio_feedback,
+        adaptive_weights: Dict[str, object],
+        style_profile: Dict[str, object],
+        strategy_performance: Dict[str, object],
+        bad_decisions: List[Dict[str, object]],
         final_signals: List[FinalSignal],
         runtime_watchlist: Dict[str, object],
         watchlist_scan_result: Dict[str, object],
@@ -704,6 +756,10 @@ class TradingScheduler:
             "final_actions": [action.model_dump() for action in planned_actions],
             "risk_results": risk_results,
             "portfolio_feedback": portfolio_feedback,
+            "adaptive_weights": adaptive_weights,
+            "style_profile": style_profile,
+            "strategy_performance": strategy_performance,
+            "bad_decisions": bad_decisions,
             "final_signals": [signal.model_dump() for signal in final_signals],
             "runtime_watchlist": runtime_watchlist,
             "watchlist_scan": watchlist_scan_result,

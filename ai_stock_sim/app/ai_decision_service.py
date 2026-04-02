@@ -15,6 +15,10 @@ class AIDecisionService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
 
+    @staticmethod
+    def _safe_json(payload: object) -> str:
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
     def load_research_decision(self, symbol: str, analysis_date: str) -> Optional[AIDecision]:
         return self._load_decision_file(symbol, analysis_date)
 
@@ -49,7 +53,7 @@ class AIDecisionService:
                 approved=True,
                 reason="AI 审批已关闭，直接沿用策略信号。",
                 source_mode="disabled",
-                context_json=json.dumps(context, ensure_ascii=False),
+                context_json=self._safe_json(context),
                 context_summary=self._summarize_context(context),
             )
 
@@ -67,10 +71,10 @@ class AIDecisionService:
                 approved=True,
                 reason="未找到 AI 结果，已降级为无 AI 审批模式。",
                 source_mode="fallback_no_ai",
-                context_json=json.dumps(context, ensure_ascii=False),
+                context_json=self._safe_json(context),
                 context_summary=self._summarize_context(context),
             )
-        decision.context_json = json.dumps(context, ensure_ascii=False)
+        decision.context_json = self._safe_json(context)
         decision.context_summary = self._summarize_context(context)
         return decision
 
