@@ -105,6 +105,12 @@ Invoke-Step "Cleaning old Windows build output" {
 
 Invoke-Step "Running PyInstaller onedir build" {
     & $PythonExe -m PyInstaller $SpecFile --noconfirm --clean --distpath $DistRoot --workpath $BuildRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller build failed with exit code $LASTEXITCODE"
+    }
+    if (-not (Test-Path $PyInstallerOutput)) {
+        throw "PyInstaller output directory not found: $PyInstallerOutput"
+    }
 }
 
 Invoke-Step "Preparing no-install bundle" {

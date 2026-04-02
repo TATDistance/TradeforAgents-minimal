@@ -6,8 +6,8 @@ from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WINDOWS_PACKAGING_ROOT = PROJECT_ROOT / "packaging" / "windows"
+WINDOWS_PACKAGING_ROOT = Path(globals().get("SPECPATH", Path.cwd())).resolve()
+PROJECT_ROOT = WINDOWS_PACKAGING_ROOT.parents[1]
 
 datas = []
 datas += collect_data_files("streamlit", include_py_files=False)
