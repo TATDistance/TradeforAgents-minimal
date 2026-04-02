@@ -148,6 +148,22 @@ def _wait_for_port(host: str, port: int, timeout_seconds: int) -> bool:
     return False
 
 
+def _wait_for_service(
+    host: str,
+    port: int,
+    timeout_seconds: int,
+    process: subprocess.Popen[bytes] | None = None,
+) -> tuple[bool, bool]:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if _port_open(host, port):
+            return True, False
+        if process is not None and process.poll() is not None:
+            return False, True
+        time.sleep(0.5)
+    return False, False
+
+
 def _log_file(runtime_root: Path, role: str) -> Path:
     return _runtime_paths(runtime_root)["logs_dir"] / f"{role}_launcher.log"
 
@@ -210,12 +226,16 @@ def _launch_main(engine: bool, dashboard: bool, no_browser: bool, console: bool,
 
     if not _port_open(WEB_HOST, WEB_PORT):
         print("[launcher] starting 8600 homepage...")
-        _launch_detached(resource_root, runtime_root, "web", console=console)
+        web_process = _launch_detached(resource_root, runtime_root, "web", console=console)
     else:
         print("[launcher] 8600 already running on port 8600")
+        web_process = None
 
-    if not _wait_for_port(WEB_HOST, WEB_PORT, timeout_seconds):
+    web_ready, web_exited = _wait_for_service(WEB_HOST, WEB_PORT, timeout_seconds, web_process)
+    if not web_ready:
         print(f"[launcher] 8600 failed to open within {timeout_seconds}s")
+        if web_exited:
+            print("[launcher] 8600 process exited before the port became ready")
         log_tail = _read_tail(_log_file(runtime_root, "web")).strip()
         if log_tail:
             print("[launcher] recent web log:")
@@ -229,11 +249,20 @@ def _launch_main(engine: bool, dashboard: bool, no_browser: bool, console: bool,
     if dashboard:
         if not _port_open(DASHBOARD_HOST, DASHBOARD_PORT):
             print("[launcher] starting 8610 dashboard...")
-            _launch_detached(resource_root, runtime_root, "dashboard", console=console)
+            dashboard_process = _launch_detached(resource_root, runtime_root, "dashboard", console=console)
         else:
             print("[launcher] 8610 already running on port 8610")
-        if not _wait_for_port(DASHBOARD_HOST, DASHBOARD_PORT, timeout_seconds):
+            dashboard_process = None
+        dashboard_ready, dashboard_exited = _wait_for_service(
+            DASHBOARD_HOST,
+            DASHBOARD_PORT,
+            timeout_seconds,
+            dashboard_process,
+        )
+        if not dashboard_ready:
             print(f"[launcher] 8610 failed to open within {timeout_seconds}s")
+            if dashboard_exited:
+                print("[launcher] 8610 process exited before the port became ready")
             log_tail = _read_tail(_log_file(runtime_root, "dashboard")).strip()
             if log_tail:
                 print("[launcher] recent dashboard log:")
