@@ -2,18 +2,27 @@
 
 from pathlib import Path
 
-from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 WINDOWS_PACKAGING_ROOT = Path(globals().get("SPECPATH", Path.cwd())).resolve()
 PROJECT_ROOT = WINDOWS_PACKAGING_ROOT.parents[1]
 
+
+def collect_tree(root: Path, prefix: str):
+    entries = []
+    for path in root.rglob("*"):
+        if path.is_file():
+            relative_parent = path.relative_to(root).parent
+            target_dir = Path(prefix) / relative_parent
+            entries.append((str(path), str(target_dir).replace("\\", "/")))
+    return entries
+
 datas = []
 datas += collect_data_files("streamlit", include_py_files=False)
-datas += Tree(str(PROJECT_ROOT / "ai_stock_sim" / "config"), prefix="ai_stock_sim/config").toc
-datas += Tree(str(PROJECT_ROOT / "ai_stock_sim" / "data" / "calendars"), prefix="ai_stock_sim/data/calendars").toc
-datas += Tree(str(PROJECT_ROOT / "docs"), prefix="docs").toc
+datas += collect_tree(PROJECT_ROOT / "ai_stock_sim" / "config", "ai_stock_sim/config")
+datas += collect_tree(PROJECT_ROOT / "ai_stock_sim" / "data" / "calendars", "ai_stock_sim/data/calendars")
+datas += collect_tree(PROJECT_ROOT / "docs", "docs")
 datas += [
     (str(PROJECT_ROOT / "README.md"), "."),
     (str(PROJECT_ROOT / ".env.example"), "."),
