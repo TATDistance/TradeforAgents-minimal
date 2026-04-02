@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -124,6 +125,20 @@ class UniverseService:
         cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
+    def _should_bypass_remote_proxy() -> bool:
+        override = os.environ.get("TRADEFORAGENTS_BYPASS_REMOTE_PROXY", "").strip().lower()
+        if override in {"1", "true", "yes", "on"}:
+            return True
+        if override in {"0", "false", "no", "off"}:
+            return False
+        return os.name != "nt"
+
+    def _remote_opener(self) -> urllib.request.OpenerDirector:
+        if self._should_bypass_remote_proxy():
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return urllib.request.build_opener()
+
+    @staticmethod
     def _to_float(value: object, default: float = 0.0) -> float:
         try:
             if value in ("-", None, ""):
@@ -142,7 +157,7 @@ class UniverseService:
         query = urllib.parse.urlencode(params)
         request = urllib.request.Request("{0}?{1}".format(url, query), headers=EASTMONEY_HEADERS)
         try:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            opener = self._remote_opener()
             with opener.open(request, timeout=self.timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
@@ -184,6 +199,61 @@ class UniverseService:
             prev_close=prev_close,
             data_source="tradeforagents_local",
         )
+
+    def _local_quote_from_auto_candidate(self, row: Dict[str, object]) -> Optional[UniverseQuote]:
+        try:
+            symbol = str(row.get("symbol") or "").strip()
+            if len(symbol) != 6 or not symbol.isdigit():
+                return None
+            metrics = row.get("metrics") or {}
+            if not isinstance(metrics, dict):
+                return None
+            last_price = self._to_float(metrics.get("last_price"))
+            pct_change = self._to_float(metrics.get("pct_change"))
+            avg_amount = self._to_float(metrics.get("avg_amount_20d"))
+            if last_price <= 0 or avg_amount <= 0:
+                return None
+            prev_close = last_price / (1.0 + pct_change / 100.0) if abs(pct_change) < 99 else last_price
+            if prev_close <= 0:
+                prev_close = last_price
+            volume = avg_amount / max(last_price, 0.01)
+            return UniverseQuote(
+                symbol=symbol,
+                market=str(row.get("market") or infer_market(symbol)),
+                name=str(row.get("name") or symbol),
+                last_price=last_price,
+                pct_change=pct_change,
+                volume=volume,
+                amount=avg_amount,
+                open_price=last_price,
+                high_price=last_price,
+                low_price=last_price,
+                prev_close=prev_close,
+                data_source="tradeforagents_recent_candidates",
+            )
+        except Exception:
+            return None
+
+    def _candidate_report_quotes(self, limit: int = 200) -> List[UniverseQuote]:
+        quotes: Dict[str, UniverseQuote] = {}
+        report_dir = self.config.reports_dir
+        if not report_dir.exists():
+            return []
+        for candidate_path in sorted(report_dir.glob("auto_candidates_*.json"), reverse=True)[:3]:
+            try:
+                payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for row in payload.get("selected") or []:
+                if not isinstance(row, dict):
+                    continue
+                quote = self._local_quote_from_auto_candidate(row)
+                if quote is None:
+                    continue
+                current = quotes.get(quote.symbol)
+                if current is None or quote.amount > current.amount:
+                    quotes[quote.symbol] = quote
+        return sorted(quotes.values(), key=lambda item: item.amount, reverse=True)[:limit]
 
     def _fetch_universe_quotes_akshare(self, limit: int) -> UniverseFetchResult:
         if ak is None:
@@ -517,18 +587,29 @@ class UniverseService:
             if current is None or str(snapshot_path) > str(current):
                 latest_snapshots[ticker] = snapshot_path
 
-        quotes: List[UniverseQuote] = []
+        quotes_by_symbol: Dict[str, UniverseQuote] = {}
         for ticker, snapshot_path in latest_snapshots.items():
             quote = self._local_quote_from_snapshot(snapshot_path)
             if quote is not None:
-                quotes.append(quote)
+                quotes_by_symbol[ticker] = quote
 
+        for quote in self._candidate_report_quotes(limit=max(limit, 60)):
+            quotes_by_symbol.setdefault(quote.symbol, quote)
+
+        quotes = list(quotes_by_symbol.values())
         quotes.sort(key=lambda item: item.amount, reverse=True)
+        warnings = [
+            "已切换到本地候选池，结果仍可继续分析。",
+        ]
+        if any(item.data_source == "tradeforagents_recent_candidates" for item in quotes):
+            warnings.append("本地候选池已补入最近自动选股结果，可覆盖更多近期活跃标的。")
+        else:
+            warnings.append("当前主要使用本地已有分析结果，覆盖范围有限。")
         return UniverseFetchResult(
             quotes=quotes[:limit],
             source="tradeforagents_local",
             cache_path=None,
-            warnings=["使用本地已有分析结果作为候选池，覆盖范围有限。"],
+            warnings=warnings,
         )
 
     def fetch_universe_quotes(self, limit: int = 300, force_refresh: bool = False) -> UniverseFetchResult:
@@ -564,7 +645,10 @@ class UniverseService:
         except Exception as exc:
             local_result = self.load_local_result_universe(limit=limit)
             local_result.warnings = warnings + local_result.warnings
-            local_result.warnings.insert(0, "东财股票池抓取失败，已退回本地候选池: {0}".format(exc))
+            message = "东财股票池暂不可用，已退回本地候选池: {0}".format(exc)
+            if os.name == "nt" and "10013" in str(exc):
+                message = "Windows 当前网络未放行东财抓取，已自动退回本地候选池: {0}".format(exc)
+            local_result.warnings.insert(0, message)
             return local_result
 
         data = payload.get("data") or {}

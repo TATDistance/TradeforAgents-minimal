@@ -165,6 +165,21 @@ def _packaged_windows_runtime() -> bool:
     return bool(getattr(sys, "frozen", False) and os.name == "nt")
 
 
+def _should_bypass_remote_proxy() -> bool:
+    override = os.environ.get("TRADEFORAGENTS_BYPASS_REMOTE_PROXY", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return os.name != "nt"
+
+
+def _remote_opener() -> urllib.request.OpenerDirector:
+    if _should_bypass_remote_proxy():
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener()
+
+
 def _launcher_role_args(role: str) -> List[str]:
     return [sys.executable, role]
 
@@ -323,7 +338,7 @@ def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
     pending = [str(symbol).strip() for symbol in symbols if re.fullmatch(r"\d{6}", str(symbol).strip())]
     if not pending:
         return result
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener = _remote_opener()
     for symbol in pending:
         cached_name = SYMBOL_NAME_CACHE.get(symbol)
         if cached_name:
@@ -1096,8 +1111,6 @@ def _run_watchlist_task(task_id: str, req: WatchlistRequest) -> None:
         extra_env["DEEPSEEK_API_KEY"] = req.api_key.strip()
     if req.base_url.strip():
         extra_env["DEEPSEEK_BASE_URL"] = req.base_url.strip()
-    for proxy_key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
-        extra_env[proxy_key] = None
     _append_output(
         task_id,
         "[watchlist] 开始批量分析，共 {0} 只，模式={1}，方向缓存={2}天，强制全量={3}\n".format(
@@ -1184,8 +1197,6 @@ def _run_auto_pipeline_task(task_id: str, req: AutoPipelineRequest) -> None:
         extra_env["DEEPSEEK_API_KEY"] = req.api_key.strip()
     if req.base_url.strip():
         extra_env["DEEPSEEK_BASE_URL"] = req.base_url.strip()
-    for proxy_key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
-        extra_env[proxy_key] = None
 
     per_symbol_budget = int(req.request_timeout) * (6 * max(1, req.retries)) + 45
     total_budget = max(420, 180 + per_symbol_budget * max(1, req.top_n))

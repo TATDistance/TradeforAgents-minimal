@@ -183,7 +183,13 @@ def _load_snapshot_symbol_names(settings: Settings) -> Dict[str, str]:
 def _fetch_eastmoney_symbol_names(symbols: List[str]) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     session = requests.Session()
-    session.trust_env = False
+    proxy_override = os.environ.get("TRADEFORAGENTS_BYPASS_REMOTE_PROXY", "").strip().lower()
+    if proxy_override in {"1", "true", "yes", "on"}:
+        session.trust_env = False
+    elif proxy_override in {"0", "false", "no", "off"}:
+        session.trust_env = True
+    else:
+        session.trust_env = os.name == "nt"
     session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
     for symbol in symbols:
         code = str(symbol).strip()
