@@ -611,6 +611,30 @@ def _ai_stock_sim_status_payload() -> Dict[str, object]:
     }
 
 
+def _wait_for_engine_ready(timeout_seconds: float = 12.0, stable_seconds: float = 2.0) -> Tuple[bool, str]:
+    deadline = time.time() + timeout_seconds
+    stable_since: float | None = None
+    while time.time() < deadline:
+        engine_running, engine_pid = _service_status(AI_STOCK_SIM_ENGINE_PID)
+        live_state = _read_json(AI_STOCK_SIM_HOME / "data" / "cache" / "live_decision_state.json")
+        if _heartbeat_running(live_state.get("ts"), refresh_interval_seconds=10):
+            return True, "实时引擎已产生新心跳"
+        if engine_running:
+            if stable_since is None:
+                stable_since = time.time()
+            elif time.time() - stable_since >= stable_seconds:
+                return True, "实时引擎进程稳定运行，PID={0}".format(engine_pid)
+        else:
+            stable_since = None
+        time.sleep(0.4)
+    log_tail = _read_tail(AI_STOCK_SIM_ENGINE_LOG, limit=1600).strip()
+    if log_tail:
+        lines = [line for line in log_tail.splitlines() if line.strip()]
+        snippet = "\n".join(lines[-10:])
+        return False, "实时引擎启动后未稳定运行，请查看日志。\n最近日志:\n{0}".format(snippet)
+    return False, "实时引擎启动后未在预期时间内进入稳定运行状态"
+
+
 def _latest_share_cards(limit: int = 12) -> List[Dict[str, object]]:
     cards: List[Dict[str, object]] = []
     symbol_names = _symbol_name_map()
@@ -2849,6 +2873,9 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
     )
     if not ok:
         raise HTTPException(status_code=500, detail=engine_message)
+    engine_ready, engine_ready_message = _wait_for_engine_ready()
+    if not engine_ready:
+        raise HTTPException(status_code=500, detail=engine_ready_message)
     _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
     ok, dashboard_message = _start_background_service(
         _launcher_role_args("dashboard") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
@@ -2862,7 +2889,7 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
     if not ok:
         dashboard_warning = dashboard_message
     return {
-        "message": "已完成监控池同步并启动实时引擎",
+        "message": engine_ready_message or "已完成监控池同步并启动实时引擎",
         "watchlist": watchlist["active"],
         "dashboard_warning": dashboard_warning,
         "status": _ai_stock_sim_status_payload(),
@@ -2879,7 +2906,10 @@ def start_ai_stock_sim_engine() -> Dict[str, object]:
     )
     if not ok:
         raise HTTPException(status_code=500, detail=message)
-    return {"message": message, "status": _ai_stock_sim_status_payload()}
+    engine_ready, engine_ready_message = _wait_for_engine_ready()
+    if not engine_ready:
+        raise HTTPException(status_code=500, detail=engine_ready_message)
+    return {"message": engine_ready_message, "status": _ai_stock_sim_status_payload()}
 
 
 @app.post("/api/ai-stock-sim/engine/stop")
