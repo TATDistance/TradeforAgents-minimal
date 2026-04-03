@@ -837,7 +837,7 @@ class TradingScheduler:
 
     def _write_accounts_summary(self, summaries: List[Dict[str, object]]) -> None:
         primary_account = get_primary_simulation_account(self.settings)
-        primary_path = self.settings.account_live_state_path(primary_account.account_id)
+        primary_path = self.settings.resolved_account_live_state_path(primary_account.account_id)
         if primary_path.exists():
             try:
                 payload = json.loads(primary_path.read_text(encoding="utf-8"))
