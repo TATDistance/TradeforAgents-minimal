@@ -127,9 +127,10 @@ capital_profile:
   small_account_equity_threshold: 20000
   small_account_buy_threshold_bonus: 0.08
   small_account_watch_threshold_bonus: 0.05
-  small_account_affordable_lot_pct: 0.12
-  small_account_block_lot_pct: 0.18
-  small_account_position_scale: 0.7
+  small_account_affordable_lot_pct: 0.30
+  small_account_block_lot_pct: 0.40
+  small_account_position_scale: 1.0
+  small_account_max_single_position_pct: 0.40
 strategy:
   momentum_lookback: 20
   momentum_min_score: 0.55

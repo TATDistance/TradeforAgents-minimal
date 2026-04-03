@@ -247,6 +247,7 @@ class CapitalProfileConfig:
     small_account_affordable_lot_pct: float = 0.12
     small_account_block_lot_pct: float = 0.18
     small_account_position_scale: float = 0.7
+    small_account_max_single_position_pct: float = 0.40
 
 
 @dataclass
@@ -476,6 +477,14 @@ def resolve_simulation_accounts(settings: Settings) -> List[SimulationAccountCon
 def get_primary_simulation_account(settings: Settings) -> SimulationAccountConfig:
     accounts = resolve_simulation_accounts(settings)
     return next((account for account in accounts if account.is_primary), accounts[0])
+
+
+def resolve_max_single_position_pct(settings: Settings, equity: float | None = None) -> float:
+    base_limit = float(settings.max_single_position_pct)
+    current_equity = max(0.0, float(equity or 0.0))
+    if 0.0 < current_equity <= float(settings.capital_profile.small_account_equity_threshold):
+        return max(base_limit, float(settings.capital_profile.small_account_max_single_position_pct or base_limit))
+    return base_limit
 
 
 def load_settings(project_root: Path | None = None) -> Settings:

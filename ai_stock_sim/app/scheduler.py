@@ -32,7 +32,14 @@ from .report_service import ReportService
 from .realtime_engine import RealtimeEngine
 from .review_service import ReviewService
 from .risk_engine import RiskEngine
-from .settings import Settings, SimulationAccountConfig, get_primary_simulation_account, load_settings, resolve_simulation_accounts
+from .settings import (
+    Settings,
+    SimulationAccountConfig,
+    get_primary_simulation_account,
+    load_settings,
+    resolve_max_single_position_pct,
+    resolve_simulation_accounts,
+)
 from .signal_fusion import SignalFusion
 from .style_profile_service import StyleProfileService
 from .strategy_evaluation_service import StrategyEvaluationService
@@ -720,7 +727,7 @@ class TradingScheduler:
                     "can_sell_qty": int(portfolio.current_positions.get(symbol, {}).get("can_sell_qty", 0)),
                 },
                 "risk_constraints": {
-                    "max_single_position_pct": self.settings.max_single_position_pct,
+                    "max_single_position_pct": resolve_max_single_position_pct(self.settings, portfolio.equity),
                     "max_daily_open_position_pct": self.settings.max_daily_open_position_pct,
                     "max_drawdown_pct": self.settings.max_drawdown_pct,
                     "current_drawdown": portfolio.drawdown,

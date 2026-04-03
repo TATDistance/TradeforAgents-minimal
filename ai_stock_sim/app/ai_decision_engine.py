@@ -6,7 +6,7 @@ from typing import Dict, Mapping, Sequence
 
 from .ai_engine_protocol import AIDecisionEngineOutput, normalize_engine_output
 from .score_service import ScoreService
-from .settings import Settings, load_settings
+from .settings import Settings, load_settings, resolve_max_single_position_pct
 
 
 class AIDecisionEngine:
@@ -67,6 +67,10 @@ class AIDecisionEngine:
             warnings.append(
                 "小资金账户买一手约占总资产 {0:.1f}%".format(float(capital_profile["lot_ratio"]) * 100.0)
             )
+        max_single_position_pct = float(
+            risk_constraints.get("max_single_position_pct")
+            or resolve_max_single_position_pct(self.settings, float(portfolio_state.get("equity") or 0.0))
+        )
 
         risk_mode = self._resolve_risk_mode(regime_name, portfolio_risk_mode, float(portfolio_state.get("drawdown") or 0.0))
         has_position = bool(position_state.get("has_position"))
@@ -283,17 +287,20 @@ class AIDecisionEngine:
             )
 
         if direction == "LONG" and execution_score >= buy_threshold:
-            base_pct = min(self.settings.max_single_position_pct, 0.06 + execution_score * 0.12)
+            base_pct = min(max_single_position_pct, 0.06 + execution_score * 0.12)
             if risk_mode == "DEFENSIVE":
                 base_pct *= 0.65
             base_pct *= max(0.4, min(1.0, float(portfolio_state.get("cash_pct") or 0.0) + 0.15))
             if capital_profile["is_small_account"]:
                 base_pct *= float(capital_profile["position_scale"])
+                lot_ratio = float(capital_profile["lot_ratio"] or 0.0)
+                if 0.0 < lot_ratio <= max_single_position_pct:
+                    base_pct = max(base_pct, min(max_single_position_pct, lot_ratio * 1.02))
             return normalize_engine_output(
                 {
                     "symbol": symbol,
                     "action": "BUY",
-                    "position_pct": round(max(0.03, min(base_pct, self.settings.max_single_position_pct)), 4),
+                    "position_pct": round(max(0.03, min(base_pct, max_single_position_pct)), 4),
                     "confidence": min(0.94, 0.58 + execution_score * 0.25),
                     "ai_score": round(ai_score, 4),
                     "setup_score": round(setup_score, 4),
@@ -427,16 +434,19 @@ class AIDecisionEngine:
                 >= float(resolved_capital_profile.get("block_lot_pct") or 1.0)
             )
         ):
-            base_pct = min(self.settings.max_single_position_pct, 0.06 + max(execution_score, setup_score) * 0.12)
+            base_pct = min(max_single_position_pct, 0.06 + max(execution_score, setup_score) * 0.12)
             if risk_mode == "DEFENSIVE":
                 base_pct *= 0.65
             if resolved_capital_profile.get("is_small_account"):
                 base_pct *= float(resolved_capital_profile.get("position_scale") or 1.0)
+                lot_ratio = float(resolved_capital_profile.get("lot_ratio") or 0.0)
+                if 0.0 < lot_ratio <= max_single_position_pct:
+                    base_pct = max(base_pct, min(max_single_position_pct, lot_ratio * 1.02))
             return normalize_engine_output(
                 {
                     "symbol": symbol,
                     "action": "PREPARE_BUY",
-                    "position_pct": round(max(0.03, min(base_pct, self.settings.max_single_position_pct)), 4),
+                    "position_pct": round(max(0.03, min(base_pct, max_single_position_pct)), 4),
                     "confidence": min(0.92, 0.58 + setup_score * 0.2),
                     "ai_score": round(ai_score, 4),
                     "setup_score": round(setup_score, 4),

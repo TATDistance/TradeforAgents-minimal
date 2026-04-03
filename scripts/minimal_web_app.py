@@ -2155,13 +2155,14 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
         if(!resp.ok){
           throw new Error(formatErrorDetail(data.detail));
         }
+        let dashboardWarning = '';
         result = await fetchJsonSafe('/api/ai-stock-sim/dashboard/start', {method:'POST'});
         resp = result.resp;
         data = result.data;
         if(!resp.ok){
-          throw new Error(formatErrorDetail(data.detail));
+          dashboardWarning = '控制台启动未完成：' + formatErrorDetail(data.detail);
         }
-        simStatus.textContent = '实时 AI 决策中心已启动。现在它会优先沿用最新自动候选池；需要更完整页面时，再点“打开实时控制台”。';
+        simStatus.textContent = '实时 AI 决策中心已启动。现在它会优先沿用最新自动候选池；需要更完整页面时，再点“打开实时控制台”。' + (dashboardWarning ? (' ' + dashboardWarning) : '');
         await loadAiStockSimStatus();
       }catch(err){
         simStatus.textContent = '一键启动失败：' + String(err);
@@ -2857,11 +2858,13 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
         health_timeout_seconds=20.0,
         truncate_log=True,
     )
+    dashboard_warning = ""
     if not ok:
-        raise HTTPException(status_code=500, detail=dashboard_message)
+        dashboard_warning = dashboard_message
     return {
-        "message": "已完成监控池同步并启动实时引擎/调试面板",
+        "message": "已完成监控池同步并启动实时引擎",
         "watchlist": watchlist["active"],
+        "dashboard_warning": dashboard_warning,
         "status": _ai_stock_sim_status_payload(),
     }
 

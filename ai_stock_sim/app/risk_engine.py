@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from .models import ExecutionGateState, FinalSignal, MarketPhaseState, MarketQuote, PlannedAction, RiskCheckResult
-from .settings import Settings, load_settings
+from .settings import Settings, load_settings, resolve_max_single_position_pct
 
 
 BOARD_LOT = 100
@@ -27,6 +27,7 @@ class RiskEngine:
         self.settings = settings or load_settings()
 
     def evaluate(self, signal: FinalSignal, quote: MarketQuote, portfolio: PortfolioState) -> RiskCheckResult:
+        max_single_position_pct = resolve_max_single_position_pct(self.settings, portfolio.equity)
         if portfolio.drawdown >= self.settings.max_drawdown_pct:
             return RiskCheckResult(allowed=False, adjusted_qty=0, adjusted_position_pct=0.0, reject_reason="最大回撤熔断已触发", risk_state="REJECT", final_action="HOLD", risk_mode="RISK_OFF")
 
@@ -40,7 +41,7 @@ class RiskEngine:
             return RiskCheckResult(allowed=False, adjusted_qty=0, adjusted_position_pct=0.0, reject_reason="接近跌停，卖出成交风险过高", risk_state="REJECT", final_action="SELL")
 
         current_value = float(portfolio.current_positions.get(signal.symbol, {}).get("market_value", 0.0))
-        single_cap = max(0.0, portfolio.equity * self.settings.max_single_position_pct - current_value)
+        single_cap = max(0.0, portfolio.equity * max_single_position_pct - current_value)
         daily_cap = max(0.0, portfolio.equity * self.settings.max_daily_open_position_pct - portfolio.today_open_ratio * portfolio.equity)
         target_value = min(portfolio.equity * signal.position_pct, single_cap, daily_cap, portfolio.cash)
         if signal.action == "SELL":
@@ -56,7 +57,7 @@ class RiskEngine:
         qty = self._lot_round_down(raw_qty)
         if qty <= 0:
             min_lot_cost = BOARD_LOT * max(signal.entry_price, 0.0)
-            single_cap_limit = max(0.0, portfolio.equity * self.settings.max_single_position_pct)
+            single_cap_limit = max(0.0, portfolio.equity * max_single_position_pct)
             daily_cap_limit = max(0.0, portfolio.equity * self.settings.max_daily_open_position_pct - portfolio.today_open_ratio * portfolio.equity)
             if min_lot_cost > single_cap + 1e-6:
                 reject_reason = (

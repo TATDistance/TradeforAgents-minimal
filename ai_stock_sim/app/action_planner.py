@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable, List, Mapping, Sequence, Tuple
 
 from .models import ExecutionGateState, MarketPhaseState, PlannedAction, PortfolioManagerAction
-from .settings import Settings, load_settings
+from .settings import Settings, load_settings, resolve_max_single_position_pct
 
 
 BOARD_LOT = 100
@@ -172,12 +172,13 @@ class ActionPlanner:
             return [], 0, float(action.position_pct or 0.0)
 
         one_lot_cost = BOARD_LOT * price
+        max_single_position_pct = resolve_max_single_position_pct(self.settings, equity)
         current_value = float(position_map.get(action.symbol, {}).get("market_value", 0.0) or 0.0)
-        single_cap = max(0.0, equity * self.settings.max_single_position_pct - current_value)
+        single_cap = max(0.0, equity * max_single_position_pct - current_value)
         daily_cap = max(0.0, equity * self.settings.max_daily_open_position_pct - today_open_ratio * equity)
         required_budget = one_lot_cost * 1.01
         requested_pct = float(action.position_pct or 0.0)
-        required_pct = min(self.settings.max_single_position_pct, max(requested_pct, required_budget / max(equity, 1.0)))
+        required_pct = min(max_single_position_pct, max(requested_pct, required_budget / max(equity, 1.0)))
 
         # If one lot itself breaches portfolio caps, selling existing positions cannot solve it.
         if required_budget > single_cap + 1e-6 or required_budget > daily_cap + 1e-6:

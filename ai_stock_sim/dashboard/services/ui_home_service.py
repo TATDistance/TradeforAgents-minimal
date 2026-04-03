@@ -22,6 +22,7 @@ try:
         Settings,
         get_primary_simulation_account,
         load_settings,
+        resolve_max_single_position_pct,
         resolve_simulation_accounts,
     )
     from ai_stock_sim.app.strategy_evaluation_service import StrategyEvaluationService
@@ -29,7 +30,7 @@ try:
     from ai_stock_sim.app.watchlist_sync_service import load_runtime_watchlist
 except ModuleNotFoundError:  # pragma: no cover - test/runtime import compatibility
     from app.db import connect_db, fetch_rows_by_sql, initialize_simulation_account_dbs, seed_simulation_accounts
-    from app.settings import Settings, get_primary_simulation_account, load_settings, resolve_simulation_accounts
+    from app.settings import Settings, get_primary_simulation_account, load_settings, resolve_max_single_position_pct, resolve_simulation_accounts
     from app.strategy_evaluation_service import StrategyEvaluationService
     from app.watchlist_service import get_active_watchlist
     from app.watchlist_sync_service import load_runtime_watchlist
@@ -394,13 +395,14 @@ def _build_observe_candidates(
         latest_price = float(((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("latest_price") or 0.0))
         if equity > 0 and latest_price > 0:
             one_lot_cost = latest_price * 100
+            max_single_position_pct = resolve_max_single_position_pct(settings, equity)
             current_value = 0.0
             positions_detail = (portfolio_feedback or {}).get("positions_detail") or []
             for pos in positions_detail:
                 if isinstance(pos, dict) and str(pos.get("symbol") or "") == symbol:
                     current_value = float(pos.get("market_value") or 0.0)
                     break
-            single_cap = max(0.0, equity * settings.max_single_position_pct - current_value)
+            single_cap = max(0.0, equity * max_single_position_pct - current_value)
             daily_cap = max(0.0, equity * settings.max_daily_open_position_pct - today_open_ratio * equity)
             if one_lot_cost > single_cap + 1e-6:
                 reasons.append(

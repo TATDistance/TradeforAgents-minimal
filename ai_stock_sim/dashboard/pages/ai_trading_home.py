@@ -1291,7 +1291,8 @@ def render_ai_trading_home(build_tag: str) -> str:
         if(!result.resp.ok){
           throw new Error(formatErrorDetail(result.data.detail));
         }
-        homeStartStatus.textContent = '实时 AI 决策中心已启动，监控池来源：' + (((result.data || {}).watchlist || {}).source || '未知') + '。';
+        const dashboardWarning = ((result.data || {}).dashboard_warning || '').trim();
+        homeStartStatus.textContent = '实时 AI 决策中心已启动，监控池来源：' + (((result.data || {}).watchlist || {}).source || '未知') + '。' + (dashboardWarning ? (' 控制台稍后再开即可：' + dashboardWarning) : '');
         await loadHome();
       }catch(err){
         homeStartStatus.textContent = '一键启动失败：' + String(err);

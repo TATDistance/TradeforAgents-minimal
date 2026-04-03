@@ -5,7 +5,7 @@ from typing import Dict, Mapping, Sequence
 import pandas as pd
 
 from .models import ExecutionGateState, MarketPhaseState, MarketRegimeState, StrategyFeature
-from .settings import Settings, load_settings
+from .settings import Settings, load_settings, resolve_max_single_position_pct
 from strategies.common import atr, macd, rsi, safe_pct_change
 
 
@@ -58,7 +58,10 @@ class DecisionContextBuilder:
             },
             "position_state": position_state,
             "risk_constraints": {
-                "max_single_position_pct": self.settings.max_single_position_pct,
+                "max_single_position_pct": resolve_max_single_position_pct(
+                    self.settings,
+                    float(portfolio_feedback.get("equity", 0.0) or 0.0),
+                ),
                 "max_daily_open_position_pct": self.settings.max_daily_open_position_pct,
                 "max_drawdown_pct": self.settings.max_drawdown_pct,
                 "allow_new_buy": execution_gate.can_open_position and position_state.get("allow_new_buy", True),
