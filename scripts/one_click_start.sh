@@ -66,8 +66,7 @@ ensure_venv_and_deps() {
 
   if [[ "$current_hash" != "$installed_hash" ]]; then
     log "安装/更新依赖..."
-    "$VENV_DIR/bin/pip" install -U pip
-    "$VENV_DIR/bin/pip" install -r "$REQ_FILE"
+    "$VENV_DIR/bin/pip" install --disable-pip-version-check -r "$REQ_FILE"
     echo "$current_hash" >"$HASH_FILE"
     log "依赖安装完成"
   else
@@ -110,4 +109,3 @@ case "$mode" in
     exit 1
     ;;
 esac
-
