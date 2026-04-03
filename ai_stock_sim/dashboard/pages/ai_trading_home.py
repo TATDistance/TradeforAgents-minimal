@@ -1178,7 +1178,7 @@ def render_ai_trading_home(build_tag: str) -> str:
           {label:'总资产', value: fmtNum(account.equity), subvalue: '当前账户 ' + (account.account_name || data.current_account_name || '-')},
           {label:'现金比例', value: fmtPct(account.cash_ratio)},
           {label:'仓位', value: fmtPct(account.position_ratio)},
-          {label:'浮盈亏', value: fmtNum(account.unrealized_pnl), subvalue: '回撤 ' + fmtPct(account.drawdown)}
+          {label:'总盈亏', value: fmtNum(account.total_pnl), subvalue: '已实现 ' + fmtNum(account.realized_pnl) + ' ｜ 浮盈亏 ' + fmtNum(account.unrealized_pnl) + ' ｜ 回撤 ' + fmtPct(account.drawdown)}
         ]);
         renderReportLinks(data.report_links || {});
         renderStyleProfile(data.style_profile || {});

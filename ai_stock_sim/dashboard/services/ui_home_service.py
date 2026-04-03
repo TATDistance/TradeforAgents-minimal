@@ -1054,18 +1054,24 @@ def get_account_snapshot(account_id: str | None = None) -> Dict[str, object]:
     equity = float(row.get("equity") or 0.0)
     cash = float(row.get("cash") or 0.0)
     market_value = float(row.get("market_value") or 0.0)
+    initial_cash = float(current_account.initial_cash)
+    realized_pnl = float(row.get("realized_pnl") or 0.0)
+    unrealized_pnl = float(row.get("unrealized_pnl") or 0.0)
+    total_pnl = equity - initial_cash
     return {
         "account_id": current_account.account_id,
         "account_name": current_account.name,
         "is_primary": bool(current_account.is_primary),
-        "initial_cash": float(current_account.initial_cash),
+        "initial_cash": initial_cash,
         "cash": cash,
         "equity": equity,
         "market_value": market_value,
         "cash_ratio": (cash / equity) if equity > 0 else 0.0,
         "position_ratio": (market_value / equity) if equity > 0 else 0.0,
-        "realized_pnl": float(row.get("realized_pnl") or 0.0),
-        "unrealized_pnl": float(row.get("unrealized_pnl") or 0.0),
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": total_pnl,
+        "total_return": (total_pnl / initial_cash) if initial_cash > 0 else 0.0,
         "drawdown": float(row.get("drawdown") or 0.0),
         "ts": row.get("ts"),
     }
