@@ -141,7 +141,7 @@ class TradingScheduler:
                         level.lower(),
                         scoped_module,
                         "db_log_failed",
-                        message=message,
+                        original_message=message,
                         db_error=str(exc),
                     )
 
@@ -446,7 +446,7 @@ class TradingScheduler:
                     final_actions,
                     portfolio_feedback,
                 ):
-                    reviewed_actions, realtime_ai_reviews = self.realtime_ai_review_service.review_actions(
+                    reviewed_actions, realtime_ai_reviews = self.realtime_ai_review_service.request_reviews(
                         final_actions,
                         portfolio_feedback=portfolio_feedback,
                         market_regime=market_regime.model_dump(),

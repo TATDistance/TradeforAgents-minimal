@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import threading
 import time
 from typing import Dict, List, Mapping, Sequence, Tuple
 
@@ -15,6 +17,118 @@ class RealtimeAIReviewService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
         self._last_review_at: Dict[str, float] = {}
+        self._pending_reviews: set[str] = set()
+        self._review_results: Dict[str, Dict[str, object]] = {}
+        self._review_queue: queue.Queue[Dict[str, object]] = queue.Queue()
+        self._lock = threading.Lock()
+        self._worker_thread: threading.Thread | None = None
+
+    def request_reviews(
+        self,
+        actions: Sequence[PortfolioManagerAction],
+        *,
+        portfolio_feedback: Mapping[str, object],
+        market_regime: Mapping[str, object],
+        phase_state: Mapping[str, object],
+        snapshot_rows: Mapping[str, Mapping[str, object]],
+        decision_contexts: Mapping[str, Mapping[str, object]],
+        trade_date: str,
+        account_id: str,
+    ) -> Tuple[List[PortfolioManagerAction], List[Dict[str, object]]]:
+        if not self._enabled():
+            return list(actions), []
+
+        self._ensure_worker()
+        action_map = {str(action.symbol): action for action in actions}
+        updated = list(actions)
+        reviews: List[Dict[str, object]] = []
+        candidates = self._select_candidates(
+            actions=actions,
+            portfolio_feedback=portfolio_feedback,
+        )
+
+        for candidate in candidates:
+            review_key = self._review_key(candidate, account_id=account_id)
+            record = self._get_review_result(review_key)
+            review_status = str(record.get("status") or "PENDING").upper()
+            applied = False
+            reviewed_action = None
+            fallback_reason = ""
+            reason = ""
+            confidence = 0.0
+            latency_ms = int(record.get("latency_ms") or 0)
+
+            if review_status == "DONE":
+                review_payload = dict(record.get("review") or {})
+                reviewed_action = str(
+                    review_payload.get("final_action")
+                    or candidate.get("proposed_action")
+                    or "HOLD"
+                ).upper()
+                reason = str(review_payload.get("reason") or "")
+                confidence = float(review_payload.get("confidence") or 0.0)
+                if candidate["candidate_type"] == "action":
+                    original = action_map.get(str(candidate["symbol"]))
+                    if original is not None:
+                        revised = self._apply_review_to_action(original, review_payload, candidate)
+                        if revised is not None:
+                            updated = [
+                                revised if item.symbol == original.symbol and item.action == original.action else item
+                                for item in updated
+                            ]
+                            action_map[str(revised.symbol)] = revised
+                            applied = revised.model_dump() != original.model_dump()
+                else:
+                    inserted = self._build_action_from_holding_review(candidate, review_payload)
+                    if inserted is not None and inserted.symbol not in action_map:
+                        updated.append(inserted)
+                        action_map[str(inserted.symbol)] = inserted
+                        applied = True
+            else:
+                if review_status in {"FAILED", "TIMEOUT"}:
+                    review_status = "DEGRADED"
+                    fallback_reason = str(record.get("error") or "实时 AI 终审失败，已回退到规则动作")
+                reason = str(record.get("error") or "")
+                if self._should_enqueue(review_key):
+                    payload = self._build_review_payload(
+                        candidate=candidate,
+                        portfolio_feedback=portfolio_feedback,
+                        market_regime=market_regime,
+                        phase_state=phase_state,
+                        snapshot_rows=snapshot_rows,
+                        decision_contexts=decision_contexts,
+                        trade_date=trade_date,
+                    )
+                    self._enqueue_candidate_review(
+                        review_key=review_key,
+                        candidate=candidate,
+                        payload=payload,
+                    )
+                    review_status = "PENDING"
+                    reason = ""
+                    fallback_reason = ""
+
+            reviews.append(
+                {
+                    "symbol": candidate["symbol"],
+                    "candidate_type": candidate["candidate_type"],
+                    "candidate_label": "持仓复核" if candidate["candidate_type"] == "holding" else "交易前终审",
+                    "draft_action": candidate["proposed_action"],
+                    "proposed_action": candidate["proposed_action"],
+                    "review_status": review_status,
+                    "reviewed_action": reviewed_action,
+                    "final_action": reviewed_action or candidate["proposed_action"],
+                    "confidence": confidence,
+                    "reason": reason,
+                    "fallback_reason": fallback_reason,
+                    "latency_ms": latency_ms,
+                    "applied": applied,
+                    "allowed_actions": candidate["allowed_actions"],
+                }
+            )
+
+        updated.sort(key=lambda item: float(item.priority or 0.0), reverse=True)
+        return updated, reviews
 
     def review_actions(
         self,
@@ -30,7 +144,6 @@ class RealtimeAIReviewService:
     ) -> Tuple[List[PortfolioManagerAction], List[Dict[str, object]]]:
         if not self._enabled():
             return list(actions), []
-
         client = self._build_client()
         if client is None:
             return list(actions), []
@@ -74,17 +187,23 @@ class RealtimeAIReviewService:
                     updated.append(inserted)
                     action_map[str(inserted.symbol)] = inserted
                     applied = True
-            review_record = {
-                "symbol": candidate["symbol"],
-                "candidate_type": candidate["candidate_type"],
-                "proposed_action": candidate["proposed_action"],
-                "final_action": str(review.get("final_action") or candidate["proposed_action"]),
-                "confidence": float(review.get("confidence") or 0.0),
-                "reason": str(review.get("reason") or ""),
-                "applied": applied,
-                "allowed_actions": candidate["allowed_actions"],
-            }
-            reviews.append(review_record)
+            reviews.append(
+                {
+                    "symbol": candidate["symbol"],
+                    "candidate_type": candidate["candidate_type"],
+                    "draft_action": candidate["proposed_action"],
+                    "proposed_action": candidate["proposed_action"],
+                    "review_status": "DONE",
+                    "reviewed_action": str(review.get("final_action") or candidate["proposed_action"]),
+                    "final_action": str(review.get("final_action") or candidate["proposed_action"]),
+                    "confidence": float(review.get("confidence") or 0.0),
+                    "reason": str(review.get("reason") or ""),
+                    "applied": applied,
+                    "allowed_actions": candidate["allowed_actions"],
+                    "latency_ms": 0,
+                    "fallback_reason": "",
+                }
+            )
         updated.sort(key=lambda item: float(item.priority or 0.0), reverse=True)
         return updated, reviews
 
@@ -97,6 +216,112 @@ class RealtimeAIReviewService:
         ):
             return False
         return bool(self._resolve_api_key())
+
+    def _ensure_worker(self) -> None:
+        if self._worker_thread and self._worker_thread.is_alive():
+            return
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="realtime-ai-review-worker",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def _worker_loop(self) -> None:
+        while True:
+            task = self._review_queue.get()
+            review_key = str(task.get("review_key") or "")
+            started_at = time.time()
+            try:
+                client = self._build_client()
+                if client is None:
+                    self._store_review_result(
+                        review_key,
+                        status="FAILED",
+                        review=None,
+                        error="未检测到可用的实时 AI API Key",
+                        latency_ms=int((time.time() - started_at) * 1000),
+                    )
+                    continue
+                review = self._call_review_model(client, task.get("payload") or {})
+                if review:
+                    self._store_review_result(
+                        review_key,
+                        status="DONE",
+                        review=review,
+                        error="",
+                        latency_ms=int((time.time() - started_at) * 1000),
+                    )
+                else:
+                    self._store_review_result(
+                        review_key,
+                        status="FAILED",
+                        review=None,
+                        error="实时 AI 未返回有效 JSON，已降级为规则动作",
+                        latency_ms=int((time.time() - started_at) * 1000),
+                    )
+            except Exception as exc:
+                self._store_review_result(
+                    review_key,
+                    status="FAILED",
+                    review=None,
+                    error=str(exc),
+                    latency_ms=int((time.time() - started_at) * 1000),
+                )
+            finally:
+                self._review_queue.task_done()
+
+    def _store_review_result(
+        self,
+        review_key: str,
+        *,
+        status: str,
+        review: Mapping[str, object] | None,
+        error: str,
+        latency_ms: int,
+    ) -> None:
+        with self._lock:
+            self._pending_reviews.discard(review_key)
+            self._review_results[review_key] = {
+                "status": status,
+                "review": dict(review or {}),
+                "error": error,
+                "latency_ms": latency_ms,
+                "completed_at": time.time(),
+            }
+            self._last_review_at[review_key] = time.time()
+
+    def _get_review_result(self, review_key: str) -> Dict[str, object]:
+        with self._lock:
+            if review_key in self._pending_reviews:
+                return {"status": "PENDING"}
+            return dict(self._review_results.get(review_key) or {})
+
+    def _should_enqueue(self, review_key: str) -> bool:
+        with self._lock:
+            if review_key in self._pending_reviews:
+                return False
+        return not self._cooldown_active(review_key)
+
+    def _enqueue_candidate_review(
+        self,
+        *,
+        review_key: str,
+        candidate: Mapping[str, object],
+        payload: Mapping[str, object],
+    ) -> None:
+        with self._lock:
+            if review_key in self._pending_reviews:
+                return
+            self._pending_reviews.add(review_key)
+        self._review_queue.put(
+            {
+                "review_key": review_key,
+                "candidate": dict(candidate),
+                "payload": dict(payload),
+                "submitted_at": time.time(),
+            }
+        )
 
     def _build_client(self) -> OpenAI | None:
         api_key = self._resolve_api_key()
@@ -151,15 +376,23 @@ class RealtimeAIReviewService:
         actions: Sequence[PortfolioManagerAction],
         portfolio_feedback: Mapping[str, object],
     ) -> List[Dict[str, object]]:
-        candidates: List[Dict[str, object]] = []
         max_items = max(1, int(self.settings.ai.realtime_review_max_items or 1))
-        actionable = [
+        holdings: List[Dict[str, object]] = []
+        actionable: List[Dict[str, object]] = []
+        raw_actions = [
             action
             for action in actions
             if action.symbol != "*" and action.action in {"BUY", "SELL", "REDUCE"}
         ]
-        for action in actionable:
-            candidates.append(
+        raw_actions.sort(
+            key=lambda action: (
+                0 if action.action in {"SELL", "REDUCE"} else 1,
+                -float(action.priority or 0.0),
+                str(action.symbol),
+            )
+        )
+        for action in raw_actions:
+            actionable.append(
                 {
                     "candidate_type": "action",
                     "symbol": action.symbol,
@@ -169,7 +402,7 @@ class RealtimeAIReviewService:
                 }
             )
         if self.settings.ai.realtime_position_review_enabled:
-            existing_symbols = {str(action.symbol) for action in actionable}
+            existing_symbols = {str(action.symbol) for action in raw_actions}
             positions = [
                 item
                 for item in (portfolio_feedback.get("positions_detail") or [])
@@ -182,14 +415,14 @@ class RealtimeAIReviewService:
                 ),
                 reverse=True,
             )
-            for item in positions[:max_items]:
+            for item in positions:
                 market_value = float(item.get("market_value") or 0.0)
                 unrealized_pct = abs(float(item.get("unrealized_pct") or 0.0))
                 if market_value <= 0:
                     continue
                 if market_value < float(portfolio_feedback.get("equity") or 0.0) * 0.06 and unrealized_pct < 0.025:
                     continue
-                candidates.append(
+                holdings.append(
                     {
                         "candidate_type": "holding",
                         "symbol": str(item.get("symbol") or ""),
@@ -198,8 +431,8 @@ class RealtimeAIReviewService:
                         "priority": market_value,
                     }
                 )
-        candidates.sort(key=lambda item: float(item.get("priority") or 0.0), reverse=True)
-        return candidates[:max_items]
+        prioritized = holdings + actionable
+        return prioritized[:max_items]
 
     @staticmethod
     def _allowed_actions(proposed_action: str, *, has_position: bool) -> List[str]:
@@ -373,7 +606,9 @@ class RealtimeAIReviewService:
             "final_action": final_action,
             "confidence": float(review.get("confidence") or 0.0),
             "risk_tags": list(review.get("risk_tags") or []),
+            "draft_action": str(action.action or "HOLD"),
         }
+        metadata["review_status"] = "DONE"
         updates["metadata"] = metadata
         return action.model_copy(update=updates)
 
@@ -394,10 +629,12 @@ class RealtimeAIReviewService:
             source=["realtime_ai_review"],
             mode_name="realtime_ai_review_mode",
             metadata={
+                "review_status": "DONE",
                 "realtime_ai_review": {
                     "final_action": final_action,
                     "confidence": float(review.get("confidence") or 0.0),
                     "risk_tags": list(review.get("risk_tags") or []),
+                    "draft_action": "HOLD",
                 }
             },
         )

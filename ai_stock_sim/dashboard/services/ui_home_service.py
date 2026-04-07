@@ -1196,6 +1196,9 @@ def _build_realtime_ai_review_summary(
     action_review_count = 0
     holding_review_count = 0
     changed_count = 0
+    pending_count = 0
+    done_count = 0
+    degraded_count = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1210,16 +1213,32 @@ def _build_realtime_ai_review_summary(
         applied = bool(row.get("applied"))
         if applied:
             changed_count += 1
+        review_status = str(row.get("review_status") or "PENDING").upper()
+        if review_status == "DONE":
+            done_count += 1
+        elif review_status == "DEGRADED":
+            degraded_count += 1
+        else:
+            pending_count += 1
+        draft_action = str(row.get("draft_action") or row.get("proposed_action") or "HOLD")
+        reviewed_action = str(row.get("reviewed_action") or row.get("final_action") or draft_action)
+        reason = str(row.get("reason") or "").strip()
+        fallback_reason = str(row.get("fallback_reason") or "").strip()
         items.append(
             {
                 "symbol": symbol,
                 "name": symbol_names.get(symbol, symbol),
                 "candidate_type": candidate_type,
                 "candidate_label": "持仓复核" if candidate_type == "holding" else "交易前终审",
-                "proposed_action": str(row.get("proposed_action") or "HOLD"),
-                "final_action": str(row.get("final_action") or row.get("proposed_action") or "HOLD"),
+                "draft_action": draft_action,
+                "proposed_action": draft_action,
+                "review_status": review_status,
+                "reviewed_action": reviewed_action,
+                "final_action": reviewed_action,
                 "confidence": float(row.get("confidence") or 0.0),
-                "reason": str(row.get("reason") or "").strip() or "本轮实时 AI 复核未返回额外说明。",
+                "reason": reason or fallback_reason or "本轮实时 AI 复核未返回额外说明。",
+                "fallback_reason": fallback_reason,
+                "latency_ms": int(row.get("latency_ms") or 0),
                 "applied": applied,
             }
         )
@@ -1229,6 +1248,9 @@ def _build_realtime_ai_review_summary(
         "position_review_enabled": bool(SETTINGS.ai.realtime_position_review_enabled),
         "review_count": len(items),
         "changed_count": changed_count,
+        "pending_count": pending_count,
+        "done_count": done_count,
+        "degraded_count": degraded_count,
         "action_review_count": action_review_count,
         "holding_review_count": holding_review_count,
         "items": items[:6],

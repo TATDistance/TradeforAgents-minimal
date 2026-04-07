@@ -705,10 +705,12 @@ def render_ai_trading_home(build_tag: str) -> str:
         summary.action_review_enabled ? '买卖前终审' : '',
         summary.position_review_enabled ? '持仓复核' : ''
       ].filter(Boolean).join(' / ') || '未开启';
+      const statusMeta = '已完成 ' + String(summary.done_count || 0) + ' ｜ 待终审 ' + String(summary.pending_count || 0);
       renderStatGrid(realtimeReviewGrid, [
         {label:'当前模式', value: modeText},
-        {label:'本轮复核数', value: String(summary.review_count || 0)},
+        {label:'本轮复核数', value: String(summary.review_count || 0), subvalue: statusMeta},
         {label:'实际改动数', value: String(summary.changed_count || 0)},
+        {label:'降级执行', value: String(summary.degraded_count || 0), subvalue: '超时或异常时直接回退规则动作'},
         {label:'覆盖结构', value: '交易前 ' + String(summary.action_review_count || 0) + ' ｜ 持仓 ' + String(summary.holding_review_count || 0)}
       ]);
       if(!summary.enabled){
@@ -716,17 +718,18 @@ def render_ai_trading_home(build_tag: str) -> str:
         return;
       }
       if(!items.length){
-        realtimeReviewList.innerHTML = '<div class="empty">本轮还没有触发实时 AI 复核。后续会在买卖前，或持仓需要复核时出现记录。</div>';
+        realtimeReviewList.innerHTML = '<div class="empty">本轮还没有触发实时 AI 复核。后续会在买卖前，或持仓需要复核时进入待终审队列。</div>';
         return;
       }
       realtimeReviewList.innerHTML = items.map(item => (
         '<div class="action-card">' +
         '<div class="action-top">' +
         '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + (item.candidate_label || '实时 AI 复核') + '</div></div>' +
-        '<div class="badge ' + cardBadgeClass(item.applied ? 'warning' : 'neutral') + '">' + actionCn(item.proposed_action || 'HOLD') + ' → ' + actionCn(item.final_action || 'HOLD') + '</div>' +
+        '<div class="badge ' + cardBadgeClass(item.review_status === 'DEGRADED' ? 'danger' : (item.review_status === 'DONE' ? (item.applied ? 'warning' : 'success') : 'neutral')) + '">' + (item.review_status || 'PENDING') + '</div>' +
         '</div>' +
-        '<div class="action-meta"><span>置信度 ' + Number(item.confidence || 0).toFixed(2) + '</span><span>' + (item.applied ? '已改写动作' : '维持原动作') + '</span></div>' +
+        '<div class="action-meta"><span>草案 ' + actionCn(item.draft_action || 'HOLD') + ' → ' + actionCn(item.reviewed_action || item.final_action || item.draft_action || 'HOLD') + '</span><span>置信度 ' + Number(item.confidence || 0).toFixed(2) + '</span><span>' + (item.review_status === 'PENDING' ? '排队中' : (item.applied ? '已改写动作' : (item.review_status === 'DEGRADED' ? '已降级执行' : '维持原动作'))) + '</span></div>' +
         '<div class="action-reason">' + (item.reason || '暂无说明') + '</div>' +
+        (item.latency_ms ? ('<div class="subvalue" style="margin-top:8px">耗时 ' + String(item.latency_ms) + ' ms</div>') : '') +
         '</div>'
       )).join('');
     }
