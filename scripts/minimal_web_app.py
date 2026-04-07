@@ -580,6 +580,15 @@ def _home_ai_binding_extra_env() -> Dict[str, str]:
     if binding.get("model"):
         extra_env["TA_REALTIME_AI_MODEL"] = str(binding["model"])
         extra_env["DEEPSEEK_MODEL"] = str(binding["model"])
+    # 当前机器代理经常不可用；首页绑定默认走直连，避免被坏代理误伤。
+    extra_env["http_proxy"] = ""
+    extra_env["https_proxy"] = ""
+    extra_env["HTTP_PROXY"] = ""
+    extra_env["HTTPS_PROXY"] = ""
+    extra_env["ALL_PROXY"] = ""
+    extra_env["all_proxy"] = ""
+    extra_env["NO_PROXY"] = "127.0.0.1,localhost"
+    extra_env["no_proxy"] = "127.0.0.1,localhost"
     return extra_env
 
 
@@ -632,8 +641,9 @@ def _test_home_ai_binding(req: HomeAIBindingRequest) -> Dict[str, object]:
         method="POST",
     )
     started = time.time()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(request, timeout=10) as resp:
+        with opener.open(request, timeout=10) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
