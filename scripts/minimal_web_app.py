@@ -65,6 +65,7 @@ AI_STOCK_SIM_DASHBOARD_URL = "http://127.0.0.1:8610"
 AI_STOCK_SIM_DASHBOARD_HEALTH_URL = "http://127.0.0.1:8610/_stcore/health"
 AI_STOCK_SIM_RUNTIME_SYMBOLS = AI_STOCK_SIM_HOME / "config" / "runtime_symbols.yaml"
 AI_STOCK_SIM_REPORTS_DIR = AI_STOCK_SIM_HOME / "data" / "reports"
+AI_STOCK_SIM_HOME_BINDING_PATH = AI_STOCK_SIM_HOME / "data" / "cache" / "home_ai_binding.json"
 AI_STOCK_SIM_LOG_DIR.mkdir(parents=True, exist_ok=True)
 AI_STOCK_SIM_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 AI_STOCK_SIM_SETTINGS = load_settings(AI_STOCK_SIM_HOME)
@@ -109,6 +110,13 @@ class AutoPipelineRequest(BaseModel):
     force_full_analysis: bool = Field(default=False)
     api_key: str = Field(default="", max_length=256)
     base_url: str = Field(default="", max_length=256)
+
+
+class HomeAIBindingRequest(BaseModel):
+    provider: str = Field(default="deepseek", max_length=64)
+    model: str = Field(default="deepseek-chat", max_length=128)
+    api_key: str = Field(default="", max_length=256)
+    base_url: str = Field(default="https://api.deepseek.com", max_length=256)
 
 
 @dataclass
@@ -426,6 +434,7 @@ def _start_background_service(
     health_url: Optional[str] = None,
     health_timeout_seconds: float = 8.0,
     truncate_log: bool = False,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
     running, pid = _service_status(pid_file)
     if running and (not health_url or _url_healthy(health_url)):
@@ -441,6 +450,12 @@ def _start_background_service(
     env = os.environ.copy()
     pythonpath_parts = [str(PROJECT_ROOT), str(WORKSPACE_ROOT), str(AI_TRADE_HOME), env.get("PYTHONPATH", "")]
     env["PYTHONPATH"] = os.pathsep.join(part for part in pythonpath_parts if part)
+    if extra_env:
+        for key, value in extra_env.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
     popen_kwargs: Dict[str, object] = {
         "cwd": str(PROJECT_ROOT),
         "env": env,
@@ -516,6 +531,138 @@ def _cleanup_processes(pattern: str) -> None:
         )
     except Exception:
         pass
+
+
+def _mask_secret(value: str) -> str:
+    text = (value or "").strip()
+    if len(text) <= 8:
+        return "*" * len(text)
+    return text[:4] + "*" * max(4, len(text) - 8) + text[-4:]
+
+
+def _load_home_ai_binding() -> Dict[str, str]:
+    if not AI_STOCK_SIM_HOME_BINDING_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(AI_STOCK_SIM_HOME_BINDING_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "provider": str(payload.get("provider") or "deepseek").strip() or "deepseek",
+        "model": str(payload.get("model") or "deepseek-chat").strip() or "deepseek-chat",
+        "api_key": str(payload.get("api_key") or "").strip(),
+        "base_url": str(payload.get("base_url") or "https://api.deepseek.com").strip() or "https://api.deepseek.com",
+    }
+
+
+def _save_home_ai_binding(req: HomeAIBindingRequest) -> Dict[str, str]:
+    payload = {
+        "provider": req.provider.strip() or "deepseek",
+        "model": req.model.strip() or "deepseek-chat",
+        "api_key": req.api_key.strip(),
+        "base_url": req.base_url.strip() or "https://api.deepseek.com",
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    AI_STOCK_SIM_HOME_BINDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AI_STOCK_SIM_HOME_BINDING_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
+def _home_ai_binding_extra_env() -> Dict[str, str]:
+    binding = _load_home_ai_binding()
+    extra_env: Dict[str, str] = {}
+    if binding.get("api_key"):
+        extra_env["DEEPSEEK_API_KEY"] = str(binding["api_key"])
+    if binding.get("base_url"):
+        extra_env["DEEPSEEK_BASE_URL"] = str(binding["base_url"])
+    if binding.get("model"):
+        extra_env["TA_REALTIME_AI_MODEL"] = str(binding["model"])
+        extra_env["DEEPSEEK_MODEL"] = str(binding["model"])
+    return extra_env
+
+
+def _build_home_ai_binding_summary() -> Dict[str, object]:
+    binding = _load_home_ai_binding()
+    return {
+        "provider": binding.get("provider") or "deepseek",
+        "model": binding.get("model") or "deepseek-chat",
+        "base_url": binding.get("base_url") or "https://api.deepseek.com",
+        "api_key_present": bool(binding.get("api_key")),
+        "api_key_masked": _mask_secret(str(binding.get("api_key") or "")) if binding.get("api_key") else "",
+        "saved_to_backend": bool(binding),
+        "binding_path": str(AI_STOCK_SIM_HOME_BINDING_PATH),
+    }
+
+
+def _normalize_base_url(base_url: str) -> str:
+    value = (base_url or "").strip().rstrip("/")
+    return value or "https://api.deepseek.com"
+
+
+def _build_chat_completion_url(base_url: str) -> str:
+    normalized = _normalize_base_url(base_url)
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return normalized + "/chat/completions"
+    return normalized + "/chat/completions"
+
+
+def _test_home_ai_binding(req: HomeAIBindingRequest) -> Dict[str, object]:
+    api_key = req.api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请先填写首页绑定 API Key")
+    body = {
+        "model": req.model.strip() or "deepseek-chat",
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": "你是连接测试助手，只返回严格 JSON。"},
+            {"role": "user", "content": "{\"ping\":true}"},
+        ],
+    }
+    request = urllib.request.Request(
+        _build_chat_completion_url(req.base_url),
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    started = time.time()
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        if exc.code == 401:
+            raise HTTPException(status_code=400, detail="首页绑定 API Key 无效，DeepSeek 返回 401。")
+        raise HTTPException(status_code=400, detail=f"首页绑定 API 测试失败：HTTP {exc.code} {detail[:200]}")
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=400, detail=f"首页绑定 API 测试失败：{exc.reason}")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"首页绑定 API 测试失败：{exc}")
+
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="首页绑定 API 已连通，但返回内容不是合法 JSON。")
+    content = ""
+    try:
+        content = str((((payload.get("choices") or [])[0] or {}).get("message") or {}).get("content") or "").strip()
+    except Exception:
+        content = ""
+    return {
+        "message": "首页绑定 API 可用，已成功连通 DeepSeek。",
+        "latency_ms": int((time.time() - started) * 1000),
+        "provider": req.provider.strip() or "deepseek",
+        "model": req.model.strip() or "deepseek-chat",
+        "base_url": _normalize_base_url(req.base_url),
+        "api_key_masked": _mask_secret(api_key),
+        "response_preview": content[:200],
+    }
 
 
 def _query_sqlite_rows(db_path: Path, sql: str, params: Tuple[object, ...] = ()) -> List[Dict[str, object]]:
@@ -2827,6 +2974,32 @@ def get_ai_stock_sim_status() -> Dict[str, object]:
     return _ai_stock_sim_status_payload()
 
 
+@app.get("/api/ai-stock-sim/binding")
+def get_ai_stock_sim_binding() -> Dict[str, object]:
+    return {"binding": _build_home_ai_binding_summary()}
+
+
+@app.post("/api/ai-stock-sim/binding")
+def save_ai_stock_sim_binding(req: HomeAIBindingRequest) -> Dict[str, object]:
+    payload = _save_home_ai_binding(req)
+    return {
+        "message": "首页 AI 绑定已同步到后端，引擎下次启动会优先使用这套配置。",
+        "binding": {
+            "provider": payload["provider"],
+            "model": payload["model"],
+            "base_url": payload["base_url"],
+            "api_key_present": bool(payload["api_key"]),
+            "api_key_masked": _mask_secret(payload["api_key"]),
+            "saved_to_backend": True,
+        },
+    }
+
+
+@app.post("/api/ai-stock-sim/binding/test")
+def test_ai_stock_sim_binding(req: HomeAIBindingRequest) -> Dict[str, object]:
+    return _test_home_ai_binding(req)
+
+
 @app.post("/api/ai-stock-sim/bootstrap")
 def bootstrap_ai_stock_sim() -> Dict[str, object]:
     if _packaged_windows_runtime():
@@ -2866,10 +3039,12 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
         if code != 0:
             raise HTTPException(status_code=500, detail=output or "ai_stock_sim 初始化失败")
     _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
+    extra_env = _home_ai_binding_extra_env()
     ok, engine_message = _start_background_service(
         _launcher_role_args("engine") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
         AI_STOCK_SIM_ENGINE_PID,
         AI_STOCK_SIM_ENGINE_LOG,
+        extra_env=extra_env or None,
     )
     if not ok:
         raise HTTPException(status_code=500, detail=engine_message)
@@ -2899,10 +3074,12 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
 @app.post("/api/ai-stock-sim/engine/start")
 def start_ai_stock_sim_engine() -> Dict[str, object]:
     _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
+    extra_env = _home_ai_binding_extra_env()
     ok, message = _start_background_service(
         _launcher_role_args("engine") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
         AI_STOCK_SIM_ENGINE_PID,
         AI_STOCK_SIM_ENGINE_LOG,
+        extra_env=extra_env or None,
     )
     if not ok:
         raise HTTPException(status_code=500, detail=message)

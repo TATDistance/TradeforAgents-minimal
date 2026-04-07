@@ -391,6 +391,7 @@ def render_ai_trading_home(build_tag: str) -> str:
           </div>
           <div class="field col-6">
             <button id="saveBinding" type="button" class="small-btn">保存首页 AI 绑定</button>
+            <button id="testBinding" type="button" class="small-btn" style="margin-left:10px">测试首页绑定 API</button>
             <div id="bindingStatus" class="setting-status">当前运行中的实时引擎来源，仍以首页“AI 来源”为准。</div>
             <div class="setting-note">配置项已经收进折叠区，避免打断前台决策视图。首页与研究中心共用这套浏览器本地配置。</div>
           </div>
@@ -450,6 +451,7 @@ def render_ai_trading_home(build_tag: str) -> str:
     const bindBaseUrl = document.getElementById('bindBaseUrl');
     const bindApiKey = document.getElementById('bindApiKey');
     const saveBinding = document.getElementById('saveBinding');
+    const testBinding = document.getElementById('testBinding');
     const bindingStatus = document.getElementById('bindingStatus');
     const homeStartAll = document.getElementById('homeStartAll');
     const homeStartStatus = document.getElementById('homeStartStatus');
@@ -1192,12 +1194,54 @@ def render_ai_trading_home(build_tag: str) -> str:
       bindingStatus.textContent = '当前首页绑定：' + bindProvider.options[bindProvider.selectedIndex].text + ' / ' + bindModel.value;
     }
 
-    function saveBindingConfig(){
+    function currentBindingPayload(){
+      return {
+        provider: bindProvider.value || 'deepseek',
+        model: bindModel.value || 'deepseek-chat',
+        base_url: bindBaseUrl.value || 'https://api.deepseek.com',
+        api_key: (bindApiKey.value || '').trim(),
+      };
+    }
+
+    async function saveBindingConfig(syncBackend = false){
       localStorage.setItem('ta_home_provider', bindProvider.value);
       localStorage.setItem('ta_min_model', bindModel.value);
       localStorage.setItem('ta_min_base_url', bindBaseUrl.value);
       localStorage.setItem('ta_min_api_key', bindApiKey.value.trim());
       bindingStatus.textContent = '已保存：' + bindProvider.options[bindProvider.selectedIndex].text + ' / ' + bindModel.value + '。研究中心会复用这套配置。';
+      if(!syncBackend){
+        return;
+      }
+      const {resp, data} = await fetchJsonSafe('/api/ai-stock-sim/binding', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(currentBindingPayload())
+      });
+      if(!resp.ok){
+        throw new Error(data.detail || '同步首页绑定到后端失败');
+      }
+      const binding = data.binding || {};
+      bindingStatus.textContent = (data.message || '首页 AI 绑定已同步到后端') + ' 当前后端：' + (binding.provider || 'deepseek') + ' / ' + (binding.model || bindModel.value) + (binding.api_key_masked ? (' / ' + binding.api_key_masked) : '');
+    }
+
+    async function testBindingConfig(){
+      testBinding.disabled = true;
+      bindingStatus.textContent = '正在测试首页绑定 API...';
+      try{
+        const {resp, data} = await fetchJsonSafe('/api/ai-stock-sim/binding/test', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(currentBindingPayload())
+        });
+        if(!resp.ok){
+          throw new Error(data.detail || '首页绑定 API 测试失败');
+        }
+        bindingStatus.textContent = (data.message || '首页绑定 API 可用') + ' 模型：' + (data.model || bindModel.value) + ' ｜ 延迟 ' + String(data.latency_ms || 0) + ' ms' + (data.api_key_masked ? (' ｜ ' + data.api_key_masked) : '');
+      }catch(err){
+        bindingStatus.textContent = '首页绑定 API 测试失败：' + String(err);
+      }finally{
+        testBinding.disabled = false;
+      }
     }
 
     async function loadHome(){
@@ -1438,11 +1482,21 @@ def render_ai_trading_home(build_tag: str) -> str:
       }
     }
 
-    bindProvider.addEventListener('change', saveBindingConfig);
-    bindModel.addEventListener('change', saveBindingConfig);
-    bindBaseUrl.addEventListener('change', saveBindingConfig);
-    bindApiKey.addEventListener('change', saveBindingConfig);
-    saveBinding.addEventListener('click', saveBindingConfig);
+    bindProvider.addEventListener('change', () => { saveBindingConfig(false); });
+    bindModel.addEventListener('change', () => { saveBindingConfig(false); });
+    bindBaseUrl.addEventListener('change', () => { saveBindingConfig(false); });
+    bindApiKey.addEventListener('change', () => { saveBindingConfig(false); });
+    saveBinding.addEventListener('click', async () => {
+      try{
+        saveBinding.disabled = true;
+        await saveBindingConfig(true);
+      }catch(err){
+        bindingStatus.textContent = '保存首页 AI 绑定失败：' + String(err);
+      }finally{
+        saveBinding.disabled = false;
+      }
+    });
+    testBinding.addEventListener('click', testBindingConfig);
     homeStartAll.addEventListener('click', runHomeQuickStart);
     accountSelect.addEventListener('change', (event) => {
       activeAccountId = event.target.value || '';
