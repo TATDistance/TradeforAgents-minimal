@@ -39,3 +39,8 @@ def test_scheduler_runs_realtime_review_for_positions_even_without_actions() -> 
         )
         is False
     )
+
+
+def test_scheduler_normalizes_snapshot_pct_change_to_fraction() -> None:
+    assert TradingScheduler._normalize_snapshot_pct_change(-0.2) == -0.002
+    assert TradingScheduler._normalize_snapshot_pct_change(6.22) == 0.0622

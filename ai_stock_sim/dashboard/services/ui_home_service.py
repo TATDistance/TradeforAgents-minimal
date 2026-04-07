@@ -444,7 +444,10 @@ def _build_observe_candidates(
                 "execution_score": execution_score,
                 "ai_score": ai_score,
                 "current_action": current_action,
-                "snapshot_pct_change": _normalize_pct_change(((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("pct_change") or 0.0)),
+                "snapshot_pct_change": _normalize_pct_change(
+                    ((((live_state.get("decision_contexts") or {}).get(symbol) or {}).get("snapshot") or {}).get("pct_change") or 0.0),
+                    assume_percent=True,
+                ),
                 "reasons": reasons[:4] or ["当前仍以观察为主，尚未转为买入。"],
             }
         )
@@ -500,7 +503,10 @@ def _build_watchlist_entries(
         if not snapshot:
             snapshot = _latest_quote_payload(settings, symbol)
         latest_price = float(snapshot.get("latest_price") or snapshot.get("close") or 0.0)
-        pct_change = _normalize_pct_change(snapshot.get("pct_change") or 0.0)
+        pct_change = _normalize_pct_change(
+            snapshot.get("pct_change") or 0.0,
+            assume_percent=bool(context),
+        )
         position = position_map.get(symbol, {})
         entries.append(
             {
@@ -1401,8 +1407,10 @@ def _parse_iso_ts(value: str | None) -> datetime | None:
         return None
 
 
-def _normalize_pct_change(value: object) -> float:
+def _normalize_pct_change(value: object, *, assume_percent: bool = False) -> float:
     raw = float(value or 0.0)
+    if assume_percent:
+        return raw / 100.0
     return raw / 100.0 if abs(raw) > 1.0 else raw
 
 

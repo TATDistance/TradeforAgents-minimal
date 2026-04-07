@@ -256,7 +256,7 @@ class TradingScheduler:
                         "symbol": str(row["symbol"]),
                         "name": str(row.get("name") or row["symbol"]),
                         "latest_price": float(row.get("latest_price") or 0.0),
-                        "pct_change": float(row.get("pct_change") or 0.0),
+                        "pct_change": self._normalize_snapshot_pct_change(row.get("pct_change") or 0.0),
                         "amount": float(row.get("amount") or 0.0),
                         "turnover_rate": float(row.get("turnover_rate") or 0.0),
                         "market": str(row.get("market") or ""),
@@ -722,7 +722,7 @@ class TradingScheduler:
             for _, row in universe_result.snapshot.iterrows():
                 snapshot_rows[str(row["symbol"])] = {
                     "latest_price": float(row.get("latest_price") or 0.0),
-                    "pct_change": float(row.get("pct_change") or 0.0),
+                    "pct_change": self._normalize_snapshot_pct_change(row.get("pct_change") or 0.0),
                     "amount": float(row.get("amount") or 0.0),
                     "turnover_rate": float(row.get("turnover_rate") or 0.0),
                     "name": str(row.get("name") or row.get("symbol")),
@@ -877,6 +877,14 @@ class TradingScheduler:
             and int(item.get("can_sell_qty") or 0) > 0
             for item in positions
         )
+
+    @staticmethod
+    def _normalize_snapshot_pct_change(value: object) -> float:
+        try:
+            raw = float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return raw / 100.0
 
     def _write_accounts_summary(self, summaries: List[Dict[str, object]]) -> None:
         primary_account = get_primary_simulation_account(self.settings)
