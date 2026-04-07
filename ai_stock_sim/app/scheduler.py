@@ -140,6 +140,8 @@ class TradingScheduler:
         conn = connect_db(self.settings, account_id=account.account_id)
         initialize_db(self.settings, account_id=account.account_id)
         realtime_engine = self._realtime_engine_for(account.account_id)
+        pending_review_batches: List[List[Dict[str, object]]] = []
+        pending_outcome_refresh = False
 
         def _safe_log(level: str, module: str, message: str) -> None:
             scoped_module = f"{module}[{account.account_id}]"
@@ -469,7 +471,7 @@ class TradingScheduler:
                     )
                     if realtime_ai_reviews:
                         final_actions = reviewed_actions
-                        self.realtime_ai_review_tracking_service.persist_reviews(conn, realtime_ai_reviews)
+                        pending_review_batches.append(list(realtime_ai_reviews))
                         for item in realtime_ai_reviews:
                             _safe_log("INFO", "realtime_ai_review", json.dumps(item, ensure_ascii=False))
             else:
@@ -510,7 +512,7 @@ class TradingScheduler:
                         _safe_log("WARNING", "market_data", f"{symbol} 最新价刷新失败，已跳过: {exc}")
 
             self._persist_intraday_points(quote_map, trade_date)
-            self.realtime_ai_review_tracking_service.update_outcomes(conn)
+            pending_outcome_refresh = True
 
             planned_actions = self.action_planner.plan(final_actions, portfolio_feedback, latest_prices, phase_state, execution_gate)
             execution_events: List[Dict[str, object]] = []
@@ -681,6 +683,13 @@ class TradingScheduler:
                 realtime_ai_reviews=realtime_ai_reviews,
             )
             conn.commit()
+            for review_batch in pending_review_batches:
+                self.realtime_ai_review_tracking_service.submit_reviews(account.account_id, review_batch)
+            if pending_outcome_refresh:
+                self.realtime_ai_review_tracking_service.submit_outcome_refresh(
+                    account.account_id,
+                    lookback_days=max(3, int(self.settings.adaptive.evaluation_window_days or 5)),
+                )
             if self.logger:
                 log_event(
                     self.logger,

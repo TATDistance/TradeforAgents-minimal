@@ -193,3 +193,45 @@ def test_tracking_service_builds_learning_feedback(tmp_path) -> None:
     assert feedback["risk_multiplier_bias"] > 0
     assert feedback["role_stats"]["VETO"]["count"] == 2
     assert feedback["suggestions"]
+
+
+def test_tracking_service_async_submit_writes_to_account_db(tmp_path) -> None:
+    settings = load_settings()
+    settings.project_root = tmp_path
+    initialize_db(settings)
+    initialize_db(settings, account_id="paper_small_1w")
+    service = RealtimeAIReviewTrackingService(settings)
+
+    service.submit_reviews(
+        "paper_small_1w",
+        [
+            {
+                "event_id": "evt-small-1",
+                "review_key": "paper_small_1w:holding:000890:HOLD:100",
+                "submitted_at": "2026-04-07T10:10:00",
+                "trade_date": "2026-04-07",
+                "symbol": "000890",
+                "candidate_type": "holding",
+                "draft_action": "HOLD",
+                "reviewed_action": "REDUCE",
+                "final_action": "REDUCE",
+                "review_role": "TRIGGER",
+                "review_status": "DONE",
+                "applied": True,
+            }
+        ],
+    )
+
+    assert service.wait_for_idle("paper_small_1w", timeout=3.0) is True
+
+    conn = connect_db(settings, account_id="paper_small_1w")
+    try:
+        row = conn.execute(
+            "SELECT event_id, review_status, review_role FROM realtime_ai_review_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert dict(row)["event_id"] == "evt-small-1"
+    assert dict(row)["review_status"] == "DONE"
+    assert dict(row)["review_role"] == "TRIGGER"

@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping
 
-from .db import fetch_rows_by_sql
+from .db import connect_db, fetch_rows_by_sql
 from .settings import Settings, load_settings
 
 
 class RealtimeAIReviewTrackingService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
+        self._lock = threading.Lock()
+        self._queues: Dict[str, queue.Queue[dict[str, object]]] = {}
+        self._workers: Dict[str, threading.Thread] = {}
 
     @staticmethod
     def _safe_json(payload: object) -> str:
@@ -102,6 +108,28 @@ class RealtimeAIReviewTrackingService:
             )
             written += 1
         return written
+
+    def submit_reviews(self, account_id: str, reviews: Iterable[Mapping[str, object]]) -> None:
+        rows = [dict(row) for row in reviews if isinstance(row, Mapping)]
+        if not rows:
+            return
+        self._ensure_worker(account_id)
+        self._queues[account_id].put({"kind": "persist_reviews", "reviews": rows})
+
+    def submit_outcome_refresh(self, account_id: str, *, lookback_days: int = 5) -> None:
+        self._ensure_worker(account_id)
+        self._queues[account_id].put({"kind": "update_outcomes", "lookback_days": int(max(1, lookback_days))})
+
+    def wait_for_idle(self, account_id: str, timeout: float = 5.0) -> bool:
+        deadline = time.time() + max(timeout, 0.1)
+        worker_queue = self._queues.get(account_id)
+        if worker_queue is None:
+            return True
+        while time.time() < deadline:
+            if worker_queue.unfinished_tasks == 0:
+                return True
+            time.sleep(0.05)
+        return worker_queue.unfinished_tasks == 0
 
     def update_outcomes(self, conn, lookback_days: int = 5) -> int:
         rows = [
@@ -301,6 +329,53 @@ class RealtimeAIReviewTrackingService:
             "risk_multiplier_bias": risk_bias,
             "suggestions": suggestions,
         }
+
+    def _ensure_worker(self, account_id: str) -> None:
+        with self._lock:
+            if account_id not in self._queues:
+                self._queues[account_id] = queue.Queue()
+            worker = self._workers.get(account_id)
+            if worker is not None and worker.is_alive():
+                return
+            worker = threading.Thread(
+                target=self._worker_loop,
+                args=(account_id,),
+                name=f"realtime-ai-review-tracking-{account_id}",
+                daemon=True,
+            )
+            self._workers[account_id] = worker
+            worker.start()
+
+    def _worker_loop(self, account_id: str) -> None:
+        worker_queue = self._queues[account_id]
+        while True:
+            task = worker_queue.get()
+            try:
+                self._run_task(account_id, task)
+            finally:
+                worker_queue.task_done()
+
+    def _run_task(self, account_id: str, task: Mapping[str, object]) -> None:
+        kind = str(task.get("kind") or "")
+        for attempt in range(5):
+            conn = connect_db(self.settings, account_id=account_id)
+            try:
+                if kind == "persist_reviews":
+                    self.persist_reviews(conn, task.get("reviews") or [])
+                elif kind == "update_outcomes":
+                    self.update_outcomes(conn, lookback_days=int(task.get("lookback_days") or 5))
+                conn.commit()
+                return
+            except Exception as exc:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if "locked" not in str(exc).lower() or attempt >= 4:
+                    return
+                time.sleep(0.25 * (attempt + 1))
+            finally:
+                conn.close()
 
     def _load_symbol_points(self, symbol: str) -> Dict[str, List[Dict[str, object]]]:
         chart_dir = self.settings.cache_dir / "charts"
