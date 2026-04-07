@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from .db import delete_position, fetch_latest_account, fetch_positions, upsert_position, write_account_snapshot, write_order
 from .models import AccountSnapshot, FinalSignal, OrderRecord, PlannedAction, PositionRecord, RiskCheckResult
@@ -212,8 +212,26 @@ class MockBroker:
             ),
         )
 
-    def release_t1_positions(self, conn) -> None:
+    def _symbols_bought_on_trade_date(self, conn, trade_date: str) -> Set[str]:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT symbol
+            FROM orders
+            WHERE side = 'BUY'
+              AND intent_only = 0
+              AND status IN ('FILLED', 'PARTIAL_FILLED')
+              AND date(ts) = ?
+            """,
+            (trade_date,),
+        ).fetchall()
+        return {str(row["symbol"]) for row in rows}
+
+    def release_t1_positions(self, conn, trade_date: str | None = None) -> None:
+        effective_trade_date = trade_date or datetime.now().date().isoformat()
+        bought_today = self._symbols_bought_on_trade_date(conn, effective_trade_date)
         for row in fetch_positions(conn):
+            if str(row["symbol"]) in bought_today:
+                continue
             conn.execute(
                 "UPDATE positions SET can_sell_qty = qty, updated_at = ? WHERE symbol = ?",
                 (datetime.now().isoformat(timespec="seconds"), row["symbol"]),

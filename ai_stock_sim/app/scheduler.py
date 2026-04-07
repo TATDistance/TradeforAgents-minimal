@@ -152,7 +152,7 @@ class TradingScheduler:
                 self._last_phase_key[account.account_id] = phase_key
 
             if phase_state.is_trading_day and self._last_t1_release_date.get(account.account_id) != trade_date:
-                self.broker.release_t1_positions(conn)
+                self.broker.release_t1_positions(conn, trade_date=trade_date)
                 self._last_t1_release_date[account.account_id] = trade_date
 
             universe_result = self.universe.build_universe() if execution_gate.can_update_market else self.universe.empty_result("market_closed")
