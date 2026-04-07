@@ -13,6 +13,14 @@ from .models import PortfolioManagerAction
 from .settings import Settings, load_settings
 
 
+class RealtimeAIReviewError(RuntimeError):
+    def __init__(self, code: str, user_message: str, detail: str = "") -> None:
+        super().__init__(detail or user_message)
+        self.code = code
+        self.user_message = user_message
+        self.detail = detail
+
+
 class RealtimeAIReviewService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
@@ -57,6 +65,7 @@ class RealtimeAIReviewService:
             reason = ""
             confidence = 0.0
             latency_ms = int(record.get("latency_ms") or 0)
+            error_code = str(record.get("error_code") or "")
 
             if review_status == "DONE":
                 review_payload = dict(record.get("review") or {})
@@ -121,6 +130,7 @@ class RealtimeAIReviewService:
                     "confidence": confidence,
                     "reason": reason,
                     "fallback_reason": fallback_reason,
+                    "error_code": error_code,
                     "latency_ms": latency_ms,
                     "applied": applied,
                     "allowed_actions": candidate["allowed_actions"],
@@ -200,6 +210,7 @@ class RealtimeAIReviewService:
                     "reason": str(review.get("reason") or ""),
                     "applied": applied,
                     "allowed_actions": candidate["allowed_actions"],
+                    "error_code": "",
                     "latency_ms": 0,
                     "fallback_reason": "",
                 }
@@ -239,6 +250,7 @@ class RealtimeAIReviewService:
                         review_key,
                         status="FAILED",
                         review=None,
+                        error_code="API_ERROR",
                         error="未检测到可用的实时 AI API Key",
                         latency_ms=int((time.time() - started_at) * 1000),
                     )
@@ -249,23 +261,26 @@ class RealtimeAIReviewService:
                         review_key,
                         status="DONE",
                         review=review,
+                        error_code="",
                         error="",
                         latency_ms=int((time.time() - started_at) * 1000),
                     )
-                else:
-                    self._store_review_result(
-                        review_key,
-                        status="FAILED",
-                        review=None,
-                        error="实时 AI 未返回有效 JSON，已降级为规则动作",
-                        latency_ms=int((time.time() - started_at) * 1000),
-                    )
+            except RealtimeAIReviewError as exc:
+                self._store_review_result(
+                    review_key,
+                    status="TIMEOUT" if exc.code == "TIMEOUT" else "FAILED",
+                    review=None,
+                    error_code=exc.code,
+                    error=exc.user_message,
+                    latency_ms=int((time.time() - started_at) * 1000),
+                )
             except Exception as exc:
                 self._store_review_result(
                     review_key,
                     status="FAILED",
                     review=None,
-                    error=str(exc),
+                    error_code="API_ERROR",
+                    error=self._user_message_for_error_code("API_ERROR"),
                     latency_ms=int((time.time() - started_at) * 1000),
                 )
             finally:
@@ -277,6 +292,7 @@ class RealtimeAIReviewService:
         *,
         status: str,
         review: Mapping[str, object] | None,
+        error_code: str,
         error: str,
         latency_ms: int,
     ) -> None:
@@ -285,6 +301,7 @@ class RealtimeAIReviewService:
             self._review_results[review_key] = {
                 "status": status,
                 "review": dict(review or {}),
+                "error_code": error_code,
                 "error": error,
                 "latency_ms": latency_ms,
                 "completed_at": time.time(),
@@ -544,19 +561,48 @@ class RealtimeAIReviewService:
                     {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
                 ],
             )
-        except Exception:
-            return None
+        except Exception as exc:
+            code = self._error_code_for_exception(exc)
+            raise RealtimeAIReviewError(
+                code=code,
+                user_message=self._user_message_for_error_code(code),
+                detail=str(exc),
+            ) from exc
         content = ""
         try:
             content = str(resp.choices[0].message.content or "").strip()
         except Exception:
             content = ""
         if not content:
-            return None
+            raise RealtimeAIReviewError(
+                code="EMPTY_RESPONSE",
+                user_message=self._user_message_for_error_code("EMPTY_RESPONSE"),
+            )
         parsed = self._parse_json_content(content)
         if not parsed:
-            return None
+            raise RealtimeAIReviewError(
+                code="INVALID_JSON",
+                user_message=self._user_message_for_error_code("INVALID_JSON"),
+                detail=content[:500],
+            )
         return parsed
+
+    @staticmethod
+    def _error_code_for_exception(exc: Exception) -> str:
+        text = f"{exc.__class__.__name__} {exc}".lower()
+        if "timeout" in text or "timed out" in text:
+            return "TIMEOUT"
+        return "API_ERROR"
+
+    @staticmethod
+    def _user_message_for_error_code(code: str) -> str:
+        messages = {
+            "API_ERROR": "实时 AI 接口调用失败，已降级为规则动作",
+            "EMPTY_RESPONSE": "实时 AI 返回空结果，已降级为规则动作",
+            "INVALID_JSON": "实时 AI 返回格式异常，已降级为规则动作",
+            "TIMEOUT": "实时 AI 响应超时，已降级为规则动作",
+        }
+        return messages.get(code, "实时 AI 终审失败，已降级为规则动作")
 
     @staticmethod
     def _parse_json_content(content: str) -> Dict[str, object] | None:

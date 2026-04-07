@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import types
+
 from app.models import PortfolioManagerAction
+from app.realtime_ai_review_service import RealtimeAIReviewError
 from app.realtime_ai_review_service import RealtimeAIReviewService
 from app.settings import load_settings
 
@@ -62,6 +65,7 @@ def test_realtime_ai_review_service_request_reviews_returns_pending_without_bloc
             "confidence": 0.0,
             "reason": "",
             "fallback_reason": "",
+            "error_code": "",
             "latency_ms": 0,
             "applied": False,
             "allowed_actions": ["BUY", "HOLD"],
@@ -97,6 +101,7 @@ def test_realtime_ai_review_service_request_reviews_applies_cached_result(monkey
             "reason": "追高风险偏大，先等待更好的回踩位置。",
             "risk_tags": ["weak_execution"],
         },
+        error_code="",
         error="",
         latency_ms=812,
     )
@@ -125,6 +130,48 @@ def test_realtime_ai_review_service_request_reviews_applies_cached_result(monkey
     assert reviews[0]["review_status"] == "DONE"
     assert reviews[0]["reviewed_action"] == "HOLD"
     assert reviews[0]["applied"] is True
+
+
+def test_realtime_ai_review_service_reports_empty_response_with_chinese_message() -> None:
+    service = RealtimeAIReviewService(load_settings())
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(
+            completions=types.SimpleNamespace(
+                create=lambda **_kwargs: types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=""))]
+                )
+            )
+        )
+    )
+
+    try:
+        service._call_review_model(client, {"symbol": "300750"})  # type: ignore[arg-type]
+    except RealtimeAIReviewError as exc:
+        assert exc.code == "EMPTY_RESPONSE"
+        assert exc.user_message == "实时 AI 返回空结果，已降级为规则动作"
+    else:
+        raise AssertionError("expected RealtimeAIReviewError")
+
+
+def test_realtime_ai_review_service_reports_invalid_json_with_chinese_message() -> None:
+    service = RealtimeAIReviewService(load_settings())
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(
+            completions=types.SimpleNamespace(
+                create=lambda **_kwargs: types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="我认为先减仓更稳妥"))]
+                )
+            )
+        )
+    )
+
+    try:
+        service._call_review_model(client, {"symbol": "300750"})  # type: ignore[arg-type]
+    except RealtimeAIReviewError as exc:
+        assert exc.code == "INVALID_JSON"
+        assert exc.user_message == "实时 AI 返回格式异常，已降级为规则动作"
+    else:
+        raise AssertionError("expected RealtimeAIReviewError")
 
 
 def test_realtime_ai_review_service_can_review_holding_without_preexisting_actions(monkeypatch) -> None:

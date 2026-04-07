@@ -1238,6 +1238,7 @@ def _build_realtime_ai_review_summary(
                 "confidence": float(row.get("confidence") or 0.0),
                 "reason": reason or fallback_reason or "本轮实时 AI 复核未返回额外说明。",
                 "fallback_reason": fallback_reason,
+                "error_code": str(row.get("error_code") or ""),
                 "latency_ms": int(row.get("latency_ms") or 0),
                 "applied": applied,
             }
