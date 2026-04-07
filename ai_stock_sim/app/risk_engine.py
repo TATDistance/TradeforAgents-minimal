@@ -26,8 +26,12 @@ class RiskEngine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
 
+    def _ignore_daily_open_cap(self, equity: float) -> bool:
+        return 0.0 < float(equity or 0.0) <= float(self.settings.capital_profile.small_account_equity_threshold)
+
     def evaluate(self, signal: FinalSignal, quote: MarketQuote, portfolio: PortfolioState) -> RiskCheckResult:
         max_single_position_pct = resolve_max_single_position_pct(self.settings, portfolio.equity)
+        ignore_daily_cap = self._ignore_daily_open_cap(portfolio.equity)
         if portfolio.drawdown >= self.settings.max_drawdown_pct:
             return RiskCheckResult(allowed=False, adjusted_qty=0, adjusted_position_pct=0.0, reject_reason="最大回撤熔断已触发", risk_state="REJECT", final_action="HOLD", risk_mode="RISK_OFF")
 
@@ -43,7 +47,8 @@ class RiskEngine:
         current_value = float(portfolio.current_positions.get(signal.symbol, {}).get("market_value", 0.0))
         single_cap = max(0.0, portfolio.equity * max_single_position_pct - current_value)
         daily_cap = max(0.0, portfolio.equity * self.settings.max_daily_open_position_pct - portfolio.today_open_ratio * portfolio.equity)
-        target_value = min(portfolio.equity * signal.position_pct, single_cap, daily_cap, portfolio.cash)
+        effective_daily_cap = max(portfolio.equity, 0.0) if ignore_daily_cap else daily_cap
+        target_value = min(portfolio.equity * signal.position_pct, single_cap, effective_daily_cap, portfolio.cash)
         if signal.action == "SELL":
             can_sell_qty = int(portfolio.current_positions.get(signal.symbol, {}).get("can_sell_qty", 0))
             if can_sell_qty <= 0:
@@ -64,7 +69,7 @@ class RiskEngine:
                     f"买一手约需 {min_lot_cost:.2f} 元，已超过单票可用仓位上限 "
                     f"{max(single_cap, 0.0):.2f} 元"
                 )
-            elif min_lot_cost > daily_cap + 1e-6:
+            elif not ignore_daily_cap and min_lot_cost > daily_cap + 1e-6:
                 reject_reason = (
                     f"买一手约需 {min_lot_cost:.2f} 元，已超过当日可用开仓额度 "
                     f"{max(daily_cap, 0.0):.2f} 元"
@@ -78,7 +83,7 @@ class RiskEngine:
                     f"买一手约需 {min_lot_cost:.2f} 元，已超过单票总仓位上限 "
                     f"{single_cap_limit:.2f} 元"
                 )
-            elif min_lot_cost > daily_cap_limit + 1e-6:
+            elif not ignore_daily_cap and min_lot_cost > daily_cap_limit + 1e-6:
                 reject_reason = (
                     f"买一手约需 {min_lot_cost:.2f} 元，已超过当日总开仓额度 "
                     f"{daily_cap_limit:.2f} 元"

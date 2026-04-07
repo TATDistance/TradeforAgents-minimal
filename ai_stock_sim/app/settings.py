@@ -32,6 +32,12 @@ class AIConfig:
     approval_confidence_floor: float = 0.58
     low_confidence_scale: float = 0.5
     request_timeout_seconds: int = 120
+    realtime_action_review_enabled: bool = False
+    realtime_position_review_enabled: bool = False
+    realtime_review_model: str = "deepseek-chat"
+    realtime_review_max_items: int = 4
+    realtime_review_timeout_seconds: int = 20
+    realtime_review_cooldown_seconds: int = 120
 
 
 @dataclass

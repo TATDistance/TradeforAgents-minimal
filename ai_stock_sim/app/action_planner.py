@@ -83,13 +83,16 @@ class ActionPlanner:
                 position = position_map.get(action.symbol, {})
                 can_sell_qty = int(position.get("can_sell_qty", 0) or 0)
                 qty = self._round_lot(int(can_sell_qty * float(action.reduce_pct or 0.0)))
+                rounded_sellable_qty = self._round_lot(can_sell_qty)
+                if qty <= 0 and float(action.reduce_pct or 0.0) > 0 and rounded_sellable_qty >= BOARD_LOT:
+                    qty = BOARD_LOT
                 planned.append(
                     PlannedAction(
                         symbol=action.symbol,
                         action="REDUCE",
-                        planned_qty=min(qty, can_sell_qty),
+                        planned_qty=min(qty, rounded_sellable_qty),
                         planned_price=round(price, 3),
-                        estimated_cost=round(min(qty, can_sell_qty) * price, 4),
+                        estimated_cost=round(min(qty, rounded_sellable_qty) * price, 4),
                         reduce_pct=action.reduce_pct,
                         priority=action.priority,
                         source=action.source,
@@ -173,15 +176,17 @@ class ActionPlanner:
 
         one_lot_cost = BOARD_LOT * price
         max_single_position_pct = resolve_max_single_position_pct(self.settings, equity)
+        ignore_daily_cap = 0.0 < float(equity or 0.0) <= float(self.settings.capital_profile.small_account_equity_threshold)
         current_value = float(position_map.get(action.symbol, {}).get("market_value", 0.0) or 0.0)
         single_cap = max(0.0, equity * max_single_position_pct - current_value)
         daily_cap = max(0.0, equity * self.settings.max_daily_open_position_pct - today_open_ratio * equity)
+        effective_daily_cap = max(equity, 0.0) if ignore_daily_cap else daily_cap
         required_budget = one_lot_cost * 1.01
         requested_pct = float(action.position_pct or 0.0)
         required_pct = min(max_single_position_pct, max(requested_pct, required_budget / max(equity, 1.0)))
 
         # If one lot itself breaches portfolio caps, selling existing positions cannot solve it.
-        if required_budget > single_cap + 1e-6 or required_budget > daily_cap + 1e-6:
+        if required_budget > single_cap + 1e-6 or required_budget > effective_daily_cap + 1e-6:
             target_value = min(cash, equity * requested_pct)
             return [], self._round_lot(int(target_value / max(price, 0.01))), requested_pct
 

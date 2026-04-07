@@ -62,6 +62,16 @@ class AIPortfolioManager:
                             source=["ai_pm", "portfolio_feedback"],
                         )
                     )
+                elif unrealized_pct <= -0.08 and self.settings.ai_portfolio_manager.allow_sell_actions:
+                    actions.append(
+                        PortfolioManagerAction(
+                            symbol=symbol,
+                            action="SELL",
+                            reason="持仓回撤已明显扩大，且组合处于偏谨慎阶段，执行止损退出。",
+                            priority=0.9,
+                            source=["ai_pm", "portfolio_feedback"],
+                        )
+                    )
                 elif unrealized_pct >= 0.06 and regime_state.risk_bias in {"DEFENSIVE", "RISK_OFF"} and self.settings.ai_portfolio_manager.allow_reduce_actions:
                     actions.append(
                         PortfolioManagerAction(
@@ -73,13 +83,14 @@ class AIPortfolioManager:
                             source=["ai_pm", regime_state.regime],
                         )
                     )
-                elif unrealized_pct <= -0.05 and self.settings.ai_portfolio_manager.allow_sell_actions:
+                elif unrealized_pct <= -0.05 and regime_state.risk_bias in {"DEFENSIVE", "RISK_OFF"} and self.settings.ai_portfolio_manager.allow_reduce_actions:
                     actions.append(
                         PortfolioManagerAction(
                             symbol=symbol,
-                            action="SELL",
-                            reason="持仓回撤已扩大，建议止损退出。",
-                            priority=0.88,
+                            action="REDUCE",
+                            reduce_pct=0.5,
+                            reason="持仓回撤已扩大，但先减仓观察，不直接一刀切清仓。",
+                            priority=0.8,
                             source=["ai_pm", "portfolio_feedback"],
                         )
                     )

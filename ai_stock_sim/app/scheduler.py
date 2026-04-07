@@ -28,6 +28,7 @@ from .mock_broker import MockBroker
 from .opportunity_pool_service import OpportunityPoolService
 from .portfolio_service import build_portfolio_feedback, build_portfolio_state, mark_to_market
 from .intraday_selector_service import IntradaySelectorService
+from .realtime_ai_review_service import RealtimeAIReviewService
 from .report_service import ReportService
 from .realtime_engine import RealtimeEngine
 from .review_service import ReviewService
@@ -81,6 +82,7 @@ class TradingScheduler:
         self.decision_compare_service = DecisionCompareService()
         self.ai_portfolio_manager = AIPortfolioManager(self.settings)
         self.portfolio_decision_service = PortfolioDecisionService(self.settings)
+        self.realtime_ai_review_service = RealtimeAIReviewService(self.settings)
         self.action_planner = ActionPlanner(self.settings)
         self.risk_engine = RiskEngine(self.settings)
         self.broker = MockBroker(self.settings)
@@ -246,6 +248,7 @@ class TradingScheduler:
             final_actions = []
             planned_actions = []
             risk_results: List[Dict[str, object]] = []
+            realtime_ai_reviews: List[Dict[str, object]] = []
             if execution_gate.can_generate_signal:
                 frame_map = {}
                 snapshot_rows = {
@@ -439,6 +442,24 @@ class TradingScheduler:
                 else:
                     final_actions = engine_actions
                     compare_result = self.decision_compare_service.compare(final_signals, engine_decisions)
+                if execution_gate.can_run_ai_decision and self._should_run_realtime_ai_review(
+                    final_actions,
+                    portfolio_feedback,
+                ):
+                    reviewed_actions, realtime_ai_reviews = self.realtime_ai_review_service.review_actions(
+                        final_actions,
+                        portfolio_feedback=portfolio_feedback,
+                        market_regime=market_regime.model_dump(),
+                        phase_state=phase_state.model_dump(),
+                        snapshot_rows=snapshot_rows,
+                        decision_contexts=decision_contexts,
+                        trade_date=trade_date,
+                        account_id=account.account_id,
+                    )
+                    if realtime_ai_reviews:
+                        final_actions = reviewed_actions
+                        for item in realtime_ai_reviews:
+                            _safe_log("INFO", "realtime_ai_review", json.dumps(item, ensure_ascii=False))
             else:
                 signal_ids = {}
                 legacy_actions = []
@@ -644,6 +665,7 @@ class TradingScheduler:
                 watchlist_scan_result=watchlist_scan_result,
                 watchlist_evolution_result=watchlist_evolution_result,
                 watchlist_events=watchlist_events,
+                realtime_ai_reviews=realtime_ai_reviews,
             )
             conn.commit()
             if self.logger:
@@ -794,6 +816,7 @@ class TradingScheduler:
         watchlist_scan_result: Dict[str, object],
         watchlist_evolution_result: Dict[str, object],
         watchlist_events: List[Dict[str, object]],
+        realtime_ai_reviews: List[Dict[str, object]],
     ) -> None:
         payload = {
             "account_id": account_id,
@@ -826,6 +849,7 @@ class TradingScheduler:
             "watchlist_scan": watchlist_scan_result,
             "watchlist_evolution": watchlist_evolution_result,
             "watchlist_events": watchlist_events,
+            "realtime_ai_reviews": realtime_ai_reviews,
         }
         target_path = self.settings.resolved_account_live_state_path(account_id)
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -834,6 +858,25 @@ class TradingScheduler:
         if account_id == get_primary_simulation_account(self.settings).account_id:
             self.settings.live_state_path.parent.mkdir(parents=True, exist_ok=True)
             self.settings.live_state_path.write_text(content, encoding="utf-8")
+
+    def _should_run_realtime_ai_review(
+        self,
+        actions: List[object],
+        portfolio_feedback: Mapping[str, object],
+    ) -> bool:
+        if actions:
+            return True
+        if not self.settings.ai.realtime_position_review_enabled:
+            return False
+        positions = portfolio_feedback.get("positions_detail") or []
+        if not isinstance(positions, list):
+            return False
+        return any(
+            isinstance(item, Mapping)
+            and str(item.get("symbol") or "").strip()
+            and int(item.get("can_sell_qty") or 0) > 0
+            for item in positions
+        )
 
     def _write_accounts_summary(self, summaries: List[Dict[str, object]]) -> None:
         primary_account = get_primary_simulation_account(self.settings)

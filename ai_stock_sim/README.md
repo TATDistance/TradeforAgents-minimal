@@ -74,6 +74,8 @@ bash start.sh web
 
 - `ai_decision_engine_mode`
 - `setup_score + execution_score`
+- 买卖前实时 AI 终审
+- 持仓 AI 复核
 - AI 风险模式
 - AI 风格自适应
 
@@ -83,6 +85,18 @@ bash start.sh web
 - T+1
 - 交易阶段约束
 - 模拟撮合、账户、持仓更新
+- 小仓位 `REDUCE` 会自动保底到 1 手，避免因为比例过小被截成 `0 股`
+
+## 本轮增强
+
+- `买卖前 AI 终审`
+  最终成交前，实时 AI 会对规则动作再做一轮复核，输出更稳妥的 `BUY / SELL / REDUCE / HOLD`。
+- `持仓管理 AI 化`
+  对已有持仓做周期性复核，重点解决“不能只看 -5% 就机械止损”的问题。
+- `首页复核结果可见`
+  `live_decision_state.json` 会带上 `realtime_ai_reviews`，前台首页可直接展示复核次数、改写次数和具体原因。
+- `REDUCE` 边界修复
+  当可卖数量本身不少于 1 手，但按减仓比例折算后不足 1 手时，系统会至少按 1 手执行，不再误拦截。
 
 ### 学习层
 

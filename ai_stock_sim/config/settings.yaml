@@ -150,6 +150,12 @@ ai:
   approval_confidence_floor: 0.58
   low_confidence_scale: 0.5
   request_timeout_seconds: 120
+  realtime_action_review_enabled: true
+  realtime_position_review_enabled: true
+  realtime_review_model: deepseek-chat
+  realtime_review_max_items: 4
+  realtime_review_timeout_seconds: 20
+  realtime_review_cooldown_seconds: 120
 market_session:
   timezone: Asia/Shanghai
   trade_start: 09:30

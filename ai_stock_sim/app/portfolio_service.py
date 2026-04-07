@@ -8,6 +8,26 @@ from .models import AccountSnapshot, PositionRecord
 from .risk_engine import PortfolioState
 
 
+def _calc_today_open_ratio(conn, equity: float) -> float:
+    if equity <= 0:
+        return 0.0
+    today = datetime.now().date().isoformat()
+    rows = fetch_rows_by_sql(
+        conn,
+        """
+        SELECT price, qty
+        FROM orders
+        WHERE intent_only = 0
+          AND side = 'BUY'
+          AND status IN ('FILLED', 'PARTIAL_FILLED')
+          AND date(ts) = ?
+        """,
+        (today,),
+    )
+    opened_value = sum(float(row["price"] or 0.0) * int(row["qty"] or 0) for row in rows)
+    return max(0.0, opened_value / max(equity, 1.0))
+
+
 def build_portfolio_state(conn) -> PortfolioState:
     account = fetch_latest_account(conn)
     positions = fetch_positions(conn)
@@ -29,7 +49,7 @@ def build_portfolio_state(conn) -> PortfolioState:
         unrealized_pnl=account["unrealized_pnl"],
         drawdown=account["drawdown"],
         current_positions=position_map,
-        today_open_ratio=0.0 if account["equity"] <= 0 else account["market_value"] / max(account["equity"], 1.0),
+        today_open_ratio=_calc_today_open_ratio(conn, float(account["equity"] or 0.0)),
     )
 
 

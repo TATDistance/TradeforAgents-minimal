@@ -396,6 +396,7 @@ def _build_observe_candidates(
         if equity > 0 and latest_price > 0:
             one_lot_cost = latest_price * 100
             max_single_position_pct = resolve_max_single_position_pct(settings, equity)
+            ignore_daily_cap = 0.0 < equity <= float(settings.capital_profile.small_account_equity_threshold)
             current_value = 0.0
             positions_detail = (portfolio_feedback or {}).get("positions_detail") or []
             for pos in positions_detail:
@@ -411,7 +412,7 @@ def _build_observe_candidates(
                         max(single_cap, 0.0) / 10000.0,
                     )
                 )
-            elif one_lot_cost > daily_cap + 1e-6:
+            elif (not ignore_daily_cap) and one_lot_cost > daily_cap + 1e-6:
                 reasons.append(
                     "买一手约需 {0:.1f} 万元，已超过当前单日可用开仓额度 {1:.1f} 万元".format(
                         one_lot_cost / 10000.0,
@@ -792,15 +793,21 @@ def _has_recent_research_cache(settings: Settings, live_state: Dict[str, object]
 def _build_ai_runtime(settings: Settings, live_state: Dict[str, object]) -> Dict[str, str]:
     local_api = _has_local_api_key(settings)
     has_cache = _has_recent_research_cache(settings, live_state)
+    realtime_modes: List[str] = []
+    if local_api and settings.ai.realtime_action_review_enabled:
+        realtime_modes.append("买卖前 AI 终审")
+    if local_api and settings.ai.realtime_position_review_enabled:
+        realtime_modes.append("持仓 AI 复核")
+    realtime_suffix = f" + {' / '.join(realtime_modes)}" if realtime_modes else ""
     if local_api and has_cache:
         return {
             "ai_status": "可用",
-            "ai_source": "本地 .env API Key + decision.json 研究缓存",
+            "ai_source": "本地 .env API Key + decision.json 研究缓存" + realtime_suffix,
         }
     if local_api:
         return {
             "ai_status": "可用",
-            "ai_source": "本地 .env API Key",
+            "ai_source": "本地 .env API Key" + realtime_suffix,
         }
     if has_cache:
         return {
@@ -1077,6 +1084,157 @@ def get_account_snapshot(account_id: str | None = None) -> Dict[str, object]:
     }
 
 
+def _build_realized_breakdown(
+    symbol_names: Dict[str, str],
+    account_id: str | None = None,
+    expected_total: float | None = None,
+) -> Dict[str, object]:
+    rows = _query_rows(
+        """
+        SELECT ts, symbol, side, price, qty, fee, tax, slippage, status
+        FROM orders
+        WHERE intent_only = 0
+          AND status IN ('FILLED', 'PARTIAL_FILLED')
+        ORDER BY ts ASC, id ASC
+        """,
+        account_id=account_id,
+    )
+    positions: Dict[str, Dict[str, float]] = {}
+    summaries: Dict[str, Dict[str, object]] = {}
+    computed_total = 0.0
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip()
+        side = str(row.get("side") or "").upper()
+        qty = int(row.get("qty") or 0)
+        if not symbol or qty <= 0:
+            continue
+        price = float(row.get("price") or 0.0)
+        fee = float(row.get("fee") or 0.0)
+        tax = float(row.get("tax") or 0.0)
+        positions.setdefault(symbol, {"qty": 0.0, "avg_cost": 0.0})
+        position = positions[symbol]
+        if side == "BUY":
+            old_qty = float(position.get("qty") or 0.0)
+            new_qty = old_qty + qty
+            avg_cost = price
+            if new_qty > 0:
+                avg_cost = ((float(position.get("avg_cost") or 0.0) * old_qty) + price * qty) / new_qty
+            position["qty"] = new_qty
+            position["avg_cost"] = avg_cost
+            continue
+        if side != "SELL":
+            continue
+        held_qty = int(float(position.get("qty") or 0.0))
+        if held_qty <= 0:
+            continue
+        matched_qty = min(qty, held_qty)
+        avg_cost = float(position.get("avg_cost") or 0.0)
+        realized_pnl = (price - avg_cost) * matched_qty - fee - tax
+        position["qty"] = max(0.0, held_qty - matched_qty)
+        if position["qty"] <= 0:
+            position["avg_cost"] = 0.0
+        if matched_qty <= 0:
+            continue
+        summary = summaries.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "name": symbol_names.get(symbol, symbol),
+                "realized_pnl": 0.0,
+                "matched_qty": 0,
+                "sell_count": 0,
+                "last_sell_ts": "",
+            },
+        )
+        summary["realized_pnl"] = float(summary.get("realized_pnl") or 0.0) + realized_pnl
+        summary["matched_qty"] = int(summary.get("matched_qty") or 0) + matched_qty
+        summary["sell_count"] = int(summary.get("sell_count") or 0) + 1
+        summary["last_sell_ts"] = str(row.get("ts") or summary.get("last_sell_ts") or "")
+        computed_total += realized_pnl
+    position_rows = _query_rows(
+        "SELECT symbol, qty, avg_cost, updated_at FROM positions ORDER BY symbol",
+        account_id=account_id,
+    )
+    position_map = {str(item.get("symbol") or ""): item for item in position_rows}
+    items: List[Dict[str, object]] = []
+    for symbol, summary in summaries.items():
+        current_position = position_map.get(symbol, {})
+        current_qty = int(current_position.get("qty") or 0)
+        item = dict(summary)
+        item["current_qty"] = current_qty
+        item["still_holding"] = current_qty > 0
+        item["avg_cost"] = float(current_position.get("avg_cost") or 0.0)
+        items.append(item)
+    losses = sorted(
+        [item for item in items if float(item.get("realized_pnl") or 0.0) < 0],
+        key=lambda item: float(item.get("realized_pnl") or 0.0),
+    )
+    profits = sorted(
+        [item for item in items if float(item.get("realized_pnl") or 0.0) > 0],
+        key=lambda item: float(item.get("realized_pnl") or 0.0),
+        reverse=True,
+    )
+    return {
+        "items": sorted(items, key=lambda item: abs(float(item.get("realized_pnl") or 0.0)), reverse=True),
+        "losses": losses[:5],
+        "profits": profits[:5],
+        "computed_total": computed_total,
+        "expected_total": float(expected_total or 0.0),
+        "reconciliation_gap": float(expected_total or 0.0) - computed_total,
+        "closed_symbol_count": len(items),
+    }
+
+
+def _build_realtime_ai_review_summary(
+    live_state: Dict[str, object],
+    symbol_names: Dict[str, str],
+) -> Dict[str, object]:
+    rows = live_state.get("realtime_ai_reviews") or []
+    if not isinstance(rows, list):
+        rows = []
+    items: List[Dict[str, object]] = []
+    action_review_count = 0
+    holding_review_count = 0
+    changed_count = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        candidate_type = str(row.get("candidate_type") or "action")
+        if candidate_type == "holding":
+            holding_review_count += 1
+        else:
+            action_review_count += 1
+        applied = bool(row.get("applied"))
+        if applied:
+            changed_count += 1
+        items.append(
+            {
+                "symbol": symbol,
+                "name": symbol_names.get(symbol, symbol),
+                "candidate_type": candidate_type,
+                "candidate_label": "持仓复核" if candidate_type == "holding" else "交易前终审",
+                "proposed_action": str(row.get("proposed_action") or "HOLD"),
+                "final_action": str(row.get("final_action") or row.get("proposed_action") or "HOLD"),
+                "confidence": float(row.get("confidence") or 0.0),
+                "reason": str(row.get("reason") or "").strip() or "本轮实时 AI 复核未返回额外说明。",
+                "applied": applied,
+            }
+        )
+    return {
+        "enabled": bool(SETTINGS.ai.realtime_action_review_enabled or SETTINGS.ai.realtime_position_review_enabled),
+        "action_review_enabled": bool(SETTINGS.ai.realtime_action_review_enabled),
+        "position_review_enabled": bool(SETTINGS.ai.realtime_position_review_enabled),
+        "review_count": len(items),
+        "changed_count": changed_count,
+        "action_review_count": action_review_count,
+        "holding_review_count": holding_review_count,
+        "items": items[:6],
+    }
+
+
 def get_action_summary(account_id: str | None = None) -> Dict[str, int]:
     live_state = _load_live_state(account_id)
     cards = build_action_cards(
@@ -1329,6 +1487,12 @@ def get_home_view(account_id: str | None = None) -> Dict[str, object]:
     watchlist = _build_watchlist_entries(SETTINGS, live_state, names, ai_decisions, account_id=resolved_account_id)
     watchlist_sections = _build_watchlist_sections(watchlist, SETTINGS)
     trade_explanations = _build_trade_explanations(names, ai_decisions, watchlist, account_id=resolved_account_id)
+    realtime_ai_reviews = _build_realtime_ai_review_summary(live_state, names)
+    realized_breakdown = _build_realized_breakdown(
+        names,
+        account_id=resolved_account_id,
+        expected_total=float(account.get("realized_pnl") or 0.0),
+    )
     style_profile = dict(live_state.get("style_profile") or {})
     strategy_performance = _hydrate_strategy_performance(
         dict(live_state.get("strategy_performance") or {}),
@@ -1374,6 +1538,8 @@ def get_home_view(account_id: str | None = None) -> Dict[str, object]:
         "watchlist": watchlist,
         "watchlist_sections": watchlist_sections,
         "trade_explanations": trade_explanations,
+        "realtime_ai_reviews": realtime_ai_reviews,
+        "realized_breakdown": realized_breakdown,
         "style_profile": style_profile,
         "strategy_performance": strategy_performance,
         "adaptive_weights": adaptive_weights,

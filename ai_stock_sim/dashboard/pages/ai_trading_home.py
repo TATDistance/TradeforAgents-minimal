@@ -209,6 +209,27 @@ def render_ai_trading_home(build_tag: str) -> str:
       </div>
 
       <div class="card span-12">
+        <h3>已卖出盈亏来源</h3>
+        <div class="kv" id="realizedSummaryGrid"></div>
+        <div class="monitoring-grid" style="margin-top:14px">
+          <div>
+            <h3 style="margin-bottom:10px">已实现亏损最多</h3>
+            <div id="realizedLossList" class="action-list"></div>
+          </div>
+          <div>
+            <h3 style="margin-bottom:10px">已实现盈利最多</h3>
+            <div id="realizedProfitList" class="action-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card span-12">
+        <h3>实时 AI 终审 / 持仓复核</h3>
+        <div class="kv" id="realtimeReviewGrid"></div>
+        <div id="realtimeReviewList" class="action-list" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card span-12">
         <h3>最新盘后报告</h3>
         <div class="kv" id="reportLinksGrid"></div>
       </div>
@@ -390,6 +411,11 @@ def render_ai_trading_home(build_tag: str) -> str:
     const phaseGrid = document.getElementById('phaseGrid');
     const strategyGrid = document.getElementById('strategyGrid');
     const accountGrid = document.getElementById('accountGrid');
+    const realizedSummaryGrid = document.getElementById('realizedSummaryGrid');
+    const realizedLossList = document.getElementById('realizedLossList');
+    const realizedProfitList = document.getElementById('realizedProfitList');
+    const realtimeReviewGrid = document.getElementById('realtimeReviewGrid');
+    const realtimeReviewList = document.getElementById('realtimeReviewList');
     const reportLinksGrid = document.getElementById('reportLinksGrid');
     const styleProfileCard = document.getElementById('styleProfileCard');
     const strategyPerformanceCard = document.getElementById('strategyPerformanceCard');
@@ -634,6 +660,73 @@ def render_ai_trading_home(build_tag: str) -> str:
             (item.url ? ('<a href="' + item.url + '" target="_blank" style="color:#bfdbfe;text-decoration:none">打开查看</a>') : '暂不可用') +
           '</div>' +
           '<div class="subvalue">' + (item.name || '当前还没有生成对应报告') + '</div>' +
+        '</div>'
+      )).join('');
+    }
+
+    function renderRealizedBreakdown(payload){
+      const breakdown = payload || {};
+      const losses = Array.isArray(breakdown.losses) ? breakdown.losses : [];
+      const profits = Array.isArray(breakdown.profits) ? breakdown.profits : [];
+      renderStatGrid(realizedSummaryGrid, [
+        {label:'已实现合计', value: fmtNum(breakdown.expected_total), subvalue: '账户快照口径'},
+        {label:'成交回放合计', value: fmtNum(breakdown.computed_total), subvalue: '按已成交买卖逐笔回放'},
+        {label:'已闭环股票数', value: String(breakdown.closed_symbol_count || 0)},
+        {label:'口径差', value: fmtNum(breakdown.reconciliation_gap), subvalue: '正常应接近 0；若有轻微差异，多半来自舍入或未完全闭环'}
+      ]);
+      if(!losses.length){
+        realizedLossList.innerHTML = '<div class="empty">当前还没有已实现亏损的卖出记录。</div>';
+      }else{
+        realizedLossList.innerHTML = losses.map(item => (
+          '<div class="action-card">' +
+          '<div class="action-top"><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="badge badge-danger">亏损</div></div>' +
+          '<div class="action-meta"><span>已实现 ' + fmtNum(item.realized_pnl) + '</span><span>累计卖出 ' + (item.matched_qty || 0) + ' 股</span><span>卖出次数 ' + (item.sell_count || 0) + '</span></div>' +
+          '<div class="action-reason">最近卖出 ' + (item.last_sell_ts || '暂无') + ' ｜ ' + ((item.current_qty || 0) > 0 ? ('当前仍持仓 ' + item.current_qty + ' 股') : '当前已清仓') + '</div>' +
+          '</div>'
+        )).join('');
+      }
+      if(!profits.length){
+        realizedProfitList.innerHTML = '<div class="empty">当前还没有已实现盈利的卖出记录。</div>';
+      }else{
+        realizedProfitList.innerHTML = profits.map(item => (
+          '<div class="action-card">' +
+          '<div class="action-top"><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="badge badge-success">盈利</div></div>' +
+          '<div class="action-meta"><span>已实现 +' + fmtNum(item.realized_pnl) + '</span><span>累计卖出 ' + (item.matched_qty || 0) + ' 股</span><span>卖出次数 ' + (item.sell_count || 0) + '</span></div>' +
+          '<div class="action-reason">最近卖出 ' + (item.last_sell_ts || '暂无') + ' ｜ ' + ((item.current_qty || 0) > 0 ? ('当前仍持仓 ' + item.current_qty + ' 股') : '当前已清仓') + '</div>' +
+          '</div>'
+        )).join('');
+      }
+    }
+
+    function renderRealtimeReviews(payload){
+      const summary = payload || {};
+      const items = Array.isArray(summary.items) ? summary.items : [];
+      const modeText = [
+        summary.action_review_enabled ? '买卖前终审' : '',
+        summary.position_review_enabled ? '持仓复核' : ''
+      ].filter(Boolean).join(' / ') || '未开启';
+      renderStatGrid(realtimeReviewGrid, [
+        {label:'当前模式', value: modeText},
+        {label:'本轮复核数', value: String(summary.review_count || 0)},
+        {label:'实际改动数', value: String(summary.changed_count || 0)},
+        {label:'覆盖结构', value: '交易前 ' + String(summary.action_review_count || 0) + ' ｜ 持仓 ' + String(summary.holding_review_count || 0)}
+      ]);
+      if(!summary.enabled){
+        realtimeReviewList.innerHTML = '<div class="empty">当前未开启实时 AI 终审 / 持仓复核。</div>';
+        return;
+      }
+      if(!items.length){
+        realtimeReviewList.innerHTML = '<div class="empty">本轮还没有触发实时 AI 复核。后续会在买卖前，或持仓需要复核时出现记录。</div>';
+        return;
+      }
+      realtimeReviewList.innerHTML = items.map(item => (
+        '<div class="action-card">' +
+        '<div class="action-top">' +
+        '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + (item.candidate_label || '实时 AI 复核') + '</div></div>' +
+        '<div class="badge ' + cardBadgeClass(item.applied ? 'warning' : 'neutral') + '">' + actionCn(item.proposed_action || 'HOLD') + ' → ' + actionCn(item.final_action || 'HOLD') + '</div>' +
+        '</div>' +
+        '<div class="action-meta"><span>置信度 ' + Number(item.confidence || 0).toFixed(2) + '</span><span>' + (item.applied ? '已改写动作' : '维持原动作') + '</span></div>' +
+        '<div class="action-reason">' + (item.reason || '暂无说明') + '</div>' +
         '</div>'
       )).join('');
     }
@@ -1180,6 +1273,8 @@ def render_ai_trading_home(build_tag: str) -> str:
           {label:'仓位', value: fmtPct(account.position_ratio)},
           {label:'总盈亏', value: fmtNum(account.total_pnl), subvalue: '已实现 ' + fmtNum(account.realized_pnl) + ' ｜ 浮盈亏 ' + fmtNum(account.unrealized_pnl) + ' ｜ 回撤 ' + fmtPct(account.drawdown)}
         ]);
+        renderRealizedBreakdown(data.realized_breakdown || {});
+        renderRealtimeReviews(data.realtime_ai_reviews || {});
         renderReportLinks(data.report_links || {});
         renderStyleProfile(data.style_profile || {});
         renderStrategyPerformance(data.strategy_performance || {});

@@ -162,28 +162,24 @@ class AIDecisionEngine:
             )
 
         if has_position:
-            if can_sell_qty > 0 and (risk_mode == "RISK_OFF" or unrealized_pct <= -0.05 or execution_score <= -self.settings.scoring.min_execution_score_to_reduce - 0.12):
-                return normalize_engine_output(
-                    {
-                        "symbol": symbol,
-                        "action": "SELL",
-                        "confidence": min(0.96, 0.66 + abs(execution_score) * 0.22),
-                        "ai_score": round(ai_score, 4),
-                        "setup_score": round(setup_score, 4),
-                        "execution_score": round(execution_score, 4),
-                        "market_risk_penalty": round(market_risk_penalty, 4),
-                        "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
-                        "phase_penalty": round(phase_penalty, 4),
-                        "gate_penalty": round(gate_penalty, 4),
-                        "risk_mode": risk_mode,
-                        "holding_bias": "SHORT_TERM",
-                        "reason": "持仓已不符合当前多因子条件，优先退出控制风险。",
-                        "warnings": warnings,
-                        "final_score": round(execution_score, 4),
-                        "feature_score": round(feature_score, 4),
-                    },
-                    symbol,
-                )
+            position_exit = self._build_position_exit_decision(
+                symbol=symbol,
+                risk_mode=risk_mode,
+                can_sell_qty=can_sell_qty,
+                unrealized_pct=unrealized_pct,
+                execution_score=execution_score,
+                setup_score=setup_score,
+                feature_score=feature_score,
+                ai_score=ai_score,
+                market_risk_penalty=market_risk_penalty,
+                portfolio_risk_penalty=portfolio_risk_penalty,
+                phase_penalty=phase_penalty,
+                gate_penalty=gate_penalty,
+                technical=technical,
+                warnings=warnings,
+            )
+            if position_exit:
+                return normalize_engine_output(position_exit, symbol)
             if can_sell_qty > 0 and (
                 (unrealized_pct >= 0.04 and risk_mode in {"DEFENSIVE", "RISK_OFF"})
                 or (hold_days >= 8 and execution_score <= self.settings.scoring.min_execution_score_to_reduce * 0.3)
@@ -638,3 +634,113 @@ class AIDecisionEngine:
         elif rsi_value <= 30:
             bonus += 0.06
         return max(-0.25, min(0.25, bonus))
+
+    def _build_position_exit_decision(
+        self,
+        *,
+        symbol: str,
+        risk_mode: str,
+        can_sell_qty: int,
+        unrealized_pct: float,
+        execution_score: float,
+        setup_score: float,
+        feature_score: float,
+        ai_score: float,
+        market_risk_penalty: float,
+        portfolio_risk_penalty: float,
+        phase_penalty: float,
+        gate_penalty: float,
+        technical: Mapping[str, object],
+        warnings: Sequence[str],
+    ) -> Dict[str, object] | None:
+        if can_sell_qty <= 0:
+            return None
+        min_reduce_score = float(self.settings.scoring.min_execution_score_to_reduce)
+        trend_score = self._technical_bonus(technical)
+        slope20 = float(technical.get("trend_slope_20d") or 0.0)
+        ma20_bias = float(technical.get("ma20_bias") or 0.0)
+        macd_hist = float(technical.get("macd_hist") or 0.0)
+        structure_broken = slope20 <= -0.03 or ma20_bias <= -0.05 or macd_hist <= -0.03 or trend_score <= -0.08
+        trend_supportive = trend_score >= 0.03 or (slope20 >= -0.01 and ma20_bias >= -0.025 and macd_hist >= -0.015)
+
+        if risk_mode == "RISK_OFF":
+            return {
+                "symbol": symbol,
+                "action": "SELL",
+                "confidence": min(0.96, 0.68 + abs(execution_score) * 0.22),
+                "ai_score": round(ai_score, 4),
+                "setup_score": round(setup_score, 4),
+                "execution_score": round(execution_score, 4),
+                "market_risk_penalty": round(market_risk_penalty, 4),
+                "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
+                "phase_penalty": round(phase_penalty, 4),
+                "gate_penalty": round(gate_penalty, 4),
+                "risk_mode": risk_mode,
+                "holding_bias": "SHORT_TERM",
+                "reason": "账户或市场已进入风险关闭模式，优先退出已有持仓。",
+                "warnings": warnings,
+                "final_score": round(execution_score, 4),
+                "feature_score": round(feature_score, 4),
+            }
+
+        if unrealized_pct <= -0.08 and (structure_broken or execution_score <= -min_reduce_score * 0.6 or risk_mode == "DEFENSIVE"):
+            return {
+                "symbol": symbol,
+                "action": "SELL",
+                "confidence": min(0.95, 0.67 + abs(execution_score) * 0.2),
+                "ai_score": round(ai_score, 4),
+                "setup_score": round(setup_score, 4),
+                "execution_score": round(execution_score, 4),
+                "market_risk_penalty": round(market_risk_penalty, 4),
+                "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
+                "phase_penalty": round(phase_penalty, 4),
+                "gate_penalty": round(gate_penalty, 4),
+                "risk_mode": risk_mode,
+                "holding_bias": "SHORT_TERM",
+                "reason": "持仓回撤已明显扩大，且走势结构转弱，执行清仓止损。",
+                "warnings": warnings,
+                "final_score": round(execution_score, 4),
+                "feature_score": round(feature_score, 4),
+            }
+
+        if unrealized_pct <= -0.05:
+            if structure_broken or execution_score <= -min_reduce_score:
+                return {
+                    "symbol": symbol,
+                    "action": "REDUCE",
+                    "reduce_pct": 0.5 if unrealized_pct <= -0.07 else 0.3,
+                    "confidence": min(0.9, 0.6 + abs(execution_score) * 0.18),
+                    "ai_score": round(ai_score, 4),
+                    "setup_score": round(setup_score, 4),
+                    "execution_score": round(execution_score, 4),
+                    "market_risk_penalty": round(market_risk_penalty, 4),
+                    "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
+                    "phase_penalty": round(phase_penalty, 4),
+                    "gate_penalty": round(gate_penalty, 4),
+                    "risk_mode": risk_mode,
+                    "holding_bias": "SHORT_TERM",
+                    "reason": "持仓已有明显回撤，但更像走势转弱，先减仓而不是直接清仓。",
+                    "warnings": warnings,
+                    "final_score": round(execution_score, 4),
+                    "feature_score": round(feature_score, 4),
+                }
+            if trend_supportive and execution_score > -0.18:
+                return {
+                    "symbol": symbol,
+                    "action": "HOLD",
+                    "confidence": min(0.84, 0.55 + max(setup_score, 0.0) * 0.22),
+                    "ai_score": round(ai_score, 4),
+                    "setup_score": round(setup_score, 4),
+                    "execution_score": round(execution_score, 4),
+                    "market_risk_penalty": round(market_risk_penalty, 4),
+                    "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
+                    "phase_penalty": round(phase_penalty, 4),
+                    "gate_penalty": round(gate_penalty, 4),
+                    "risk_mode": risk_mode,
+                    "holding_bias": "SHORT_TERM",
+                    "reason": "虽已有约 5% 回撤，但趋势和结构尚未完全破坏，继续观察而不直接止损。",
+                    "warnings": warnings,
+                    "final_score": round(execution_score, 4),
+                    "feature_score": round(feature_score, 4),
+                }
+        return None
