@@ -29,6 +29,7 @@ from .opportunity_pool_service import OpportunityPoolService
 from .portfolio_service import build_portfolio_feedback, build_portfolio_state, mark_to_market
 from .intraday_selector_service import IntradaySelectorService
 from .realtime_ai_review_service import RealtimeAIReviewService
+from .realtime_ai_review_tracking_service import RealtimeAIReviewTrackingService
 from .report_service import ReportService
 from .realtime_engine import RealtimeEngine
 from .review_service import ReviewService
@@ -83,6 +84,7 @@ class TradingScheduler:
         self.ai_portfolio_manager = AIPortfolioManager(self.settings)
         self.portfolio_decision_service = PortfolioDecisionService(self.settings)
         self.realtime_ai_review_service = RealtimeAIReviewService(self.settings)
+        self.realtime_ai_review_tracking_service = RealtimeAIReviewTrackingService(self.settings)
         self.action_planner = ActionPlanner(self.settings)
         self.risk_engine = RiskEngine(self.settings)
         self.broker = MockBroker(self.settings)
@@ -467,6 +469,7 @@ class TradingScheduler:
                     )
                     if realtime_ai_reviews:
                         final_actions = reviewed_actions
+                        self.realtime_ai_review_tracking_service.persist_reviews(conn, realtime_ai_reviews)
                         for item in realtime_ai_reviews:
                             _safe_log("INFO", "realtime_ai_review", json.dumps(item, ensure_ascii=False))
             else:
@@ -507,6 +510,7 @@ class TradingScheduler:
                         _safe_log("WARNING", "market_data", f"{symbol} 最新价刷新失败，已跳过: {exc}")
 
             self._persist_intraday_points(quote_map, trade_date)
+            self.realtime_ai_review_tracking_service.update_outcomes(conn)
 
             planned_actions = self.action_planner.plan(final_actions, portfolio_feedback, latest_prices, phase_state, execution_gate)
             execution_events: List[Dict[str, object]] = []

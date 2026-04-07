@@ -19,7 +19,12 @@ def test_realtime_ai_review_service_request_reviews_returns_pending_without_bloc
 
     queued: list[dict[str, object]] = []
 
-    def _fake_enqueue(*, review_key, candidate, payload) -> None:
+    def _fake_enqueue(*, review_key, candidate, payload) -> str:
+        event_id = f"{review_key}:fake"
+        service._pending_reviews[review_key] = {
+            "event_id": event_id,
+            "submitted_at": "2026-04-07T09:35:00",
+        }
         queued.append(
             {
                 "review_key": review_key,
@@ -27,6 +32,7 @@ def test_realtime_ai_review_service_request_reviews_returns_pending_without_bloc
                 "payload": dict(payload),
             }
         )
+        return event_id
 
     monkeypatch.setattr(service, "_enqueue_candidate_review", _fake_enqueue)
 
@@ -52,25 +58,15 @@ def test_realtime_ai_review_service_request_reviews_returns_pending_without_bloc
     assert len(updated_actions) == 1
     assert updated_actions[0].action == "BUY"
     assert len(queued) == 1
-    assert reviews == [
-        {
-            "symbol": "300750",
-            "candidate_type": "action",
-            "candidate_label": "交易前终审",
-            "draft_action": "BUY",
-            "proposed_action": "BUY",
-            "review_status": "PENDING",
-            "reviewed_action": None,
-            "final_action": "BUY",
-            "confidence": 0.0,
-            "reason": "",
-            "fallback_reason": "",
-            "error_code": "",
-            "latency_ms": 0,
-            "applied": False,
-            "allowed_actions": ["BUY", "HOLD"],
-        }
-    ]
+    assert len(reviews) == 1
+    assert reviews[0]["symbol"] == "300750"
+    assert reviews[0]["candidate_type"] == "action"
+    assert reviews[0]["review_status"] == "PENDING"
+    assert reviews[0]["final_action"] == "BUY"
+    assert reviews[0]["review_role"] == "NO_CHANGE"
+    assert reviews[0]["event_id"]
+    assert reviews[0]["review_key"].startswith("paper_main:action:300750:BUY")
+    assert reviews[0]["allowed_actions"] == ["BUY", "HOLD"]
 
 
 def test_realtime_ai_review_service_request_reviews_applies_cached_result(monkeypatch) -> None:
@@ -94,6 +90,8 @@ def test_realtime_ai_review_service_request_reviews_applies_cached_result(monkey
     )
     service._store_review_result(
         review_key,
+        event_id="paper_main:action:300750:BUY:0:1",
+        submitted_at="2026-04-07T09:35:00",
         status="DONE",
         review={
             "final_action": "HOLD",
@@ -130,6 +128,8 @@ def test_realtime_ai_review_service_request_reviews_applies_cached_result(monkey
     assert reviews[0]["review_status"] == "DONE"
     assert reviews[0]["reviewed_action"] == "HOLD"
     assert reviews[0]["applied"] is True
+    assert reviews[0]["review_role"] == "VETO"
+    assert reviews[0]["event_id"] == "paper_main:action:300750:BUY:0:1"
 
 
 def test_realtime_ai_review_service_reports_empty_response_with_chinese_message() -> None:
@@ -231,3 +231,23 @@ def test_realtime_ai_review_service_can_review_holding_without_preexisting_actio
     assert updated_actions[0].reduce_pct == 0.4
     assert reviews[0]["candidate_type"] == "holding"
     assert reviews[0]["applied"] is True
+    assert reviews[0]["review_role"] == "TRIGGER"
+
+
+def test_realtime_ai_review_service_prioritizes_high_risk_holdings() -> None:
+    service = RealtimeAIReviewService(load_settings())
+
+    candidates = service._select_candidates(
+        actions=[],
+        portfolio_feedback={
+            "equity": 100000,
+            "risk_mode": "DEFENSIVE",
+            "positions_detail": [
+                {"symbol": "000001", "qty": 100, "can_sell_qty": 100, "market_value": 8000, "unrealized_pct": -0.01},
+                {"symbol": "000002", "qty": 1000, "can_sell_qty": 1000, "market_value": 30000, "unrealized_pct": -0.06},
+                {"symbol": "000003", "qty": 500, "can_sell_qty": 500, "market_value": 22000, "unrealized_pct": 0.07},
+            ],
+        },
+    )
+
+    assert [item["symbol"] for item in candidates[:2]] == ["000002", "000003"]

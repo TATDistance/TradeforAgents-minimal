@@ -219,6 +219,47 @@ CREATE TABLE IF NOT EXISTS style_profile_history (
     reason TEXT,
     metadata_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS realtime_ai_review_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    review_key TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    symbol TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    candidate_type TEXT NOT NULL,
+    review_role TEXT NOT NULL DEFAULT '',
+    proposed_action TEXT NOT NULL,
+    reviewed_action TEXT,
+    final_action TEXT NOT NULL,
+    allowed_actions_json TEXT,
+    review_status TEXT NOT NULL,
+    applied INTEGER NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0,
+    reason TEXT,
+    fallback_reason TEXT,
+    error_code TEXT,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    base_price REAL NOT NULL DEFAULT 0,
+    base_ts TEXT NOT NULL,
+    base_market_value REAL NOT NULL DEFAULT 0,
+    position_qty INTEGER NOT NULL DEFAULT 0,
+    can_sell_qty INTEGER NOT NULL DEFAULT 0,
+    unrealized_pct REAL NOT NULL DEFAULT 0,
+    market_regime TEXT,
+    risk_mode TEXT,
+    payload_json TEXT,
+    outcome_1h_return REAL,
+    outcome_close_return REAL,
+    outcome_next_close_return REAL,
+    benefit_1h REAL,
+    benefit_close REAL,
+    benefit_next_close REAL,
+    outcome_1h_label TEXT,
+    outcome_close_label TEXT,
+    outcome_next_close_label TEXT,
+    evaluated_at TEXT
+);
 """
 
 
@@ -716,6 +757,7 @@ def fetch_recent_rows(conn: sqlite3.Connection, table: str, limit: int = 20) -> 
         "decision_snapshots",
         "adaptive_weight_history",
         "style_profile_history",
+        "realtime_ai_review_events",
     }:
         raise ValueError("unsupported table")
     return conn.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?", (limit,)).fetchall()

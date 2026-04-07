@@ -1194,6 +1194,7 @@ def _build_realized_breakdown(
 def _build_realtime_ai_review_summary(
     live_state: Dict[str, object],
     symbol_names: Dict[str, str],
+    account_id: str | None = None,
 ) -> Dict[str, object]:
     rows = live_state.get("realtime_ai_reviews") or []
     if not isinstance(rows, list):
@@ -1205,6 +1206,9 @@ def _build_realtime_ai_review_summary(
     pending_count = 0
     done_count = 0
     degraded_count = 0
+    veto_count = 0
+    soften_count = 0
+    trigger_count = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1228,10 +1232,18 @@ def _build_realtime_ai_review_summary(
             pending_count += 1
         draft_action = str(row.get("draft_action") or row.get("proposed_action") or "HOLD")
         reviewed_action = str(row.get("reviewed_action") or row.get("final_action") or draft_action)
+        review_role = str(row.get("review_role") or "")
+        if review_role == "VETO":
+            veto_count += 1
+        elif review_role == "SOFTEN":
+            soften_count += 1
+        elif review_role == "TRIGGER":
+            trigger_count += 1
         reason = str(row.get("reason") or "").strip()
         fallback_reason = str(row.get("fallback_reason") or "").strip()
         items.append(
             {
+                "event_id": str(row.get("event_id") or ""),
                 "symbol": symbol,
                 "name": symbol_names.get(symbol, symbol),
                 "candidate_type": candidate_type,
@@ -1241,6 +1253,7 @@ def _build_realtime_ai_review_summary(
                 "review_status": review_status,
                 "reviewed_action": reviewed_action,
                 "final_action": reviewed_action,
+                "review_role": review_role,
                 "confidence": float(row.get("confidence") or 0.0),
                 "reason": reason or fallback_reason or "本轮实时 AI 复核未返回额外说明。",
                 "fallback_reason": fallback_reason,
@@ -1249,6 +1262,28 @@ def _build_realtime_ai_review_summary(
                 "applied": applied,
             }
         )
+    history_rows = _query_rows(
+        """
+        SELECT event_id, review_role, benefit_close, outcome_close_label
+        FROM realtime_ai_review_events
+        ORDER BY ts DESC, id DESC
+        LIMIT 30
+        """,
+        account_id=account_id,
+    )
+    avg_benefit_close = 0.0
+    positive_close_count = 0
+    history_map = {str(row.get("event_id") or ""): row for row in history_rows}
+    if history_rows:
+        avg_benefit_close = sum(float(row.get("benefit_close") or 0.0) for row in history_rows) / max(len(history_rows), 1)
+        positive_close_count = sum(1 for row in history_rows if float(row.get("benefit_close") or 0.0) > 0)
+    for item in items:
+        history = history_map.get(str(item.get("event_id") or ""))
+        if not history:
+            continue
+        item["review_role"] = str(item.get("review_role") or history.get("review_role") or "")
+        item["benefit_close"] = float(history.get("benefit_close") or 0.0)
+        item["outcome_close_label"] = str(history.get("outcome_close_label") or "")
     return {
         "enabled": bool(SETTINGS.ai.realtime_action_review_enabled or SETTINGS.ai.realtime_position_review_enabled),
         "action_review_enabled": bool(SETTINGS.ai.realtime_action_review_enabled),
@@ -1260,6 +1295,11 @@ def _build_realtime_ai_review_summary(
         "degraded_count": degraded_count,
         "action_review_count": action_review_count,
         "holding_review_count": holding_review_count,
+        "veto_count": veto_count,
+        "soften_count": soften_count,
+        "trigger_count": trigger_count,
+        "avg_benefit_close": avg_benefit_close,
+        "positive_close_count": positive_close_count,
         "items": items[:6],
     }
 
@@ -1338,6 +1378,8 @@ def _fallback_adaptive_adjustments(
     style_profile: Dict[str, object],
     account_id: str | None = None,
 ) -> List[Dict[str, object]]:
+    review_feedback = dict(adaptive_weights.get("ai_review_feedback") or {})
+    suggestions = list(review_feedback.get("suggestions") or [])
     history_rows = _query_rows(
         """
         SELECT key_name, old_value, new_value, reason, ts
@@ -1356,6 +1398,17 @@ def _fallback_adaptive_adjustments(
                 "reason": str(row.get("reason") or "已按近期表现做平滑调整。"),
             }
             for row in history_rows
+        ]
+    if suggestions:
+        return [
+            {
+                "key": str(item.get("key") or "AI 反馈"),
+                "old_value": 0.0,
+                "new_value": 0.0,
+                "reason": str(item.get("reason") or ""),
+                "value": str(item.get("value") or ""),
+            }
+            for item in suggestions[:3]
         ]
     performance_items = list(strategy_performance.values())
     total_trades = sum(int(item.get("trades") or 0) for item in performance_items if isinstance(item, dict))
@@ -1518,7 +1571,7 @@ def get_home_view(account_id: str | None = None) -> Dict[str, object]:
     watchlist = _build_watchlist_entries(SETTINGS, live_state, names, ai_decisions, account_id=resolved_account_id)
     watchlist_sections = _build_watchlist_sections(watchlist, SETTINGS)
     trade_explanations = _build_trade_explanations(names, ai_decisions, watchlist, account_id=resolved_account_id)
-    realtime_ai_reviews = _build_realtime_ai_review_summary(live_state, names)
+    realtime_ai_reviews = _build_realtime_ai_review_summary(live_state, names, account_id=resolved_account_id)
     realized_breakdown = _build_realized_breakdown(
         names,
         account_id=resolved_account_id,
@@ -1530,6 +1583,7 @@ def get_home_view(account_id: str | None = None) -> Dict[str, object]:
         account_id=resolved_account_id,
     )
     adaptive_weights = dict(live_state.get("adaptive_weights") or {})
+    adaptive_feedback = dict(adaptive_weights.get("ai_review_feedback") or {})
     adaptive_adjustments = list(adaptive_weights.get("adjustments") or [])
     if not adaptive_adjustments:
         adaptive_adjustments = _fallback_adaptive_adjustments(
@@ -1574,6 +1628,7 @@ def get_home_view(account_id: str | None = None) -> Dict[str, object]:
         "style_profile": style_profile,
         "strategy_performance": strategy_performance,
         "adaptive_weights": adaptive_weights,
+        "adaptive_feedback": adaptive_feedback,
         "adaptive_adjustments": adaptive_adjustments[:3],
         "report_links": _latest_report_links(),
         "core_symbol": core_symbol,

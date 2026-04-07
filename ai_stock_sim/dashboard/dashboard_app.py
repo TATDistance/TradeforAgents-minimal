@@ -431,6 +431,7 @@ def render_dashboard() -> None:
     comparisons_df = load_table("mode_comparisons", limit=20, account_id=selected_account_id)
     manual_df = attach_symbol_name(load_table("manual_execution_logs", limit=50, account_id=selected_account_id))
     attribution_df = attach_symbol_name(load_table("decision_snapshots", limit=300, account_id=selected_account_id))
+    realtime_review_df = attach_symbol_name(load_table("realtime_ai_review_events", limit=300, account_id=selected_account_id))
     adaptive_history_df = load_table("adaptive_weight_history", limit=300, account_id=selected_account_id)
     style_history_df = load_table("style_profile_history", limit=120, account_id=selected_account_id)
     live_state = load_live_state(account_id=selected_account_id)
@@ -547,6 +548,8 @@ def render_dashboard() -> None:
         visible_tab_titles.append("AI 审核员")
     if current_mode in {"ai_decision_engine_mode", "compare_mode"} or (isinstance(engine_payload, dict) and engine_payload) or (isinstance(manager, dict) and manager):
         visible_tab_titles.append("AI 决策中心")
+    if not realtime_review_df.empty or bool((live_state or {}).get("realtime_ai_reviews")):
+        visible_tab_titles.append("实时终审对照")
     if not actions_df.empty or not risk_df.empty:
         visible_tab_titles.append("执行结果")
     visible_tab_titles.extend(["账户与持仓", "策略评估"])
@@ -816,6 +819,56 @@ def render_dashboard() -> None:
             else:
                 st.info("暂无组合管理建议。")
 
+    if "实时终审对照" in tab_map:
+        with tab_map["实时终审对照"]:
+            st.subheader("实时终审前后对照表")
+            if realtime_review_df.empty:
+                st.info("暂无实时终审记录。")
+            else:
+                review_display_df = realtime_review_df.copy()
+                role_map = {
+                    "VETO": "否决型",
+                    "SOFTEN": "缓和型",
+                    "TRIGGER": "触发型",
+                    "NO_CHANGE": "未改写",
+                    "ADJUST": "其他改写",
+                }
+                review_display_df["作用类型"] = review_display_df["review_role"].astype(str).map(role_map).fillna(review_display_df["review_role"])
+                review_display_df["收盘效果"] = review_display_df["outcome_close_label"].fillna("待评估")
+                metric_cols = st.columns(6)
+                metric_cols[0].metric("终审总数", len(review_display_df))
+                metric_cols[1].metric("已改写", int(review_display_df["applied"].fillna(0).astype(int).sum()) if "applied" in review_display_df.columns else 0)
+                metric_cols[2].metric("否决型", int((review_display_df["review_role"].astype(str) == "VETO").sum()) if "review_role" in review_display_df.columns else 0)
+                metric_cols[3].metric("缓和型", int((review_display_df["review_role"].astype(str) == "SOFTEN").sum()) if "review_role" in review_display_df.columns else 0)
+                metric_cols[4].metric("触发型", int((review_display_df["review_role"].astype(str) == "TRIGGER").sum()) if "review_role" in review_display_df.columns else 0)
+                metric_cols[5].metric(
+                    "平均收盘收益改善",
+                    f"{float(review_display_df['benefit_close'].fillna(0.0).mean() if 'benefit_close' in review_display_df.columns else 0.0):.2%}",
+                )
+                cols = [
+                    col
+                    for col in [
+                        "ts",
+                        "symbol",
+                        "name",
+                        "candidate_type",
+                        "作用类型",
+                        "proposed_action",
+                        "reviewed_action",
+                        "final_action",
+                        "review_status",
+                        "confidence",
+                        "reason",
+                        "latency_ms",
+                        "outcome_1h_return",
+                        "outcome_close_return",
+                        "outcome_next_close_return",
+                        "收盘效果",
+                    ]
+                    if col in review_display_df.columns
+                ]
+                st.dataframe(review_display_df[cols], use_container_width=True, hide_index=True)
+
     if "执行结果" in tab_map:
         with tab_map["执行结果"]:
             st.subheader("执行结果")
@@ -1025,6 +1078,33 @@ def render_dashboard() -> None:
                 adaptive_weights_df = pd.DataFrame([{"strategy_name": key, "weight": value} for key, value in (adaptive_state.get("strategy_weights") or {}).items()])
                 if not adaptive_weights_df.empty:
                     st.dataframe(adaptive_weights_df, use_container_width=True, hide_index=True)
+                review_feedback = dict(adaptive_state.get("ai_review_feedback") or {})
+                if review_feedback:
+                    st.markdown("**AI 终审反馈**")
+                    feedback_cols = st.columns(4)
+                    feedback_cols[0].metric("已评估终审", int(review_feedback.get("evaluated_count") or 0))
+                    feedback_cols[1].metric("收盘正向", int(review_feedback.get("positive_close_count") or 0))
+                    feedback_cols[2].metric("平均收盘改善", f"{float(review_feedback.get('avg_benefit_close') or 0.0):.2%}")
+                    feedback_cols[3].metric("高价值场景", str(review_feedback.get("top_regime") or "-"))
+                    role_stats = pd.DataFrame(
+                        [
+                            {
+                                "作用类型": str((item or {}).get("label") or key),
+                                "样本数": int((item or {}).get("count") or 0),
+                                "收盘改善": float((item or {}).get("avg_benefit_close") or 0.0),
+                                "次日改善": float((item or {}).get("avg_benefit_next_close") or 0.0),
+                                "正向占比": float((item or {}).get("positive_rate") or 0.0),
+                                "说明": str((item or {}).get("message") or ""),
+                            }
+                            for key, item in (review_feedback.get("role_stats") or {}).items()
+                        ]
+                    )
+                    if not role_stats.empty:
+                        st.dataframe(role_stats, use_container_width=True, hide_index=True)
+                    suggestions = pd.DataFrame(list(review_feedback.get("suggestions") or []))
+                    if not suggestions.empty:
+                        st.markdown("**策略反馈建议**")
+                        st.dataframe(suggestions, use_container_width=True, hide_index=True)
             if not adaptive_history_df.empty:
                 history_df = adaptive_history_df.copy()
                 st.dataframe(history_df, use_container_width=True, hide_index=True)

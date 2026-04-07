@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import time
+from datetime import datetime
 from typing import Dict, List, Mapping, Sequence, Tuple
 
 from openai import OpenAI
@@ -25,11 +26,27 @@ class RealtimeAIReviewService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
         self._last_review_at: Dict[str, float] = {}
-        self._pending_reviews: set[str] = set()
+        self._pending_reviews: Dict[str, Dict[str, object]] = {}
         self._review_results: Dict[str, Dict[str, object]] = {}
         self._review_queue: queue.Queue[Dict[str, object]] = queue.Queue()
         self._lock = threading.Lock()
         self._worker_thread: threading.Thread | None = None
+
+    @staticmethod
+    def _classify_review_role(candidate_type: str, proposed_action: str, final_action: str) -> str:
+        draft = str(proposed_action or "HOLD").upper()
+        final = str(final_action or draft).upper()
+        if draft == final:
+            return "NO_CHANGE"
+        if draft == "BUY" and final == "HOLD":
+            return "VETO"
+        if draft in {"SELL", "REDUCE"} and final in {"HOLD", "REDUCE"}:
+            return "SOFTEN"
+        if candidate_type == "holding" and final in {"REDUCE", "SELL"}:
+            return "TRIGGER"
+        if draft == "HOLD" and final in {"REDUCE", "SELL"}:
+            return "TRIGGER"
+        return "ADJUST"
 
     def request_reviews(
         self,
@@ -56,6 +73,15 @@ class RealtimeAIReviewService:
         )
 
         for candidate in candidates:
+            payload = self._build_review_payload(
+                candidate=candidate,
+                portfolio_feedback=portfolio_feedback,
+                market_regime=market_regime,
+                phase_state=phase_state,
+                snapshot_rows=snapshot_rows,
+                decision_contexts=decision_contexts,
+                trade_date=trade_date,
+            )
             review_key = self._review_key(candidate, account_id=account_id)
             record = self._get_review_result(review_key)
             review_status = str(record.get("status") or "PENDING").upper()
@@ -99,26 +125,31 @@ class RealtimeAIReviewService:
                     fallback_reason = str(record.get("error") or "实时 AI 终审失败，已回退到规则动作")
                 reason = str(record.get("error") or "")
                 if self._should_enqueue(review_key):
-                    payload = self._build_review_payload(
-                        candidate=candidate,
-                        portfolio_feedback=portfolio_feedback,
-                        market_regime=market_regime,
-                        phase_state=phase_state,
-                        snapshot_rows=snapshot_rows,
-                        decision_contexts=decision_contexts,
-                        trade_date=trade_date,
-                    )
-                    self._enqueue_candidate_review(
+                    event_id = self._enqueue_candidate_review(
                         review_key=review_key,
                         candidate=candidate,
                         payload=payload,
                     )
+                    record = self._get_review_result(review_key)
+                    if event_id and not record.get("event_id"):
+                        record["event_id"] = event_id
                     review_status = "PENDING"
                     reason = ""
                     fallback_reason = ""
+                reviewed_action = str(record.get("reviewed_action") or reviewed_action or candidate["proposed_action"]).upper() if record.get("reviewed_action") else reviewed_action
 
+            effective_final_action = str(reviewed_action or candidate["proposed_action"]).upper()
+            submitted_at = str(
+                record.get("submitted_at")
+                or payload.get("submitted_at")
+                or datetime.now().isoformat(timespec="seconds")
+            )
             reviews.append(
                 {
+                    "event_id": str(record.get("event_id") or ""),
+                    "review_key": review_key,
+                    "submitted_at": submitted_at,
+                    "trade_date": trade_date,
                     "symbol": candidate["symbol"],
                     "candidate_type": candidate["candidate_type"],
                     "candidate_label": "持仓复核" if candidate["candidate_type"] == "holding" else "交易前终审",
@@ -126,7 +157,12 @@ class RealtimeAIReviewService:
                     "proposed_action": candidate["proposed_action"],
                     "review_status": review_status,
                     "reviewed_action": reviewed_action,
-                    "final_action": reviewed_action or candidate["proposed_action"],
+                    "final_action": effective_final_action,
+                    "review_role": self._classify_review_role(
+                        str(candidate["candidate_type"]),
+                        str(candidate["proposed_action"]),
+                        effective_final_action,
+                    ),
                     "confidence": confidence,
                     "reason": reason,
                     "fallback_reason": fallback_reason,
@@ -134,6 +170,15 @@ class RealtimeAIReviewService:
                     "latency_ms": latency_ms,
                     "applied": applied,
                     "allowed_actions": candidate["allowed_actions"],
+                    "base_price": float(((payload.get("snapshot") or {}).get("latest_price") or 0.0)),
+                    "base_ts": submitted_at,
+                    "base_market_value": float(((payload.get("position") or {}).get("market_value") or 0.0)),
+                    "position_qty": int(((payload.get("position") or {}).get("qty") or 0)),
+                    "can_sell_qty": int(((payload.get("position") or {}).get("can_sell_qty") or 0)),
+                    "unrealized_pct": float(((payload.get("position") or {}).get("unrealized_pct") or 0.0)),
+                    "market_regime_name": str(((payload.get("market_regime") or {}).get("regime") or "")),
+                    "risk_mode": str(((payload.get("portfolio") or {}).get("risk_mode") or "")),
+                    "tracking_payload": payload,
                 }
             )
 
@@ -182,6 +227,7 @@ class RealtimeAIReviewService:
             if not review:
                 continue
             self._last_review_at[review_key] = time.time()
+            submitted_at = datetime.now().isoformat(timespec="seconds")
             applied = False
             if candidate["candidate_type"] == "action":
                 original = action_map.get(candidate["symbol"])
@@ -199,13 +245,23 @@ class RealtimeAIReviewService:
                     applied = True
             reviews.append(
                 {
+                    "event_id": f"{review_key}:{int(time.time() * 1000)}",
+                    "review_key": review_key,
+                    "submitted_at": submitted_at,
+                    "trade_date": trade_date,
                     "symbol": candidate["symbol"],
                     "candidate_type": candidate["candidate_type"],
+                    "candidate_label": "持仓复核" if candidate["candidate_type"] == "holding" else "交易前终审",
                     "draft_action": candidate["proposed_action"],
                     "proposed_action": candidate["proposed_action"],
                     "review_status": "DONE",
                     "reviewed_action": str(review.get("final_action") or candidate["proposed_action"]),
                     "final_action": str(review.get("final_action") or candidate["proposed_action"]),
+                    "review_role": self._classify_review_role(
+                        str(candidate["candidate_type"]),
+                        str(candidate["proposed_action"]),
+                        str(review.get("final_action") or candidate["proposed_action"]),
+                    ),
                     "confidence": float(review.get("confidence") or 0.0),
                     "reason": str(review.get("reason") or ""),
                     "applied": applied,
@@ -213,6 +269,15 @@ class RealtimeAIReviewService:
                     "error_code": "",
                     "latency_ms": 0,
                     "fallback_reason": "",
+                    "base_price": float(((payload.get("snapshot") or {}).get("latest_price") or 0.0)),
+                    "base_ts": submitted_at,
+                    "base_market_value": float(((payload.get("position") or {}).get("market_value") or 0.0)),
+                    "position_qty": int(((payload.get("position") or {}).get("qty") or 0)),
+                    "can_sell_qty": int(((payload.get("position") or {}).get("can_sell_qty") or 0)),
+                    "unrealized_pct": float(((payload.get("position") or {}).get("unrealized_pct") or 0.0)),
+                    "market_regime_name": str(((payload.get("market_regime") or {}).get("regime") or "")),
+                    "risk_mode": str(((payload.get("portfolio") or {}).get("risk_mode") or "")),
+                    "tracking_payload": payload,
                 }
             )
         updated.sort(key=lambda item: float(item.priority or 0.0), reverse=True)
@@ -248,6 +313,8 @@ class RealtimeAIReviewService:
                 if client is None:
                     self._store_review_result(
                         review_key,
+                        event_id=str(task.get("event_id") or ""),
+                        submitted_at=str(task.get("submitted_at") or ""),
                         status="FAILED",
                         review=None,
                         error_code="API_ERROR",
@@ -259,6 +326,8 @@ class RealtimeAIReviewService:
                 if review:
                     self._store_review_result(
                         review_key,
+                        event_id=str(task.get("event_id") or ""),
+                        submitted_at=str(task.get("submitted_at") or ""),
                         status="DONE",
                         review=review,
                         error_code="",
@@ -268,6 +337,8 @@ class RealtimeAIReviewService:
             except RealtimeAIReviewError as exc:
                 self._store_review_result(
                     review_key,
+                    event_id=str(task.get("event_id") or ""),
+                    submitted_at=str(task.get("submitted_at") or ""),
                     status="TIMEOUT" if exc.code == "TIMEOUT" else "FAILED",
                     review=None,
                     error_code=exc.code,
@@ -277,6 +348,8 @@ class RealtimeAIReviewService:
             except Exception as exc:
                 self._store_review_result(
                     review_key,
+                    event_id=str(task.get("event_id") or ""),
+                    submitted_at=str(task.get("submitted_at") or ""),
                     status="FAILED",
                     review=None,
                     error_code="API_ERROR",
@@ -290,6 +363,8 @@ class RealtimeAIReviewService:
         self,
         review_key: str,
         *,
+        event_id: str,
+        submitted_at: str,
         status: str,
         review: Mapping[str, object] | None,
         error_code: str,
@@ -297,8 +372,10 @@ class RealtimeAIReviewService:
         latency_ms: int,
     ) -> None:
         with self._lock:
-            self._pending_reviews.discard(review_key)
+            pending_meta = dict(self._pending_reviews.pop(review_key, {}) or {})
             self._review_results[review_key] = {
+                "event_id": event_id or str(pending_meta.get("event_id") or ""),
+                "submitted_at": submitted_at or str(pending_meta.get("submitted_at") or ""),
                 "status": status,
                 "review": dict(review or {}),
                 "error_code": error_code,
@@ -311,7 +388,7 @@ class RealtimeAIReviewService:
     def _get_review_result(self, review_key: str) -> Dict[str, object]:
         with self._lock:
             if review_key in self._pending_reviews:
-                return {"status": "PENDING"}
+                return {"status": "PENDING", **dict(self._pending_reviews[review_key])}
             return dict(self._review_results.get(review_key) or {})
 
     def _should_enqueue(self, review_key: str) -> bool:
@@ -326,19 +403,26 @@ class RealtimeAIReviewService:
         review_key: str,
         candidate: Mapping[str, object],
         payload: Mapping[str, object],
-    ) -> None:
+    ) -> str:
+        event_id = f"{review_key}:{int(time.time() * 1000)}"
+        submitted_at = datetime.now().isoformat(timespec="seconds")
         with self._lock:
             if review_key in self._pending_reviews:
-                return
-            self._pending_reviews.add(review_key)
+                return str(self._pending_reviews[review_key].get("event_id") or "")
+            self._pending_reviews[review_key] = {
+                "event_id": event_id,
+                "submitted_at": submitted_at,
+            }
         self._review_queue.put(
             {
                 "review_key": review_key,
+                "event_id": event_id,
                 "candidate": dict(candidate),
                 "payload": dict(payload),
-                "submitted_at": time.time(),
+                "submitted_at": submitted_at,
             }
         )
+        return event_id
 
     def _build_client(self) -> OpenAI | None:
         api_key = self._resolve_api_key()
@@ -416,10 +500,12 @@ class RealtimeAIReviewService:
                     "proposed_action": action.action,
                     "allowed_actions": self._allowed_actions(action.action, has_position=action.action != "BUY"),
                     "priority": float(action.priority or 0.0),
+                    "position_qty": 0,
                 }
             )
         if self.settings.ai.realtime_position_review_enabled:
             existing_symbols = {str(action.symbol) for action in raw_actions}
+            account_risk_mode = str(portfolio_feedback.get("risk_mode") or "NORMAL").upper()
             positions = [
                 item
                 for item in (portfolio_feedback.get("positions_detail") or [])
@@ -427,8 +513,12 @@ class RealtimeAIReviewService:
             ]
             positions.sort(
                 key=lambda item: (
+                    1 if float(item.get("market_value") or 0.0) >= float(portfolio_feedback.get("equity") or 0.0) * 0.12 else 0,
+                    1 if abs(float(item.get("unrealized_pct") or 0.0)) >= 0.04 else 0,
+                    1 if account_risk_mode in {"DEFENSIVE", "RISK_OFF"} else 0,
                     float(item.get("market_value") or 0.0),
                     abs(float(item.get("unrealized_pct") or 0.0)),
+                    int(item.get("can_sell_qty") or 0),
                 ),
                 reverse=True,
             )
@@ -446,6 +536,7 @@ class RealtimeAIReviewService:
                         "proposed_action": "HOLD",
                         "allowed_actions": ["HOLD", "REDUCE", "SELL"],
                         "priority": market_value,
+                        "position_qty": int(item.get("qty") or 0),
                     }
                 )
         prioritized = holdings + actionable

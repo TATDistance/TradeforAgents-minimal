@@ -707,13 +707,15 @@ def render_ai_trading_home(build_tag: str) -> str:
         summary.action_review_enabled ? '买卖前终审' : '',
         summary.position_review_enabled ? '持仓复核' : ''
       ].filter(Boolean).join(' / ') || '未开启';
+      const roleText = '否决 ' + String(summary.veto_count || 0) + ' ｜ 缓和 ' + String(summary.soften_count || 0) + ' ｜ 触发 ' + String(summary.trigger_count || 0);
       const statusMeta = '已完成 ' + String(summary.done_count || 0) + ' ｜ 待终审 ' + String(summary.pending_count || 0);
       renderStatGrid(realtimeReviewGrid, [
         {label:'当前模式', value: modeText},
         {label:'本轮复核数', value: String(summary.review_count || 0), subvalue: statusMeta},
         {label:'实际改动数', value: String(summary.changed_count || 0)},
         {label:'降级执行', value: String(summary.degraded_count || 0), subvalue: '超时或异常时直接回退规则动作'},
-        {label:'覆盖结构', value: '交易前 ' + String(summary.action_review_count || 0) + ' ｜ 持仓 ' + String(summary.holding_review_count || 0)}
+        {label:'作用分布', value: roleText, subvalue: '交易前 ' + String(summary.action_review_count || 0) + ' ｜ 持仓 ' + String(summary.holding_review_count || 0)},
+        {label:'近期收盘改善', value: fmtPct(summary.avg_benefit_close || 0), subvalue: '近 30 条里正向 ' + String(summary.positive_close_count || 0) + ' 条'}
       ]);
       if(!summary.enabled){
         realtimeReviewList.innerHTML = '<div class="empty">当前未开启实时 AI 终审 / 持仓复核。</div>';
@@ -729,8 +731,9 @@ def render_ai_trading_home(build_tag: str) -> str:
         '<div><div class="action-title">' + item.symbol + ' ' + (item.name || '') + '</div><div class="subvalue">' + (item.candidate_label || '实时 AI 复核') + '</div></div>' +
         '<div class="badge ' + cardBadgeClass(item.review_status === 'DEGRADED' ? 'danger' : (item.review_status === 'DONE' ? (item.applied ? 'warning' : 'success') : 'neutral')) + '">' + (item.review_status || 'PENDING') + '</div>' +
         '</div>' +
-        '<div class="action-meta"><span>草案 ' + actionCn(item.draft_action || 'HOLD') + ' → ' + actionCn(item.reviewed_action || item.final_action || item.draft_action || 'HOLD') + '</span><span>置信度 ' + Number(item.confidence || 0).toFixed(2) + '</span><span>' + (item.review_status === 'PENDING' ? '排队中' : (item.applied ? '已改写动作' : (item.review_status === 'DEGRADED' ? '已降级执行' : '维持原动作'))) + '</span></div>' +
+        '<div class="action-meta"><span>草案 ' + actionCn(item.draft_action || 'HOLD') + ' → ' + actionCn(item.reviewed_action || item.final_action || item.draft_action || 'HOLD') + '</span><span>' + (item.review_role || 'NO_CHANGE') + '</span><span>置信度 ' + Number(item.confidence || 0).toFixed(2) + '</span><span>' + (item.review_status === 'PENDING' ? '排队中' : (item.applied ? '已改写动作' : (item.review_status === 'DEGRADED' ? '已降级执行' : '维持原动作'))) + '</span></div>' +
         '<div class="action-reason">' + (item.reason || '暂无说明') + '</div>' +
+        (item.outcome_close_label ? ('<div class="subvalue" style="margin-top:8px">收盘效果：' + item.outcome_close_label + (item.benefit_close !== undefined && item.benefit_close !== null ? (' ｜ 改善 ' + fmtPct(item.benefit_close || 0)) : '') + '</div>') : '') +
         (item.latency_ms ? ('<div class="subvalue" style="margin-top:8px">耗时 ' + String(item.latency_ms) + ' ms</div>') : '') +
         '</div>'
       )).join('');
@@ -760,18 +763,38 @@ def render_ai_trading_home(build_tag: str) -> str:
       )).join('');
     }
 
-    function renderAdaptiveAdjustments(items){
-      if(!items || !items.length){
+    function renderAdaptiveAdjustments(items, feedback){
+      const suggestions = Array.isArray(feedback && feedback.suggestions) ? feedback.suggestions : [];
+      const summary = feedback || {};
+      if((!items || !items.length) && !suggestions.length){
         adaptiveAdjustCard.innerHTML = '<div class="empty">最近没有新的自适应调整。</div>';
         return;
       }
-      adaptiveAdjustCard.innerHTML = items.slice(0, 3).map(item => (
+      const blocks = [];
+      if(summary && Number(summary.evaluated_count || 0) > 0){
+        blocks.push(
+          '<div class="action-item">' +
+          '<strong>AI 终审反馈</strong>' +
+          '<div class="muted-note">已评估 ' + String(summary.evaluated_count || 0) + ' 条 ｜ 收盘正向 ' + String(summary.positive_close_count || 0) + ' 条</div>' +
+          '<div class="muted-note">平均改善 ' + fmtPct(summary.avg_benefit_close || 0) + (summary.top_regime ? (' ｜ 高价值场景 ' + summary.top_regime) : '') + '</div>' +
+          '</div>'
+        );
+      }
+      blocks.push(...(items || []).slice(0, 3).map(item => (
         '<div class="action-item">' +
           '<strong>' + (item.key || item.category || '调整') + '</strong>' +
-          '<div class="muted-note">' + fmtNum(item.old_value || 0) + ' → ' + fmtNum(item.new_value || 0) + '</div>' +
+          '<div class="muted-note">' + ((item.old_value !== undefined && item.new_value !== undefined && (item.old_value || item.new_value)) ? (fmtNum(item.old_value || 0) + ' → ' + fmtNum(item.new_value || 0)) : (item.value || '已生成反馈建议')) + '</div>' +
           '<div class="muted-note">' + (item.reason || '已按近期表现做平滑调整。') + '</div>' +
         '</div>'
-      )).join('');
+      )));
+      blocks.push(...suggestions.slice(0, 2).map(item => (
+        '<div class="action-item">' +
+          '<strong>' + (item.key || 'AI 建议') + '</strong>' +
+          '<div class="muted-note">' + (item.value || '继续观察') + '</div>' +
+          '<div class="muted-note">' + (item.reason || '') + '</div>' +
+        '</div>'
+      )));
+      adaptiveAdjustCard.innerHTML = blocks.join('');
     }
 
     function renderWatchlist(watchlist, sections){
@@ -1325,7 +1348,7 @@ def render_ai_trading_home(build_tag: str) -> str:
         renderReportLinks(data.report_links || {});
         renderStyleProfile(data.style_profile || {});
         renderStrategyPerformance(data.strategy_performance || {});
-        renderAdaptiveAdjustments(data.adaptive_adjustments || []);
+        renderAdaptiveAdjustments(data.adaptive_adjustments || [], data.adaptive_feedback || {});
 
         const stats = data.stats || {};
         renderStatGrid(statsGrid, [
