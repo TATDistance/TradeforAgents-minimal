@@ -90,6 +90,7 @@ class TradingScheduler:
         self.evaluation_service = EvaluationService(self.settings)
         self.report_service = ReportService(self.settings, evaluation_service=self.evaluation_service)
         self.realtime_engine = RealtimeEngine(self.settings)
+        self._realtime_engines: Dict[str, RealtimeEngine] = {}
         self.intraday_selector_service = IntradaySelectorService(self.settings, market_data=self.market_data, strategy_engine=self.strategy_engine)
         self.opportunity_pool_service = OpportunityPoolService(self.settings)
         self.watchlist_evolution_service = WatchlistEvolutionService(self.settings)
@@ -99,6 +100,13 @@ class TradingScheduler:
         self._last_report_trade_date: Dict[str, str] = {}
         self._last_phase_key: Dict[str, str] = {}
         self._last_intraday_scan_at: datetime | None = None
+
+    def _realtime_engine_for(self, account_id: str) -> RealtimeEngine:
+        engine = self._realtime_engines.get(account_id)
+        if engine is None:
+            engine = RealtimeEngine(self.settings)
+            self._realtime_engines[account_id] = engine
+        return engine
 
     def start(self) -> None:
         self.scheduler.add_job(self.run_cycle, "interval", seconds=self.settings.refresh_interval_seconds, max_instances=1)
@@ -129,6 +137,7 @@ class TradingScheduler:
         mode_state = self.decision_mode_router.resolve()
         conn = connect_db(self.settings, account_id=account.account_id)
         initialize_db(self.settings, account_id=account.account_id)
+        realtime_engine = self._realtime_engine_for(account.account_id)
 
         def _safe_log(level: str, module: str, message: str) -> None:
             scoped_module = f"{module}[{account.account_id}]"
@@ -168,7 +177,7 @@ class TradingScheduler:
             compare_result = {}
             runtime_events = []
             trigger_decisions = []
-            runtime_states = self.realtime_engine.state_store.export()
+            runtime_states = realtime_engine.state_store.export()
             final_signals: List[FinalSignal] = []
             ai_decisions = []
             portfolio = build_portfolio_state(conn)
@@ -269,7 +278,7 @@ class TradingScheduler:
                 if mode_state.run_legacy:
                     legacy_symbols = list(universe_result.selected_symbols)
                     if self.settings.runtime.engine_mode == "event_driven_mode":
-                        event_preview = self.realtime_engine.select_symbols_for_cycle(
+                        event_preview = realtime_engine.select_symbols_for_cycle(
                             symbols=universe_result.selected_symbols,
                             snapshot_rows=snapshot_rows,
                             feature_scores={},
@@ -333,7 +342,7 @@ class TradingScheduler:
                         portfolio_feedback=portfolio_feedback,
                     )
                     if self.settings.runtime.engine_mode == "event_driven_mode" and not trigger_decisions:
-                        event_result = self.realtime_engine.select_symbols_for_cycle(
+                        event_result = realtime_engine.select_symbols_for_cycle(
                             symbols=engine_symbols,
                             snapshot_rows=snapshot_rows,
                             feature_scores={symbol: item.model_dump() for symbol, item in feature_fusions.items()},
@@ -413,7 +422,7 @@ class TradingScheduler:
                             ),
                             {},
                         )
-                        self.realtime_engine.state_store.update_scores(
+                        realtime_engine.state_store.update_scores(
                             symbol,
                             feature_score=decision.feature_score,
                             setup_score=decision.setup_score,
@@ -431,7 +440,7 @@ class TradingScheduler:
                                 market_regime=market_regime.regime,
                                 style_profile=style_profile.style,
                             )
-                    runtime_states = self.realtime_engine.state_store.export()
+                    runtime_states = realtime_engine.state_store.export()
                 else:
                     engine_actions = []
 
@@ -506,7 +515,7 @@ class TradingScheduler:
                     if action.symbol == "*":
                         _safe_log("INFO", "ai_pm", action.reason)
                         continue
-                    reject_reason = self._recent_reject_reason(action.symbol, action.action)
+                    reject_reason = self._recent_reject_reason(account.account_id, action.symbol, action.action)
                     if reject_reason:
                         _safe_log("INFO", "portfolio_decision", f"{action.symbol} BUY 冷却中: {reject_reason}")
                         risk_results.append(
@@ -556,7 +565,7 @@ class TradingScheduler:
                         }
                     )
                     if not risk.allowed and action.action == "BUY":
-                        self.realtime_engine.state_store.mark_reject(
+                        realtime_engine.state_store.mark_reject(
                             action.symbol,
                             action=action.action,
                             reason=risk.reject_reason or action.reason,
@@ -943,10 +952,10 @@ class TradingScheduler:
         interval = timedelta(minutes=int(self.settings.watchlist_evolution.scan_interval_minutes or 30))
         return datetime.now() - self._last_intraday_scan_at >= interval
 
-    def _recent_reject_reason(self, symbol: str, action: str) -> str | None:
+    def _recent_reject_reason(self, account_id: str, symbol: str, action: str) -> str | None:
         if action != "BUY":
             return None
-        state = self.realtime_engine.state_store.get(symbol)
+        state = self._realtime_engine_for(account_id).state_store.get(symbol)
         if state is None or state.last_reject_action != "BUY" or not state.last_reject_at:
             return None
         reason = str(state.last_reject_reason or "")

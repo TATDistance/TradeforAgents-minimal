@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+import sys
+import types
+from datetime import timezone
+
+zoneinfo_stub = types.ModuleType("zoneinfo")
+zoneinfo_stub.ZoneInfo = lambda _name: timezone.utc
+zoneinfo_stub.ZoneInfoNotFoundError = Exception
+sys.modules.setdefault("zoneinfo", zoneinfo_stub)
+
 from app.db import connect_db, fetch_positions, initialize_db, seed_account
 from app.mock_broker import MockBroker
 from app.models import FinalSignal, RiskCheckResult
