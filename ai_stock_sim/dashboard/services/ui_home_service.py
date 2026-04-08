@@ -483,6 +483,15 @@ def _build_watchlist_entries(
     evolution = dict((live_watchlist or {}).get("watchlist_evolution") or watchlist.get("watchlist_evolution") or {})
     events = list((live_watchlist or {}).get("watchlist_events") or watchlist.get("watchlist_events") or live_state.get("watchlist_events") or [])
     last_scan_at = str((live_watchlist or {}).get("last_scan_at") or live_state.get("watchlist_scan", {}).get("scan_time") or watchlist.get("last_scan_at") or "")
+    scan_interval_minutes = int(settings.watchlist_evolution.scan_interval_minutes or 5)
+    next_scan_eta = ""
+    if last_scan_at:
+        try:
+            next_scan_eta = (
+                datetime.fromisoformat(last_scan_at) + timedelta(minutes=scan_interval_minutes)
+            ).isoformat(timespec="seconds")
+        except Exception:
+            next_scan_eta = ""
     decision_map = {str(item.get("symbol") or ""): item for item in ai_decisions}
     positions = _query_rows(
         "SELECT symbol, qty, avg_cost, last_price, market_value, unrealized_pnl, can_sell_qty FROM positions ORDER BY symbol",
@@ -550,6 +559,8 @@ def _build_watchlist_entries(
         "trading_day": str(watchlist.get("trading_day") or ""),
         "stale": bool(watchlist.get("stale")),
         "last_scan_at": last_scan_at,
+        "scan_interval_minutes": scan_interval_minutes,
+        "next_scan_eta": next_scan_eta,
         "evolution": evolution,
         "events": decorated_events,
         "entries": entries[:16],

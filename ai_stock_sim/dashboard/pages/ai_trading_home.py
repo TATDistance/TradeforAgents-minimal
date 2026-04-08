@@ -830,6 +830,8 @@ def render_ai_trading_home(build_tag: str) -> str:
         '<span class="state-tag">有效期至：' + (watchlist && watchlist.valid_until || '暂无') + '</span>',
         '<span class="state-tag">交易日：' + (watchlist && watchlist.trading_day || '暂无') + '</span>',
         '<span class="state-tag">最近扫描：' + (watchlist && watchlist.last_scan_at || '暂无') + '</span>',
+        '<span class="state-tag">扫描间隔：约 ' + String((watchlist && watchlist.scan_interval_minutes) || 5) + ' 分钟</span>',
+        '<span class="state-tag">预计下次扫描：' + (watchlist && watchlist.next_scan_eta || '等待下一轮') + '</span>',
         '<span class="state-tag">本次新增：' + (((evolution.added || []).length) || 0) + '</span>',
         '<span class="state-tag">本次移除：' + (((evolution.removed || []).length) || 0) + '</span>'
       ].join('');

@@ -35,8 +35,8 @@ class AIConfig:
     realtime_action_review_enabled: bool = False
     realtime_position_review_enabled: bool = False
     realtime_review_model: str = "deepseek-chat"
-    realtime_review_max_items: int = 4
-    realtime_review_timeout_seconds: int = 20
+    realtime_review_max_items: int = 2
+    realtime_review_timeout_seconds: int = 6
     realtime_review_cooldown_seconds: int = 120
 
 
@@ -211,13 +211,54 @@ class WatchlistConfig:
 @dataclass
 class WatchlistEvolutionConfig:
     enabled: bool = True
-    scan_interval_minutes: int = 30
+    scan_interval_minutes: int = 5
     max_watchlist_size: int = 30
     max_new_symbols_per_scan: int = 10
     max_remove_symbols_per_scan: int = 5
     min_score_to_add: float = 0.55
     min_score_to_keep: float = 0.30
     grace_period_minutes: int = 60
+
+
+@dataclass
+class ThemeDetectionConfig:
+    enabled: bool = True
+    min_theme_strength: float = 0.55
+    min_symbols_per_theme: int = 2
+
+
+@dataclass
+class LeaderFilterConfig:
+    enabled: bool = True
+    leader_priority: bool = True
+    suppress_weak_followers: bool = True
+
+
+@dataclass
+class CandidateQualityConfig:
+    enabled: bool = True
+    min_quality_score: float = 0.50
+    min_trend_score: float = 0.30
+    min_liquidity_score: float = 0.25
+    max_noise_penalty: float = 0.68
+
+
+@dataclass
+class EntryStructureConfig:
+    enabled: bool = True
+    chase_block_enabled: bool = True
+    require_pullback_confirmation: bool = True
+    max_chase_pct: float = 0.055
+    max_ma20_extension_pct: float = 0.05
+
+
+@dataclass
+class ExitStructureConfig:
+    enabled: bool = True
+    prefer_reduce_before_sell: bool = True
+    structure_break_required_for_full_sell: bool = True
+    weakening_reduce_threshold: float = -0.02
+    break_sell_threshold: float = -0.05
 
 
 @dataclass
@@ -310,6 +351,11 @@ class Settings:
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
     watchlist: WatchlistConfig = field(default_factory=WatchlistConfig)
     watchlist_evolution: WatchlistEvolutionConfig = field(default_factory=WatchlistEvolutionConfig)
+    theme_detection: ThemeDetectionConfig = field(default_factory=ThemeDetectionConfig)
+    leader_filter: LeaderFilterConfig = field(default_factory=LeaderFilterConfig)
+    candidate_quality: CandidateQualityConfig = field(default_factory=CandidateQualityConfig)
+    entry_structure: EntryStructureConfig = field(default_factory=EntryStructureConfig)
+    exit_structure: ExitStructureConfig = field(default_factory=ExitStructureConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     adaptive: AdaptiveConfig = field(default_factory=AdaptiveConfig)
     style: StyleConfig = field(default_factory=StyleConfig)

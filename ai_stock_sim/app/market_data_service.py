@@ -25,8 +25,9 @@ EASTMONEY_HEADERS = {
     "Referer": "https://quote.eastmoney.com/",
 }
 EASTMONEY_UT = "bd1d9ddb04089700cf9c27f6f7426281"
-EASTMONEY_RETRY_ATTEMPTS = 3
+EASTMONEY_RETRY_ATTEMPTS = max(1, int(os.getenv("TA_EASTMONEY_RETRY_ATTEMPTS", "1")))
 EASTMONEY_RETRY_BACKOFF_SECONDS = 0.35
+EASTMONEY_REQUEST_TIMEOUT_SECONDS = max(1.0, float(os.getenv("TA_EASTMONEY_TIMEOUT_SECONDS", "4")))
 
 
 def infer_market(symbol: str) -> str:
@@ -86,7 +87,7 @@ class MarketDataService:
         last_error: Exception | None = None
         for attempt in range(1, EASTMONEY_RETRY_ATTEMPTS + 1):
             try:
-                response = self.session.get(url, params=params, timeout=15)
+                response = self.session.get(url, params=params, timeout=EASTMONEY_REQUEST_TIMEOUT_SECONDS)
                 response.raise_for_status()
                 payload = response.json()
                 if cache_path:

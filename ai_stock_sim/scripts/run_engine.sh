@@ -8,4 +8,4 @@ else
   source "$PROJECT_ROOT/.venv/bin/activate"
 fi
 cd "$PROJECT_ROOT"
-PYTHONPATH="$PROJECT_ROOT" python -m app.main
+exec env PYTHONPATH="$PROJECT_ROOT" python -m app.main

@@ -100,13 +100,39 @@ watchlist:
   use_default_watchlist_as_last_resort: true
 watchlist_evolution:
   enabled: true
-  scan_interval_minutes: 30
+  scan_interval_minutes: 5
   max_watchlist_size: 30
   max_new_symbols_per_scan: 10
   max_remove_symbols_per_scan: 5
   min_score_to_add: 0.55
   min_score_to_keep: 0.30
   grace_period_minutes: 60
+theme_detection:
+  enabled: true
+  min_theme_strength: 0.55
+  min_symbols_per_theme: 2
+leader_filter:
+  enabled: true
+  leader_priority: true
+  suppress_weak_followers: true
+candidate_quality:
+  enabled: true
+  min_quality_score: 0.50
+  min_trend_score: 0.30
+  min_liquidity_score: 0.25
+  max_noise_penalty: 0.68
+entry_structure:
+  enabled: true
+  chase_block_enabled: true
+  require_pullback_confirmation: true
+  max_chase_pct: 0.055
+  max_ma20_extension_pct: 0.05
+exit_structure:
+  enabled: true
+  prefer_reduce_before_sell: true
+  structure_break_required_for_full_sell: true
+  weakening_reduce_threshold: -0.02
+  break_sell_threshold: -0.05
 ui:
   default_page: ai_home
   enable_research_center: true
@@ -153,8 +179,8 @@ ai:
   realtime_action_review_enabled: true
   realtime_position_review_enabled: true
   realtime_review_model: deepseek-chat
-  realtime_review_max_items: 4
-  realtime_review_timeout_seconds: 20
+  realtime_review_max_items: 2
+  realtime_review_timeout_seconds: 6
   realtime_review_cooldown_seconds: 120
 market_session:
   timezone: Asia/Shanghai

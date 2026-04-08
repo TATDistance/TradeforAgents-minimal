@@ -66,13 +66,23 @@ class WatchlistEvolutionService:
             if not symbol or symbol in current_set:
                 continue
             score = float(item.get("score") or 0.0)
+            quality_passed = bool(item.get("quality_passed", True))
+            quality_score = float(item.get("quality_score") or 0.0)
+            leader_role = str(item.get("leader_role") or "")
+            theme_name = str(item.get("theme") or "")
+            if not quality_passed:
+                continue
+            if self.settings.leader_filter.enabled and self.settings.leader_filter.suppress_weak_followers and leader_role in {"weak_follower", "non_theme"}:
+                continue
             if score < self.policy.min_score_to_add:
                 continue
             if len(added) >= self.policy.max_new_symbols_per_scan:
                 break
             current_symbols.append(symbol)
             current_set.add(symbol)
-            keep_priority[symbol] = max(keep_priority.get(symbol, 0.0), score + 1.0)
+            role_bonus = 0.25 if leader_role == "leader" else 0.12 if leader_role == "strong_follower" else 0.0
+            theme_bonus = 0.1 if theme_name and theme_name != "非主线" else 0.0
+            keep_priority[symbol] = max(keep_priority.get(symbol, 0.0), score + quality_score * 0.6 + 1.0 + role_bonus + theme_bonus)
             reasons[symbol] = str(item.get("reason") or "盘中动态扫描发现强势新机会，加入监控池")
             added.append(symbol)
 

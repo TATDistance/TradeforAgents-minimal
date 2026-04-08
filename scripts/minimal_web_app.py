@@ -289,9 +289,36 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return False
 
 
-def _service_status(pid_file: Path) -> Tuple[bool, Optional[int]]:
+def _pid_command(pid: int) -> str:
+    if not pid or pid <= 0:
+        return ""
+    if os.name == "nt":
+        return ""
+    try:
+        output = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "cmd="],
+            stderr=subprocess.DEVNULL,
+            timeout=0.8,
+        )
+        return output.decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def _pid_matches_markers(pid: Optional[int], process_markers: Optional[List[str]] = None) -> bool:
+    if not pid:
+        return False
+    if not process_markers or os.name == "nt":
+        return True
+    cmd = _pid_command(pid).lower()
+    if not cmd:
+        return False
+    return any(str(marker or "").lower() in cmd for marker in process_markers)
+
+
+def _service_status(pid_file: Path, process_markers: Optional[List[str]] = None) -> Tuple[bool, Optional[int]]:
     pid = _pid_from_file(pid_file)
-    if pid and not _pid_alive(pid):
+    if pid and (not _pid_alive(pid) or not _pid_matches_markers(pid, process_markers)):
         try:
             pid_file.unlink()
         except Exception:
@@ -431,14 +458,15 @@ def _start_background_service(
     args: List[str],
     pid_file: Path,
     log_file: Path,
+    process_markers: Optional[List[str]] = None,
     health_url: Optional[str] = None,
     health_timeout_seconds: float = 8.0,
     truncate_log: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
-) -> Tuple[bool, str]:
-    running, pid = _service_status(pid_file)
+) -> Tuple[bool, str, Optional[int]]:
+    running, pid = _service_status(pid_file, process_markers=process_markers)
     if running and (not health_url or _url_healthy(health_url)):
-        return True, "服务已在运行，PID={0}".format(pid)
+        return True, "服务已在运行，PID={0}".format(pid), pid
     if running and health_url and not _url_healthy(health_url):
         _stop_background_service(pid_file)
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -478,7 +506,7 @@ def _start_background_service(
         deadline = time.time() + health_timeout_seconds
         while time.time() < deadline:
             if _url_healthy(health_url):
-                return True, "服务已启动，PID={0}".format(proc.pid)
+                return True, "服务已启动，PID={0}".format(proc.pid), proc.pid
             if proc.poll() is not None:
                 break
             time.sleep(0.4)
@@ -489,9 +517,9 @@ def _start_background_service(
             snippet = "\n".join(lines[-8:])
             log_hint = "\n最近日志:\n{0}".format(snippet)
         if proc.poll() is not None:
-            return False, "服务启动失败，请查看日志。{0}".format(log_hint)
-        return False, "服务进程已启动，但健康检查未通过，请查看日志。{0}".format(log_hint)
-    return True, "服务已启动，PID={0}".format(proc.pid)
+            return False, "服务启动失败，请查看日志。{0}".format(log_hint), proc.pid
+        return False, "服务进程已启动，但健康检查未通过，请查看日志。{0}".format(log_hint), proc.pid
+    return True, "服务已启动，PID={0}".format(proc.pid), proc.pid
 
 
 def _stop_background_service(pid_file: Path) -> str:
@@ -690,8 +718,14 @@ def _query_sqlite_rows(db_path: Path, sql: str, params: Tuple[object, ...] = ())
 
 
 def _ai_stock_sim_status_payload() -> Dict[str, object]:
-    engine_running, engine_pid = _service_status(AI_STOCK_SIM_ENGINE_PID)
-    dashboard_running, dashboard_pid = _service_status(AI_STOCK_SIM_DASHBOARD_PID)
+    engine_running, engine_pid = _service_status(
+        AI_STOCK_SIM_ENGINE_PID,
+        process_markers=["run_engine.sh", "python -m app.main", "role_engine"],
+    )
+    dashboard_running, dashboard_pid = _service_status(
+        AI_STOCK_SIM_DASHBOARD_PID,
+        process_markers=["run_dashboard.sh", "dashboard_app.py", "streamlit", "role_dashboard"],
+    )
     dashboard_healthy = _url_healthy(AI_STOCK_SIM_DASHBOARD_HEALTH_URL)
     if dashboard_running and not dashboard_healthy:
         dashboard_running = False
@@ -768,23 +802,76 @@ def _ai_stock_sim_status_payload() -> Dict[str, object]:
     }
 
 
-def _wait_for_engine_ready(timeout_seconds: float = 12.0, stable_seconds: float = 2.0) -> Tuple[bool, str]:
+def _engine_log_progress(log_tail: str) -> Tuple[bool, str]:
+    text = str(log_tail or "")
+    if '"message": "cycle_completed"' in text or "cycle_completed" in text:
+        return True, "cycle_completed"
+    if "maximum number of running instances reached (1)" in text:
+        return True, "max_instances"
+    if '"message": "engine_starting"' in text:
+        return True, "engine_starting"
+    return False, ""
+
+
+def _safe_mtime(path: Path) -> float:
+    try:
+        return float(path.stat().st_mtime)
+    except Exception:
+        return 0.0
+
+
+def _parse_iso_datetime(value: object) -> Optional[datetime]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _is_new_heartbeat(current_ts: object, baseline_ts: object) -> bool:
+    current_dt = _parse_iso_datetime(current_ts)
+    if current_dt is None:
+        return False
+    baseline_dt = _parse_iso_datetime(baseline_ts)
+    if baseline_dt is None:
+        return True
+    return current_dt > baseline_dt
+
+
+def _wait_for_engine_ready(
+    timeout_seconds: float = 75.0,
+    stable_seconds: float = 4.0,
+    expected_pid: Optional[int] = None,
+    baseline_live_ts: object = None,
+    baseline_log_mtime: float = 0.0,
+) -> Tuple[bool, str]:
     deadline = time.time() + timeout_seconds
-    stable_since: float | None = None
     while time.time() < deadline:
-        engine_running, engine_pid = _service_status(AI_STOCK_SIM_ENGINE_PID)
+        engine_running, engine_pid = _service_status(
+            AI_STOCK_SIM_ENGINE_PID,
+            process_markers=["run_engine.sh", "python -m app.main", "role_engine"],
+        )
+        if not engine_running and expected_pid and _pid_alive(expected_pid):
+            engine_running = True
+            engine_pid = expected_pid
         live_state = _read_json(AI_STOCK_SIM_HOME / "data" / "cache" / "live_decision_state.json")
-        if _heartbeat_running(live_state.get("ts"), refresh_interval_seconds=10):
+        current_live_ts = live_state.get("ts")
+        if _heartbeat_running(current_live_ts, refresh_interval_seconds=10) and _is_new_heartbeat(current_live_ts, baseline_live_ts):
             return True, "实时引擎已产生新心跳"
-        if engine_running:
-            if stable_since is None:
-                stable_since = time.time()
-            elif time.time() - stable_since >= stable_seconds:
-                return True, "实时引擎进程稳定运行，PID={0}".format(engine_pid)
-        else:
-            stable_since = None
         time.sleep(0.4)
     log_tail = _read_tail(AI_STOCK_SIM_ENGINE_LOG, limit=1600).strip()
+    if expected_pid and _pid_alive(expected_pid):
+        has_new_log = _safe_mtime(AI_STOCK_SIM_ENGINE_LOG) > float(baseline_log_mtime or 0.0)
+        progress_ok, progress_reason = _engine_log_progress(log_tail) if has_new_log else (False, "")
+        if progress_ok and progress_reason == "max_instances":
+            return False, "实时引擎已启动，但首轮调度仍在运行，尚未产生新心跳，请稍后刷新。"
+        if progress_ok and progress_reason in {"cycle_completed", "engine_starting"}:
+            return False, "实时引擎进程已启动，但尚未写入新心跳，请稍后刷新。"
+        return False, "实时引擎进程已启动，但未产生新心跳或新调度日志，请稍后重试。"
     if log_tail:
         lines = [line for line in log_tail.splitlines() if line.strip()]
         snippet = "\n".join(lines[-10:])
@@ -3049,23 +3136,31 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
         if code != 0:
             raise HTTPException(status_code=500, detail=output or "ai_stock_sim 初始化失败")
     _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
+    baseline_live_ts = _read_json(AI_STOCK_SIM_HOME / "data" / "cache" / "live_decision_state.json").get("ts")
+    baseline_log_mtime = _safe_mtime(AI_STOCK_SIM_ENGINE_LOG)
     extra_env = _home_ai_binding_extra_env()
-    ok, engine_message = _start_background_service(
+    ok, engine_message, engine_pid = _start_background_service(
         _launcher_role_args("engine") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
         AI_STOCK_SIM_ENGINE_PID,
         AI_STOCK_SIM_ENGINE_LOG,
+        process_markers=["run_engine.sh", "python -m app.main", "role_engine"],
         extra_env=extra_env or None,
     )
     if not ok:
         raise HTTPException(status_code=500, detail=engine_message)
-    engine_ready, engine_ready_message = _wait_for_engine_ready()
+    engine_ready, engine_ready_message = _wait_for_engine_ready(
+        expected_pid=engine_pid,
+        baseline_live_ts=baseline_live_ts,
+        baseline_log_mtime=baseline_log_mtime,
+    )
     if not engine_ready:
         raise HTTPException(status_code=500, detail=engine_ready_message)
     _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
-    ok, dashboard_message = _start_background_service(
+    ok, dashboard_message, _dashboard_pid = _start_background_service(
         _launcher_role_args("dashboard") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
         AI_STOCK_SIM_DASHBOARD_PID,
         AI_STOCK_SIM_DASHBOARD_LOG,
+        process_markers=["run_dashboard.sh", "dashboard_app.py", "streamlit", "role_dashboard"],
         health_url=AI_STOCK_SIM_DASHBOARD_HEALTH_URL,
         health_timeout_seconds=20.0,
         truncate_log=True,
@@ -3084,16 +3179,23 @@ def start_ai_stock_sim_all() -> Dict[str, object]:
 @app.post("/api/ai-stock-sim/engine/start")
 def start_ai_stock_sim_engine() -> Dict[str, object]:
     _cleanup_processes(r"python -m app\.main|ai_stock_sim/scripts/run_engine\.sh")
+    baseline_live_ts = _read_json(AI_STOCK_SIM_HOME / "data" / "cache" / "live_decision_state.json").get("ts")
+    baseline_log_mtime = _safe_mtime(AI_STOCK_SIM_ENGINE_LOG)
     extra_env = _home_ai_binding_extra_env()
-    ok, message = _start_background_service(
+    ok, message, engine_pid = _start_background_service(
         _launcher_role_args("engine") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_engine.sh")],
         AI_STOCK_SIM_ENGINE_PID,
         AI_STOCK_SIM_ENGINE_LOG,
+        process_markers=["run_engine.sh", "python -m app.main", "role_engine"],
         extra_env=extra_env or None,
     )
     if not ok:
         raise HTTPException(status_code=500, detail=message)
-    engine_ready, engine_ready_message = _wait_for_engine_ready()
+    engine_ready, engine_ready_message = _wait_for_engine_ready(
+        expected_pid=engine_pid,
+        baseline_live_ts=baseline_live_ts,
+        baseline_log_mtime=baseline_log_mtime,
+    )
     if not engine_ready:
         raise HTTPException(status_code=500, detail=engine_ready_message)
     return {"message": engine_ready_message, "status": _ai_stock_sim_status_payload()}
@@ -3109,10 +3211,11 @@ def stop_ai_stock_sim_engine() -> Dict[str, object]:
 @app.post("/api/ai-stock-sim/dashboard/start")
 def start_ai_stock_sim_dashboard() -> Dict[str, object]:
     _cleanup_processes(r"streamlit run .*dashboard/dashboard_app\.py|ai_stock_sim/scripts/run_dashboard\.sh")
-    ok, message = _start_background_service(
+    ok, message, _dashboard_pid = _start_background_service(
         _launcher_role_args("dashboard") if _packaged_windows_runtime() else ["bash", str(AI_STOCK_SIM_HOME / "scripts" / "run_dashboard.sh")],
         AI_STOCK_SIM_DASHBOARD_PID,
         AI_STOCK_SIM_DASHBOARD_LOG,
+        process_markers=["run_dashboard.sh", "dashboard_app.py", "streamlit", "role_dashboard"],
         health_url=AI_STOCK_SIM_DASHBOARD_HEALTH_URL,
         health_timeout_seconds=20.0,
         truncate_log=True,

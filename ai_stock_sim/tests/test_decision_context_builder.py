@@ -52,6 +52,8 @@ def test_decision_context_builder_contains_required_sections() -> None:
     assert "snapshot" in context
     assert "strategy_features" in context
     assert "technical_features" in context
+    assert "entry_structure" in context
+    assert "exit_structure" in context
     assert "market_regime" in context
     assert "market_phase" in context
     assert "execution_gate" in context

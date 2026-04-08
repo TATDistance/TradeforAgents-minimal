@@ -5,6 +5,8 @@ from datetime import date
 from typing import Dict, Mapping, Sequence
 
 from .ai_engine_protocol import AIDecisionEngineOutput, normalize_engine_output
+from .entry_structure_service import EntryStructureService
+from .exit_structure_service import ExitStructureService
 from .score_service import ScoreService
 from .settings import Settings, load_settings, resolve_max_single_position_pct
 
@@ -13,6 +15,8 @@ class AIDecisionEngine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
         self.score_service = ScoreService(self.settings)
+        self.entry_structure_service = EntryStructureService(self.settings)
+        self.exit_structure_service = ExitStructureService(self.settings)
 
     def decide_batch(
         self,
@@ -80,6 +84,15 @@ class AIDecisionEngine:
         allow_new_buy = bool(risk_constraints.get("allow_new_buy", True))
         allow_execute_fill = bool(execution_gate.get("can_execute_fill", False))
         phase_name = str(market_phase.get("phase") or "NON_TRADING_DAY")
+        entry_structure = dict(
+            context.get("entry_structure")
+            or self.entry_structure_service.evaluate(
+                snapshot=snapshot,
+                technical=technical,
+                market_regime=market_regime,
+                position_state=position_state,
+            )
+        )
         research_bias = float(research.get("bias_score") or 0.0)
         ai_score = self._compute_ai_score(
             direction=direction,
@@ -95,6 +108,7 @@ class AIDecisionEngine:
             adaptive_weights=adaptive_weights,
             style_profile=style_profile,
             capital_profile=capital_profile,
+            entry_structure=entry_structure,
         )
         setup_bundle = self.score_service.compute_scores(
             symbol=symbol,
@@ -116,6 +130,22 @@ class AIDecisionEngine:
         gate_penalty = float(setup_bundle.get("gate_penalty") or 0.0)
         market_risk_penalty = float(setup_bundle.get("market_risk_penalty") or 0.0)
         portfolio_risk_penalty = float(setup_bundle.get("portfolio_risk_penalty") or 0.0)
+        exit_structure = dict(
+            context.get("exit_structure")
+            or self.exit_structure_service.evaluate(
+                technical=technical,
+                position_state=position_state,
+                execution_score=execution_score,
+                risk_mode=risk_mode,
+            )
+        )
+        entry_type = str(entry_structure.get("entry_type") or "watch_point")
+        entry_quality_score = float(entry_structure.get("entry_quality_score") or 0.0)
+        entry_reason = str(entry_structure.get("entry_reason") or "")
+        if entry_type == "chase_block":
+            warnings.append("结构化买点判定为禁追高")
+        elif entry_type == "watch_point" and direction == "LONG":
+            warnings.append("当前仅满足观察点，买点尚未确认")
 
         if not allow_execute_fill:
             return self._build_non_executable_decision(
@@ -136,6 +166,7 @@ class AIDecisionEngine:
                 phase_penalty=phase_penalty,
                 gate_penalty=gate_penalty,
                 capital_profile=capital_profile,
+                entry_structure=entry_structure,
             )
 
         if risk_mode == "RISK_OFF" and not has_position:
@@ -177,6 +208,7 @@ class AIDecisionEngine:
                 gate_penalty=gate_penalty,
                 technical=technical,
                 warnings=warnings,
+                exit_structure=exit_structure,
             )
             if position_exit:
                 return normalize_engine_output(position_exit, symbol)
@@ -200,10 +232,14 @@ class AIDecisionEngine:
                         "gate_penalty": round(gate_penalty, 4),
                         "risk_mode": risk_mode,
                         "holding_bias": "SHORT_TERM",
-                        "reason": "已有持仓进入保护利润或控制回撤阶段，建议部分减仓。",
+                        "reason": str(exit_structure.get("exit_reason") or "已有持仓进入保护利润或控制回撤阶段，建议部分减仓。"),
                         "warnings": warnings,
                         "final_score": round(execution_score, 4),
                         "feature_score": round(feature_score, 4),
+                        "extra": {
+                            "exit_type": str(exit_structure.get("exit_type") or "reduce_on_weakening"),
+                            "exit_quality_score": float(exit_structure.get("exit_quality_score") or 0.0),
+                        },
                     },
                     symbol,
                 )
@@ -221,10 +257,14 @@ class AIDecisionEngine:
                     "gate_penalty": round(gate_penalty, 4),
                     "risk_mode": risk_mode,
                     "holding_bias": "SHORT_TERM",
-                    "reason": "当前持仓与市场状态基本匹配，继续持有观察。",
+                    "reason": str(exit_structure.get("exit_reason") or "当前持仓与市场状态基本匹配，继续持有观察。"),
                     "warnings": warnings,
                     "final_score": round(execution_score, 4),
                     "feature_score": round(feature_score, 4),
+                    "extra": {
+                        "exit_type": str(exit_structure.get("exit_type") or "hold_on_structure"),
+                        "exit_quality_score": float(exit_structure.get("exit_quality_score") or 0.0),
+                    },
                 },
                 symbol,
             )
@@ -254,6 +294,10 @@ class AIDecisionEngine:
 
         buy_threshold = self.settings.scoring.min_execution_score_to_buy + float(capital_profile["buy_threshold_bonus"])
         watch_threshold = self.settings.scoring.min_setup_score_to_watch + float(capital_profile["watch_threshold_bonus"])
+        if entry_type == "watch_point":
+            buy_threshold += 0.08
+        elif entry_type == "chase_block":
+            buy_threshold += 0.20
 
         if (
             direction == "LONG"
@@ -274,15 +318,19 @@ class AIDecisionEngine:
                     "gate_penalty": round(gate_penalty, 4),
                     "risk_mode": risk_mode,
                     "holding_bias": "SHORT_TERM",
-                    "reason": "该标的一手资金占用对小资金账户过高，先观察更适合小本金参与的机会。",
+                    "reason": entry_reason or "该标的一手资金占用对小资金账户过高，先观察更适合小本金参与的机会。",
                     "warnings": warnings,
                     "final_score": round(execution_score, 4),
                     "feature_score": round(feature_score, 4),
+                    "extra": {
+                        "entry_type": entry_type,
+                        "entry_quality_score": entry_quality_score,
+                    },
                 },
                 symbol,
             )
 
-        if direction == "LONG" and execution_score >= buy_threshold:
+        if direction == "LONG" and bool(entry_structure.get("allow_buy", False)) and execution_score >= buy_threshold:
             base_pct = min(max_single_position_pct, 0.06 + execution_score * 0.12)
             if risk_mode == "DEFENSIVE":
                 base_pct *= 0.65
@@ -292,6 +340,7 @@ class AIDecisionEngine:
                 lot_ratio = float(capital_profile["lot_ratio"] or 0.0)
                 if 0.0 < lot_ratio <= max_single_position_pct:
                     base_pct = max(base_pct, min(max_single_position_pct, lot_ratio * 1.02))
+            base_pct *= max(0.35, min(1.0, float(entry_structure.get("position_scale") or 1.0)))
             return normalize_engine_output(
                 {
                     "symbol": symbol,
@@ -307,10 +356,14 @@ class AIDecisionEngine:
                     "gate_penalty": round(gate_penalty, 4),
                     "risk_mode": risk_mode,
                     "holding_bias": "SHORT_TERM",
-                    "reason": "多因子特征、账户状态与市场环境共振，满足新开仓条件。",
+                    "reason": entry_reason or "多因子特征、账户状态与市场环境共振，满足新开仓条件。",
                     "warnings": warnings,
                     "final_score": round(execution_score, 4),
                     "feature_score": round(feature_score, 4),
+                    "extra": {
+                        "entry_type": entry_type,
+                        "entry_quality_score": entry_quality_score,
+                    },
                 },
                 symbol,
             )
@@ -330,10 +383,15 @@ class AIDecisionEngine:
                 "gate_penalty": round(gate_penalty, 4),
                 "risk_mode": risk_mode,
                 "holding_bias": "SHORT_TERM",
-                "reason": str(setup_bundle.get("explain") or "当前没有形成足够强的新开仓优势，继续等待更明确机会。"),
+                "reason": entry_reason or str(setup_bundle.get("explain") or "当前没有形成足够强的新开仓优势，继续等待更明确机会。"),
                 "warnings": warnings,
                 "final_score": round(execution_score, 4),
                 "feature_score": round(feature_score, 4),
+                "extra": {
+                    "entry_type": entry_type,
+                    "entry_quality_score": entry_quality_score,
+                    "exit_type": str(exit_structure.get("exit_type") or ""),
+                },
             },
             symbol,
         )
@@ -367,9 +425,11 @@ class AIDecisionEngine:
         phase_penalty: float,
         gate_penalty: float,
         capital_profile: Mapping[str, float | bool] | None = None,
+        entry_structure: Mapping[str, object] | None = None,
     ) -> AIDecisionEngineOutput:
         allow_prepare_actions = not (phase_name == "POST_CLOSE" and not self.settings.market_session.allow_post_close_paper_execution)
         resolved_capital_profile = dict(capital_profile or {})
+        resolved_entry_structure = dict(entry_structure or {})
         watch_threshold = self.settings.scoring.min_setup_score_to_watch + float(
             resolved_capital_profile.get("watch_threshold_bonus") or 0.0
         )
@@ -423,6 +483,7 @@ class AIDecisionEngine:
             allow_prepare_actions
             and allow_new_buy
             and direction == "LONG"
+            and bool(resolved_entry_structure.get("allow_buy", False))
             and setup_score >= watch_threshold
             and not (
                 bool(resolved_capital_profile.get("is_small_account"))
@@ -438,6 +499,7 @@ class AIDecisionEngine:
                 lot_ratio = float(resolved_capital_profile.get("lot_ratio") or 0.0)
                 if 0.0 < lot_ratio <= max_single_position_pct:
                     base_pct = max(base_pct, min(max_single_position_pct, lot_ratio * 1.02))
+            base_pct *= max(0.35, min(1.0, float(resolved_entry_structure.get("position_scale") or 1.0)))
             return normalize_engine_output(
                 {
                     "symbol": symbol,
@@ -453,10 +515,14 @@ class AIDecisionEngine:
                     "gate_penalty": round(gate_penalty, 4),
                     "risk_mode": risk_mode,
                     "holding_bias": "SHORT_TERM",
-                    "reason": f"当前处于 {phase_name}，先记录次一可成交阶段的买入意图。",
+                    "reason": str(resolved_entry_structure.get("entry_reason") or f"当前处于 {phase_name}，先记录次一可成交阶段的买入意图。"),
                     "warnings": warnings,
                     "final_score": round(execution_score, 4),
                     "feature_score": round(feature_score, 4),
+                    "extra": {
+                        "entry_type": str(resolved_entry_structure.get("entry_type") or "watch_point"),
+                        "entry_quality_score": float(resolved_entry_structure.get("entry_quality_score") or 0.0),
+                    },
                 },
                 symbol,
             )
@@ -499,6 +565,7 @@ class AIDecisionEngine:
         adaptive_weights: Mapping[str, object],
         style_profile: Mapping[str, object],
         capital_profile: Mapping[str, float | bool],
+        entry_structure: Mapping[str, object],
     ) -> float:
         score = 0.0
         regime = str(market_regime.get("regime") or "")
@@ -519,6 +586,13 @@ class AIDecisionEngine:
                 score += 0.04
             elif pct_change >= 0.06:
                 score -= 0.05
+            entry_type = str(entry_structure.get("entry_type") or "")
+            if entry_type == "probe_entry":
+                score += 0.03
+            elif entry_type == "watch_point":
+                score -= 0.02
+            elif entry_type == "chase_block":
+                score -= 0.08
         if float(snapshot.get("amount") or 0.0) >= self.settings.min_turnover * 2:
             score += 0.02
 
@@ -652,9 +726,16 @@ class AIDecisionEngine:
         gate_penalty: float,
         technical: Mapping[str, object],
         warnings: Sequence[str],
+        exit_structure: Mapping[str, object] | None = None,
     ) -> Dict[str, object] | None:
         if can_sell_qty <= 0:
             return None
+        resolved_exit_structure = dict(exit_structure or {})
+        suggested_action = str(resolved_exit_structure.get("suggested_action") or "")
+        exit_type = str(resolved_exit_structure.get("exit_type") or "")
+        exit_reason = str(resolved_exit_structure.get("exit_reason") or "")
+        exit_quality_score = float(resolved_exit_structure.get("exit_quality_score") or 0.0)
+        reduce_pct = float(resolved_exit_structure.get("reduce_pct") or 0.3)
         min_reduce_score = float(self.settings.scoring.min_execution_score_to_reduce)
         trend_score = self._technical_bonus(technical)
         slope20 = float(technical.get("trend_slope_20d") or 0.0)
@@ -677,10 +758,39 @@ class AIDecisionEngine:
                 "gate_penalty": round(gate_penalty, 4),
                 "risk_mode": risk_mode,
                 "holding_bias": "SHORT_TERM",
-                "reason": "账户或市场已进入风险关闭模式，优先退出已有持仓。",
+                "reason": exit_reason or "账户或市场已进入风险关闭模式，优先退出已有持仓。",
                 "warnings": warnings,
                 "final_score": round(execution_score, 4),
                 "feature_score": round(feature_score, 4),
+                "extra": {
+                    "exit_type": exit_type or "sell_on_break",
+                    "exit_quality_score": exit_quality_score,
+                },
+            }
+
+        if exit_type == "take_profit_partial" and suggested_action == "REDUCE":
+            return {
+                "symbol": symbol,
+                "action": "REDUCE",
+                "reduce_pct": max(0.2, min(reduce_pct, 0.6)),
+                "confidence": min(0.90, 0.60 + abs(execution_score) * 0.18),
+                "ai_score": round(ai_score, 4),
+                "setup_score": round(setup_score, 4),
+                "execution_score": round(execution_score, 4),
+                "market_risk_penalty": round(market_risk_penalty, 4),
+                "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
+                "phase_penalty": round(phase_penalty, 4),
+                "gate_penalty": round(gate_penalty, 4),
+                "risk_mode": risk_mode,
+                "holding_bias": "SHORT_TERM",
+                "reason": exit_reason or "盈利单进入分批兑现阶段。",
+                "warnings": warnings,
+                "final_score": round(execution_score, 4),
+                "feature_score": round(feature_score, 4),
+                "extra": {
+                    "exit_type": exit_type,
+                    "exit_quality_score": exit_quality_score,
+                },
             }
 
         if unrealized_pct <= -0.08 and (structure_broken or execution_score <= -min_reduce_score * 0.6 or risk_mode == "DEFENSIVE"):
@@ -697,18 +807,22 @@ class AIDecisionEngine:
                 "gate_penalty": round(gate_penalty, 4),
                 "risk_mode": risk_mode,
                 "holding_bias": "SHORT_TERM",
-                "reason": "持仓回撤已明显扩大，且走势结构转弱，执行清仓止损。",
+                "reason": exit_reason or "持仓回撤已明显扩大，且走势结构转弱，执行清仓止损。",
                 "warnings": warnings,
                 "final_score": round(execution_score, 4),
                 "feature_score": round(feature_score, 4),
+                "extra": {
+                    "exit_type": exit_type or "sell_on_break",
+                    "exit_quality_score": exit_quality_score,
+                },
             }
 
         if unrealized_pct <= -0.05:
-            if structure_broken or execution_score <= -min_reduce_score:
+            if suggested_action == "SELL" or structure_broken or execution_score <= -min_reduce_score:
                 return {
                     "symbol": symbol,
-                    "action": "REDUCE",
-                    "reduce_pct": 0.5 if unrealized_pct <= -0.07 else 0.3,
+                    "action": "SELL" if suggested_action == "SELL" and not self.settings.exit_structure.prefer_reduce_before_sell else "REDUCE",
+                    "reduce_pct": max(0.3, min(reduce_pct or (0.5 if unrealized_pct <= -0.07 else 0.3), 0.8)),
                     "confidence": min(0.9, 0.6 + abs(execution_score) * 0.18),
                     "ai_score": round(ai_score, 4),
                     "setup_score": round(setup_score, 4),
@@ -719,10 +833,14 @@ class AIDecisionEngine:
                     "gate_penalty": round(gate_penalty, 4),
                     "risk_mode": risk_mode,
                     "holding_bias": "SHORT_TERM",
-                    "reason": "持仓已有明显回撤，但更像走势转弱，先减仓而不是直接清仓。",
+                    "reason": exit_reason or "持仓已有明显回撤，但更像走势转弱，先减仓而不是直接清仓。",
                     "warnings": warnings,
                     "final_score": round(execution_score, 4),
                     "feature_score": round(feature_score, 4),
+                    "extra": {
+                        "exit_type": exit_type or "reduce_on_weakening",
+                        "exit_quality_score": exit_quality_score,
+                    },
                 }
             if trend_supportive and execution_score > -0.18:
                 return {
@@ -738,9 +856,37 @@ class AIDecisionEngine:
                     "gate_penalty": round(gate_penalty, 4),
                     "risk_mode": risk_mode,
                     "holding_bias": "SHORT_TERM",
-                    "reason": "虽已有约 5% 回撤，但趋势和结构尚未完全破坏，继续观察而不直接止损。",
+                    "reason": exit_reason or "虽已有约 5% 回撤，但趋势和结构尚未完全破坏，继续观察而不直接止损。",
                     "warnings": warnings,
                     "final_score": round(execution_score, 4),
                     "feature_score": round(feature_score, 4),
+                    "extra": {
+                        "exit_type": exit_type or "hold_on_structure",
+                        "exit_quality_score": exit_quality_score,
+                    },
                 }
+        if suggested_action == "REDUCE" and exit_quality_score >= 0.58:
+            return {
+                "symbol": symbol,
+                "action": "REDUCE",
+                "reduce_pct": max(0.2, min(reduce_pct, 0.7)),
+                "confidence": min(0.88, 0.58 + abs(execution_score) * 0.16),
+                "ai_score": round(ai_score, 4),
+                "setup_score": round(setup_score, 4),
+                "execution_score": round(execution_score, 4),
+                "market_risk_penalty": round(market_risk_penalty, 4),
+                "portfolio_risk_penalty": round(portfolio_risk_penalty, 4),
+                "phase_penalty": round(phase_penalty, 4),
+                "gate_penalty": round(gate_penalty, 4),
+                "risk_mode": risk_mode,
+                "holding_bias": "SHORT_TERM",
+                "reason": exit_reason or "趋势减弱，先做减仓处理。",
+                "warnings": warnings,
+                "final_score": round(execution_score, 4),
+                "feature_score": round(feature_score, 4),
+                "extra": {
+                    "exit_type": exit_type or "reduce_on_weakening",
+                    "exit_quality_score": exit_quality_score,
+                },
+            }
         return None

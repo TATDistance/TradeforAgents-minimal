@@ -4,6 +4,8 @@ from typing import Dict, Mapping, Sequence
 
 import pandas as pd
 
+from .entry_structure_service import EntryStructureService
+from .exit_structure_service import ExitStructureService
 from .models import ExecutionGateState, MarketPhaseState, MarketRegimeState, StrategyFeature
 from .settings import Settings, load_settings, resolve_max_single_position_pct
 from strategies.common import atr, macd, rsi, safe_pct_change
@@ -12,6 +14,8 @@ from strategies.common import atr, macd, rsi, safe_pct_change
 class DecisionContextBuilder:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or load_settings()
+        self.entry_structure_service = EntryStructureService(self.settings)
+        self.exit_structure_service = ExitStructureService(self.settings)
 
     def build_for_symbol(
         self,
@@ -28,6 +32,18 @@ class DecisionContextBuilder:
     ) -> Dict[str, object]:
         position_state = self._resolve_position_state(symbol, portfolio_feedback)
         technical_features = self._technical_features(frame)
+        entry_structure = self.entry_structure_service.evaluate(
+            snapshot=dict(snapshot or {}),
+            technical=technical_features,
+            market_regime=market_regime.model_dump(),
+            position_state=position_state,
+        )
+        exit_structure = self.exit_structure_service.evaluate(
+            technical=technical_features,
+            position_state=position_state,
+            execution_score=0.0,
+            risk_mode=str(portfolio_feedback.get("risk_mode", "NORMAL")),
+        )
         return {
             "symbol": symbol,
             "snapshot": dict(snapshot or {}),
@@ -42,6 +58,8 @@ class DecisionContextBuilder:
                 for item in strategy_features
             },
             "technical_features": technical_features,
+            "entry_structure": entry_structure,
+            "exit_structure": exit_structure,
             "market_regime": market_regime.model_dump(),
             "market_phase": phase_state.model_dump(),
             "execution_gate": execution_gate.model_dump(),
