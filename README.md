@@ -1,8 +1,59 @@
-# TradeforAgents-minimal
+<h1 align="center">TradeforAgents-minimal</h1>
 
-面向中国 A 股的 AI 交易分析与模拟系统。
+<p align="center">
+  <em>面向中国 A 股的 AI 实时交易分析与模拟系统</em>
+</p>
 
-这个仓库现在的默认产品入口是：
+<p align="center">
+  <img src="https://img.shields.io/badge/Product-8600%20%7C%208610-2563eb" alt="8600 8610">
+  <img src="https://img.shields.io/badge/Market-A%E8%82%A1-e11d48" alt="A股">
+  <img src="https://img.shields.io/badge/AI-DeepSeek-7c3aed" alt="DeepSeek">
+  <img src="https://img.shields.io/badge/Mode-Simulated%20Trading-16a34a" alt="Simulated Trading">
+  <img src="https://img.shields.io/badge/Windows-Installer%20%2B%20Zip-0ea5e9" alt="Windows">
+</p>
+
+<p align="center">
+  把自动选股、盘中监控、AI 决策、风控、模拟成交、账户权益曲线和调试后台整合到一套可直接运行的产品里。
+</p>
+
+<p align="center">
+  <strong>8600</strong> 负责“现在发生了什么、能不能交易、AI 建议做什么”，<br>
+  <strong>8610</strong> 负责“为什么这样决策、哪里出了问题、策略最近表现如何”。
+</p>
+
+<p align="center">
+  <a href="#界面预览">看界面</a> ·
+  <a href="#部署与启动">快速开始</a> ·
+  <a href="#如何使用">如何使用</a> ·
+  <a href="#当前产品结构">产品结构</a> ·
+  <a href="#常见问题">常见问题</a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/8600-home-hero.png" alt="TradeforAgents 8600 首页总览" width="92%">
+</p>
+
+## 核心能力
+
+| 实时交易前台 | AI 决策引擎 | 调试与复盘后台 |
+|---|---|---|
+| `8600` 聚焦“现在发生了什么、能不能交易、AI 建议做什么”，首页直接给出状态、账户、机会、图表与时间线。 | 自动选股、盘中监控、事件驱动决策、风控、模拟成交、买卖前 AI 终审与持仓 AI 复核都在同一条链路里完成。 | `8610` 聚焦“为什么这么做、哪里出了问题、策略最近表现如何”，适合做归因、评估、排错与复盘。 |
+
+## 开始路径
+
+| 安装版 | 本地快速开始 | Windows 绿色版 |
+|---|---|---|
+| 下载 `tradeforagents-windows-installer-vX.Y.Z.exe`，双击安装后直接打开产品首页。 | `bash start.sh web` 启动 `8600`，再从首页一键拉起实时 AI 决策链路。 | 下载 `tradeforagents-windows-noinstall-vX.Y.Z.zip`，解压后双击 `start.bat` 即可运行。 |
+
+## 产品界面
+
+| 8600 首页 | 8610 调试台 |
+|---|---|
+| <img src="docs/screenshots/8600-home-hero.png" alt="8600 首页" width="100%"> | **8610** 是高级调试与复盘面板。<br><br>当前仓库还没有单独整理好的 8610 截图素材，但入口、引擎、评估、归因、权重与错误交易分析都已经在调试台内提供。<br><br>默认地址：`http://127.0.0.1:8610/` |
+
+---
+
+这个仓库当前默认产品入口：
 
 - `8600`：AI 实时交易前台
 - `8610`：高级调试后台

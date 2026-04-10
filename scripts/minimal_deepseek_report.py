@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
+import requests
 import yfinance as yf
 from openai import OpenAI
 
@@ -59,9 +60,14 @@ logging.getLogger("yfinance").setLevel(logging.ERROR)
 EASTMONEY_HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Referer": "https://quote.eastmoney.com/",
+    "Accept": "application/json,text/plain,*/*",
+    "Connection": "close",
 }
 
 EASTMONEY_UT = "7eea3edcaed734bea9cbfc24409ed989"
+EASTMONEY_REQUEST_TIMEOUT_SECONDS = max(3.0, float(os.getenv("TA_EM_REQUEST_TIMEOUT_SECONDS", "15")))
+EASTMONEY_REQUEST_RETRIES = max(1, int(os.getenv("TA_EM_REQUEST_RETRIES", "3")))
+EASTMONEY_RETRY_BACKOFF_SECONDS = max(0.5, float(os.getenv("TA_EM_RETRY_BACKOFF_SECONDS", "1.2")))
 
 
 def normalize_symbol(user_symbol: str) -> Tuple[str, str]:
@@ -198,12 +204,34 @@ def eastmoney_secid(yf_symbol: str) -> str:
     return f"0.{code}"
 
 
-def eastmoney_request_json(url: str, params: Dict[str, Any], timeout: int = 15) -> Dict[str, Any]:
-    query = urllib.parse.urlencode(params)
-    request = urllib.request.Request(f"{url}?{query}", headers=EASTMONEY_HEADERS)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _build_eastmoney_session(*, trust_env: bool) -> requests.Session:
+    session = requests.Session()
+    session.headers.update(EASTMONEY_HEADERS)
+    session.trust_env = trust_env
+    return session
+
+
+def eastmoney_request_json(url: str, params: Dict[str, Any], timeout: float = EASTMONEY_REQUEST_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    last_error: Exception | None = None
+    # 先直连；若环境有代理配置，再补一轮尊重系统代理的重试。
+    proxy_candidates = [False, True] if any(os.getenv(k) for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")) else [False]
+    for trust_env in proxy_candidates:
+        session = _build_eastmoney_session(trust_env=trust_env)
+        try:
+            for attempt in range(1, EASTMONEY_REQUEST_RETRIES + 1):
+                try:
+                    response = session.get(url, params=params, timeout=timeout)
+                    response.raise_for_status()
+                    return response.json()
+                except (requests.RequestException, ValueError) as exc:
+                    last_error = exc
+                    if attempt < EASTMONEY_REQUEST_RETRIES:
+                        time.sleep(EASTMONEY_RETRY_BACKOFF_SECONDS * attempt)
+        finally:
+            session.close()
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("无法从东财获取 A 股行情: 未得到可解析的响应")
 
 
 def fetch_market_data_eastmoney(yf_symbol: str, as_of_date: str) -> Dict[str, Any]:
