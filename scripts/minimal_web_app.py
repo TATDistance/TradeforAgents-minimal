@@ -676,7 +676,7 @@ def _test_home_ai_binding(req: HomeAIBindingRequest) -> Dict[str, object]:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         if exc.code == 401:
-            raise HTTPException(status_code=400, detail="首页绑定 API Key 无效，DeepSeek 返回 401。")
+            raise HTTPException(status_code=400, detail="首页绑定 API Key 无效，目标模型平台返回 401。")
         raise HTTPException(status_code=400, detail=f"首页绑定 API 测试失败：HTTP {exc.code} {detail[:200]}")
     except urllib.error.URLError as exc:
         raise HTTPException(status_code=400, detail=f"首页绑定 API 测试失败：{exc.reason}")
@@ -693,7 +693,7 @@ def _test_home_ai_binding(req: HomeAIBindingRequest) -> Dict[str, object]:
     except Exception:
         content = ""
     return {
-        "message": "首页绑定 API 可用，已成功连通 DeepSeek。",
+        "message": "首页绑定 API 可用，已成功连通目标模型平台。",
         "latency_ms": int((time.time() - started) * 1000),
         "provider": req.provider.strip() or "deepseek",
         "model": req.model.strip() or "deepseek-chat",
@@ -1693,18 +1693,19 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
         <span class="badge">已迁移到首页</span>
       </div>
       <div class="hint content-col">
-        研究中心不再重复展示用户设置卡。这里会自动复用首页里保存的 `AI 平台 / 模型 / Base URL / API Key` 配置。
+        研究中心不再重复展示用户设置卡。这里会自动复用首页里当前激活的 `AI 平台 / 模型 / Base URL / API Key` 配置；DeepSeek 与 GPT 会分别保存自己的那一套。
       </div>
       <div class="pill-row" style="margin-top:12px">
-        <span class="pill">默认平台：DeepSeek</span>
+        <span class="pill">支持平台：DeepSeek / GPT</span>
         <span class="pill">配置入口：AI 首页</span>
-        <span class="pill">这里仅负责研究与计划</span>
+        <span class="pill">这里复用首页当前激活配置</span>
       </div>
       <div style="display:none" aria-hidden="true">
         <input id="apiKey" type="password" placeholder="sk-..." />
         <select id="baseUrl">
           <option value="https://api.deepseek.com" selected>DeepSeek 官方（推荐）</option>
           <option value="https://api.deepseek.com/v1">DeepSeek 兼容 /v1</option>
+          <option value="https://api.openai.com/v1">OpenAI 官方 /v1</option>
           <option value="https://newapi.baosiapi.com/v1">OpenAI 中转示例（newapi.baosiapi.com）</option>
         </select>
       </div>
@@ -1964,8 +1965,20 @@ def _render_research_page(active_page: str = "selector") -> HTMLResponse:
             <div>
               <label>模型</label>
               <select id="model">
-                <option value="deepseek-chat">deepseek-chat</option>
-                <option value="deepseek-reasoner">deepseek-reasoner</option>
+                <optgroup label="DeepSeek">
+                  <option value="deepseek-chat">deepseek-chat</option>
+                  <option value="deepseek-reasoner">deepseek-reasoner</option>
+                </optgroup>
+                <optgroup label="OpenAI / GPT Plus 兼容">
+                  <option value="gpt-4o">gpt-4o</option>
+                  <option value="gpt-4.1">gpt-4.1</option>
+                  <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                  <option value="o3">o3</option>
+                  <option value="o4-mini">o4-mini</option>
+                  <option value="gpt-5">gpt-5</option>
+                  <option value="gpt-5-mini">gpt-5-mini</option>
+                  <option value="gpt-5.4">gpt-5.4</option>
+                </optgroup>
               </select>
             </div>
             <div>

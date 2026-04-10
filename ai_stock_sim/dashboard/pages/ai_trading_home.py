@@ -368,13 +368,26 @@ def render_ai_trading_home(build_tag: str) -> str:
             <label>绑定大模型平台</label>
             <select id="bindProvider">
               <option value="deepseek" selected>DeepSeek</option>
+              <option value="openai">OpenAI / GPT Plus 兼容</option>
             </select>
           </div>
           <div class="field col-3">
             <label>绑定模型</label>
             <select id="bindModel">
-              <option value="deepseek-chat" selected>deepseek-chat</option>
-              <option value="deepseek-reasoner">deepseek-reasoner</option>
+              <optgroup label="DeepSeek">
+                <option value="deepseek-chat" selected>deepseek-chat</option>
+                <option value="deepseek-reasoner">deepseek-reasoner</option>
+              </optgroup>
+              <optgroup label="OpenAI / GPT Plus 兼容">
+                <option value="gpt-4o">gpt-4o</option>
+                <option value="gpt-4.1">gpt-4.1</option>
+                <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                <option value="o3">o3</option>
+                <option value="o4-mini">o4-mini</option>
+                <option value="gpt-5">gpt-5</option>
+                <option value="gpt-5-mini">gpt-5-mini</option>
+                <option value="gpt-5.4">gpt-5.4</option>
+              </optgroup>
             </select>
           </div>
           <div class="field col-3">
@@ -382,6 +395,7 @@ def render_ai_trading_home(build_tag: str) -> str:
             <select id="bindBaseUrl">
               <option value="https://api.deepseek.com" selected>DeepSeek 官方（推荐）</option>
               <option value="https://api.deepseek.com/v1">DeepSeek 兼容 /v1</option>
+              <option value="https://api.openai.com/v1">OpenAI 官方 /v1</option>
               <option value="https://newapi.baosiapi.com/v1">OpenAI 中转示例（newapi.baosiapi.com）</option>
             </select>
           </div>
@@ -393,7 +407,7 @@ def render_ai_trading_home(build_tag: str) -> str:
             <button id="saveBinding" type="button" class="small-btn">保存首页 AI 绑定</button>
             <button id="testBinding" type="button" class="small-btn" style="margin-left:10px">测试首页绑定 API</button>
             <div id="bindingStatus" class="setting-status">当前运行中的实时引擎来源，仍以首页“AI 来源”为准。</div>
-            <div class="setting-note">配置项已经收进折叠区，避免打断前台决策视图。首页与研究中心共用这套浏览器本地配置。</div>
+            <div class="setting-note">配置项已经收进折叠区，避免打断前台决策视图。DeepSeek 与 GPT 会分别保存自己的 API Key、模型和 Base URL，研究中心复用当前激活平台的那一套。</div>
           </div>
         </div>
       </details>
@@ -1209,14 +1223,74 @@ def render_ai_trading_home(build_tag: str) -> str:
       )).join('');
     }
 
-    function loadBindingConfig(){
-      bindProvider.value = localStorage.getItem('ta_home_provider') || 'deepseek';
-      bindModel.value = localStorage.getItem('ta_min_model') || 'deepseek-chat';
-      bindApiKey.value = localStorage.getItem('ta_min_api_key') || '';
-      const savedBaseUrl = localStorage.getItem('ta_min_base_url') || 'https://api.deepseek.com';
-      const exists = Array.from(bindBaseUrl.options).some(opt => opt.value === savedBaseUrl);
-      if(exists) bindBaseUrl.value = savedBaseUrl;
+    function defaultBindingForProvider(provider){
+      if(provider === 'openai'){
+        return {
+          provider: 'openai',
+          model: 'gpt-4o',
+          base_url: 'https://api.openai.com/v1',
+          api_key: ''
+        };
+      }
+      return {
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        base_url: 'https://api.deepseek.com',
+        api_key: ''
+      };
+    }
+
+    function scopedBindingKey(provider, field){
+      return 'ta_binding_' + provider + '_' + field;
+    }
+
+    function loadProviderScopedBinding(provider){
+      const fallback = defaultBindingForProvider(provider);
+      return {
+        provider,
+        model: localStorage.getItem(scopedBindingKey(provider, 'model')) || fallback.model,
+        base_url: localStorage.getItem(scopedBindingKey(provider, 'base_url')) || fallback.base_url,
+        api_key: localStorage.getItem(scopedBindingKey(provider, 'api_key')) || fallback.api_key,
+      };
+    }
+
+    function saveProviderScopedBinding(provider, payload){
+      localStorage.setItem(scopedBindingKey(provider, 'model'), payload.model || '');
+      localStorage.setItem(scopedBindingKey(provider, 'base_url'), payload.base_url || '');
+      localStorage.setItem(scopedBindingKey(provider, 'api_key'), (payload.api_key || '').trim());
+    }
+
+    function applyBindingToForm(binding){
+      bindProvider.value = binding.provider || 'deepseek';
+      const modelExists = Array.from(bindModel.options).some(opt => opt.value === binding.model);
+      bindModel.value = modelExists ? binding.model : defaultBindingForProvider(bindProvider.value).model;
+      bindApiKey.value = binding.api_key || '';
+      const baseUrl = binding.base_url || defaultBindingForProvider(bindProvider.value).base_url;
+      const baseExists = Array.from(bindBaseUrl.options).some(opt => opt.value === baseUrl);
+      bindBaseUrl.value = baseExists ? baseUrl : defaultBindingForProvider(bindProvider.value).base_url;
       bindingStatus.textContent = '当前首页绑定：' + bindProvider.options[bindProvider.selectedIndex].text + ' / ' + bindModel.value;
+    }
+
+    function currentFormBinding(){
+      return {
+        provider: bindProvider.value || 'deepseek',
+        model: bindModel.value || 'deepseek-chat',
+        base_url: bindBaseUrl.value || 'https://api.deepseek.com',
+        api_key: (bindApiKey.value || '').trim(),
+      };
+    }
+
+    function syncActiveBindingToGenericKeys(binding){
+      localStorage.setItem('ta_home_provider', binding.provider);
+      localStorage.setItem('ta_min_model', binding.model);
+      localStorage.setItem('ta_min_base_url', binding.base_url);
+      localStorage.setItem('ta_min_api_key', binding.api_key);
+    }
+
+    function loadBindingConfig(){
+      const provider = localStorage.getItem('ta_home_provider') || 'deepseek';
+      applyBindingToForm(loadProviderScopedBinding(provider));
+      syncActiveBindingToGenericKeys(currentFormBinding());
     }
 
     function currentBindingPayload(){
@@ -1229,10 +1303,9 @@ def render_ai_trading_home(build_tag: str) -> str:
     }
 
     async function saveBindingConfig(syncBackend = false){
-      localStorage.setItem('ta_home_provider', bindProvider.value);
-      localStorage.setItem('ta_min_model', bindModel.value);
-      localStorage.setItem('ta_min_base_url', bindBaseUrl.value);
-      localStorage.setItem('ta_min_api_key', bindApiKey.value.trim());
+      const payload = currentFormBinding();
+      saveProviderScopedBinding(payload.provider, payload);
+      syncActiveBindingToGenericKeys(payload);
       bindingStatus.textContent = '已保存：' + bindProvider.options[bindProvider.selectedIndex].text + ' / ' + bindModel.value + '。研究中心会复用这套配置。';
       if(!syncBackend){
         return;
@@ -1240,7 +1313,7 @@ def render_ai_trading_home(build_tag: str) -> str:
       const {resp, data} = await fetchJsonSafe('/api/ai-stock-sim/binding', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(currentBindingPayload())
+        body: JSON.stringify(payload)
       });
       if(!resp.ok){
         throw new Error(data.detail || '同步首页绑定到后端失败');
@@ -1507,7 +1580,15 @@ def render_ai_trading_home(build_tag: str) -> str:
       }
     }
 
-    bindProvider.addEventListener('change', () => { saveBindingConfig(false); });
+    bindProvider.addEventListener('change', () => {
+      const previousProvider = localStorage.getItem('ta_home_provider') || 'deepseek';
+      saveProviderScopedBinding(previousProvider, currentFormBinding());
+      const nextProvider = bindProvider.value || 'deepseek';
+      localStorage.setItem('ta_home_provider', nextProvider);
+      applyBindingToForm(loadProviderScopedBinding(nextProvider));
+      syncActiveBindingToGenericKeys(currentFormBinding());
+      saveBindingConfig(false);
+    });
     bindModel.addEventListener('change', () => { saveBindingConfig(false); });
     bindBaseUrl.addEventListener('change', () => { saveBindingConfig(false); });
     bindApiKey.addEventListener('change', () => { saveBindingConfig(false); });
